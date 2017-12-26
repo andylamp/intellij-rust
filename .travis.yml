@@ -1,0 +1,45 @@
+branches:
+  only:
+    - staging
+    - master
+    - trying
+
+language: java
+
+jdk: oraclejdk8
+
+env:
+  - RUST_VERSION=nightly-2017-12-10 ORG_GRADLE_PROJECT_ideaVersion=173.3942.15 # modified by script
+  - RUST_VERSION=1.20.0 ORG_GRADLE_PROJECT_ideaVersion=2017.2.5
+
+install: true
+
+before_script:
+  - curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION -y
+  - export PATH=$HOME/.cargo/bin:$PATH
+  - |
+    if ! rustfmt --help; then
+        rustup install nightly
+        export LD_LIBRARY_PATH=$(rustup run nightly rustc --print sysroot)/lib:$LD_LIBRARY_PATH
+        cargo +nightly install rustfmt-nightly --force
+    fi
+  - ./check-license.sh
+  - ./gradlew :resolveDependencies -Pkotlin.incremental=false --no-daemon
+  - ./gradlew assemble testClasses -Pkotlin.incremental=false --no-daemon
+
+script:
+  - ./gradlew check -Pkotlin.incremental=false --no-daemon
+
+# https://docs.travis-ci.com/user/languages/java/#Caching
+before_cache:
+  - rm -f  $HOME/.gradle/caches/modules-2/modules-2.lock
+  - rm -fr $HOME/.gradle/caches/*/plugin-resolution/
+  - rm -f  $HOME/.gradle/caches/*/fileHashes/fileHashes.bin
+  - rm -f  $HOME/.gradle/caches/*/fileHashes/fileHashes.lock
+cache:
+  directories:
+    - $HOME/.gradle/caches/
+    - $HOME/.gradle/wrapper/
+    - $HOME/.cargo/registry/cache/
+    - $HOME/.cargo/registry/src/
+    - $HOME/.cargo/bin/

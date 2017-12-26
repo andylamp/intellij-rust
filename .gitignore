@@ -1,6 +1,10 @@
 .idea
+*.iml
 .gradle
-out
-classes
-lib
-gen
+out/
+build/
+gen/
+deps/
+exampleProject
+testData
+.DS_Store
