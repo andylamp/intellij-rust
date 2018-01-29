@@ -31,7 +31,7 @@ val channel = prop("publishChannel")
 
 plugins {
     idea
-    kotlin("jvm") version "1.2.10"
+    kotlin("jvm") version "1.2.20"
     id("org.jetbrains.intellij") version "0.2.17"
     id("de.undercouch.download") version "3.2.0"
 }
@@ -105,7 +105,7 @@ project(":") {
     intellij {
         pluginName = "intellij-rust"
 //        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins("org.toml.lang:0.2.0.9")
+        setPlugins(project(":intellij-toml"))
     }
 
     repositories {
@@ -219,15 +219,16 @@ task("makeRelease") {
         val newChangelogPath = newChangelog
             .replace(".markdown", "")
             .replaceFirst("-", "/").replaceFirst("-", "/").replaceFirst("-", "/")
-        val pluginXml = File("./src/main/resources/META-INF/plugin.xml")
+        val pluginXmlPath = "./src/main/resources/META-INF/plugin.xml"
+        val pluginXml = File(pluginXmlPath)
         val oldText = pluginXml.readText()
         val newText = oldText.replace(
             """https://intellij-rust\.github\.io/(.*)\.html""".toRegex(),
             "https://intellij-rust.github.io/$newChangelogPath.html"
         )
         pluginXml.writeText(newText)
-        "git add .".execute()
-        "git commit -am Changelog".execute()
+        "git add $pluginXmlPath".execute()
+        "git commit -m Changelog".execute()
         "git push".execute()
         commitNightly()
     }
@@ -241,8 +242,8 @@ fun commitChangelog(): String {
         .last()
     val postNumber = lastPost.substringAfterLast("-").substringBefore(".").toInt()
     "python3 changelog.py -c".execute(website)
-    "git add .".execute(website)
-    listOf("git", "commit", "-am", "Changelog $postNumber").execute(website)
+    "git add _posts/$lastPost".execute(website)
+    listOf("git", "commit", "-m", "Changelog $postNumber").execute(website)
     println()
     "git show HEAD".execute(website)
     println("Does ^^ look right? Answer `yes` to push changes\n")
@@ -266,7 +267,10 @@ fun commitNightly() {
     val travisYml = File(rootProject.projectDir, ".travis.yml")
     val updated = travisYml.readLines().joinToString("\n") { line ->
         if ("modified by script" in line) {
-            "  - RUST_VERSION=$rustVersion ORG_GRADLE_PROJECT_ideaVersion=$ideaVersion # modified by script"
+            if ("ORG_GRADLE_PROJECT_ideaVersion" in line)
+                "    - RUST_VERSION=\$NIGHTLY_RUST_VERSION ORG_GRADLE_PROJECT_ideaVersion=$ideaVersion # modified by script"
+            else
+                "    - NIGHTLY_RUST_VERSION=$rustVersion # modified by script"
         } else {
             line
         }
@@ -275,8 +279,8 @@ fun commitNightly() {
     "git branch -Df nightly".execute(ignoreExitCode = true)
     "git checkout -b nightly".execute()
     "git add .travis.yml".execute()
-    listOf("git", "commit", "-am", ":arrow_up: nightly IDEA & rust").execute()
-    "git push".execute()
+    listOf("git", "commit", "-m", ":arrow_up: nightly IDEA & rust").execute()
+    "git push origin nightly".execute()
 }
 
 fun prop(name: String): String =

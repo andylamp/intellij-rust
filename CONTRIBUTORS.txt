@@ -25,6 +25,7 @@ Filippok
 framlog
 greg-kargin
 Guillaume Eveillard
+harrisjt
 HeyLey
 himikof
 HybridEidolon
@@ -64,6 +65,7 @@ ThoseGrapefruits
 tov
 ttaomae
 Turbo87
+t-kameyama
 ujpv
 Undin
 vasily-kirichenko

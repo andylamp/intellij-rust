@@ -70,6 +70,7 @@
         TYPE_KW   = 'type'
         UNION     = 'union_kw'
         DEFAULT   = 'default_kw'
+        AUTO      = 'auto_kw'
 
         SHEBANG_LINE = 'shebang_line'
         RESERVED_KEYWORD = 'reserved_keyword'
@@ -214,6 +215,7 @@ VisRestriction ::= '(' ( crate | ((&(self ')' | super ')') | in) PathWithoutType
 //XXX: don't use contextual keywords in recover, because they remap tokens.
 private default_ ::= <<defaultKeyword>>
 private union ::= <<unionKeyword>>
+private auto ::= <<autoKeyword>>
 
 private AttrsAndVis ::= OuterAttr* Vis?
 
@@ -236,7 +238,8 @@ private Item_with_recover ::= !('}' | <<eof>>) Item {
   pin = 1
   recoverWhile = Item_recover
 }
-private Item_first ::= '#' | pub | fn | const | extern | unsafe | struct | enum | use | identifier | mod | trait | static | TYPE_KW | impl | "union" | "default"
+private Item_first ::= '#' | pub | fn | const | extern | unsafe | struct | enum | use | identifier | mod | trait
+  | static | TYPE_KW | impl | "union" | "default" | "auto"
 private Item_recover ::= !('}' | Item_first )
 
 private Items ::= Item_with_recover*
@@ -370,12 +373,12 @@ Function ::= OuterAttr*
   pin = 'identifier'
   implements = [ "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
                  "org.rust.lang.core.psi.ext.RsGenericDeclaration"
-                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsInnerAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsItemElement"
                  "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsAbstractable"
-                 "org.rust.lang.core.psi.ext.RsUnsafetyOwner" ]
+                 "org.rust.lang.core.psi.ext.RsUnsafetyOwner"
+                 "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
   mixin = "org.rust.lang.core.psi.ext.RsFunctionImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsFunctionStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -441,6 +444,7 @@ Constant ::= OuterAttr* default_? Vis? (static mut? | const) identifier TypeAscr
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsItemElement"
                  "org.rust.lang.core.psi.ext.RsAbstractable"
+                 "org.rust.lang.core.psi.ext.RsInferenceContextOwner"
                  "org.rust.lang.core.macros.ExpansionResult" ]
   mixin = "org.rust.lang.core.psi.ext.RsConstantImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsConstantStub"
@@ -528,7 +532,8 @@ ModDeclItem ::= AttrsAndVis mod identifier ';' {
 
 ForeignModItem ::= AttrsAndVis ExternAbi '{' InnerAttr* ForeignDecl* '}' {
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
-  implements = [ "org.rust.lang.core.psi.ext.RsItemElement" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsItemElement"
+                 "org.rust.lang.core.psi.ext.RsInnerAttributeOwner" ]
   mixin = "org.rust.lang.core.psi.ext.RsForeignModItemImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -600,7 +605,10 @@ TupleFields ::= '(' (TupleFieldDecl (',' | &')'))* ')' {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-VariantDiscriminant ::= '=' AnyExpr { pin = 1 }
+VariantDiscriminant ::= '=' AnyExpr {
+  pin = 1
+  implements = "org.rust.lang.core.psi.ext.RsInferenceContextOwner"
+}
 
 FieldDecl ::= AttrsAndVis identifier TypeAscription {
   pin = 2
@@ -631,7 +639,7 @@ private TupleField_recover ::= !(')' | ',')
 // Trait & Impl
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-TraitItem ::= AttrsAndVis unsafe? trait identifier TypeParameterList? TypeParamBounds? WhereClause? Members {
+TraitItem ::= AttrsAndVis unsafe? auto? trait identifier TypeParameterList? TypeParamBounds? WhereClause? Members {
   pin = "trait"
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
   implements = [ "org.rust.lang.core.psi.ext.RsTraitOrImpl"
@@ -650,6 +658,7 @@ ImplItem ::= AttrsAndVis default_? unsafe? impl TypeParameterList? ( TraitImpl |
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
   implements = [ "org.rust.lang.core.psi.ext.RsTraitOrImpl"
                  "org.rust.lang.core.psi.ext.RsUnsafetyOwner"
+                 "org.rust.lang.core.psi.ext.RsInnerAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsTypeDeclarationElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsImplItemImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsImplItemStub"
@@ -703,7 +712,7 @@ TypeReference ::= TypeReferenceInner {
 ScalarTypeReference ::= ScalarTypeReferenceInner { elementType = TypeReference }
 
 ArrayType ::= '[' TypeReference [';' AnyExpr] ']' {
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
+  implements = [ "org.rust.lang.core.psi.ext.RsTypeElement" "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsArrayTypeStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -1044,7 +1053,8 @@ MacroExpansionReferenceGroup ::= '$' '(' MacroExpansionContents ')'
 
 
 MacroCall ::= MacroHead <<macroSemicolon>> {
-  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement"
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"]
   pin = 2
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
   mixin = "org.rust.lang.core.psi.ext.RsMacroCallImplMixin"
@@ -1114,6 +1124,9 @@ PatMacro ::= MacroCallNoSemicolons
 fake Block ::= '{' InnerAttr* (Item | Stmt)* Expr? '}' {
   pin = 1
   implements = "org.rust.lang.core.psi.ext.RsItemsOwner"
+  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
+  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 SimpleBlock ::= '{' BlockElement* '}' {

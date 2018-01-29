@@ -10,7 +10,6 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiParserFacade
-import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.RsPsiFactory
 import org.rust.lang.core.psi.ext.RsFunctionOwner
 import org.rust.lang.core.psi.ext.owner
@@ -58,11 +57,17 @@ class RsExtractFunctionHandlerAction(
         if (config.returnValue?.expression != null) {
             stmt += "let ${config.returnValue.expression} = "
         }
-        stmt += if (config.needsSelf) {
-            "self.${config.name}()"
+        val firstParameter = config.parameters.firstOrNull();
+        stmt += if (firstParameter != null && firstParameter.name.endsWith("self") && firstParameter.type == null) {
+            "self.${config.name}(${config.argumentsText})"
         } else {
-            val type = (config.containingFunction.owner as? RsFunctionOwner.Impl)?.impl?.typeReference?.text
-            "${if (type != null) "$type::" else ""}${config.name}()"
+            val owner = config.containingFunction.owner
+            val type = when (owner) {
+                is RsFunctionOwner.Impl -> owner.impl.typeReference?.text
+                is RsFunctionOwner.Trait -> "Self"
+                else -> null
+            }
+            "${if (type != null) "$type::" else ""}${config.name}(${config.argumentsText})"
         }
         val element = if (config.returnValue == null || config.returnValue.expression != null ) {
             stmt += ";"
