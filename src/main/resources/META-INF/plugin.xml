@@ -139,7 +139,7 @@
         <codeInsight.lineMarkerProvider language="Rust"
                                         implementationClass="org.rust.ide.lineMarkers.RsRecursiveCallLineMarkerProvider"/>
         <codeInsight.lineMarkerProvider language="Rust"
-                                        implementationClass="org.rust.ide.annotator.RsTraitMethodImplLineMarkerProvider"/>
+                                        implementationClass="org.rust.ide.lineMarkers.RsTraitItemImplLineMarkerProvider"/>
         <codeInsight.lineMarkerProvider language="Rust"
                                         implementationClass="org.rust.ide.lineMarkers.RsCrateDocLineMarkerProvider"/>
 
@@ -406,6 +406,11 @@
                          displayName="Experimental checks"
                          enabledByDefault="false" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsExperimentalChecksInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Different impl member order from the trait"
+                         enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="org.rust.ide.inspections.RsSortImplTraitMembersInspection"/>
 
         <!-- Surrounders -->
 

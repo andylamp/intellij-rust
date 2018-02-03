@@ -77,6 +77,12 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test if condition`() = testExpr("""
+        fn main() {
+            if true {};
+        }    //^ bool
+    """)
+
     fun `test unit if`() = testExpr("""
         fn main() {
             let x = if true { 92 };
@@ -215,6 +221,12 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
             x;
           //^ u32
         }
+    """)
+
+    fun `test while condition`() = testExpr("""
+        fn main() {
+            while true {};
+        }       //^ bool
     """)
 
     fun `test while`() = testExpr("""
@@ -542,13 +554,12 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
-    // TODO: should be [i32; 2]
     fun `test usize constant as array size`() = testExpr("""
         const COUNT: usize = 2;
         fn main() {
             let x = [1; COUNT];
             x;
-          //^ [i32; <unknown>]
+          //^ [i32; 2]
         }
     """)
 
@@ -561,12 +572,11 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
-    // TODO: should be [i32; 5]
     fun `test binary expr as array size`() = testExpr("""
         fn main() {
             let x = [1; 2 + 3];
             x;
-          //^ [i32; <unknown>]
+          //^ [i32; 5]
         }
     """)
 
@@ -578,11 +588,19 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
-    // TODO: should be [i32; 28]
     fun `test complex expr as array size`() = testExpr("""
         const COUNT: usize = 2;
         fn main() {
             let x = [1; (2 * COUNT + 3) << (4 / 2)];
+            x;
+          //^ [i32; 28]
+        }
+    """)
+
+    fun `test recursive expr as array size`() = testExpr("""
+        const COUNT: usize = 2 + COUNT;
+        fn main() {
+            let x = [1; COUNT];
             x;
           //^ [i32; <unknown>]
         }
