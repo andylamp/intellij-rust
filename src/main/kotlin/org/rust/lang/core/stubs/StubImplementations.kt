@@ -33,7 +33,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 120
+        override fun getStubVersion(): Int = 121
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -393,7 +393,8 @@ class RsModDeclItemStub(
 
 
 class RsModItemStub(
-    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    parent: StubElement<*>?,
+    elementType: IStubElementType<*, *>,
     override val name: String?,
     override val isPublic: Boolean
 ) : StubBase<RsModItem>(parent, elementType),
