@@ -961,4 +961,21 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
             let b: u8 = a();
         }
     """)
+
+    fun `test var lateinit`() = testExpr("""
+        fn main() {
+            let a;
+            a = 0;
+            a;
+        } //^ i32
+    """)
+
+    fun `test type of ambiguously resolved paths is unknown`() = testExpr("""
+        struct S;
+        struct S;
+        fn main() {
+            let a: S;
+            a;
+        } //^ <unknown>
+    """)
 }
