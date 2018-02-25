@@ -1324,4 +1324,64 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             }
         }
     """)
+
+    fun `test type variable resolved for field lookup`() = testExpr("""
+        struct S { field: i32 }
+        fn unify<T>(_: T, _: T) {}
+        fn foo<T>() -> T { unimplemented!() }
+
+        fn main() {
+            let a = foo();
+            unify(a, S { field: 0 });
+            a.field;
+        }   //^ i32
+    """)
+
+    fun `test associated type binding in trait bound`() = testExpr("""
+        trait Tr { type Item; }
+
+        fn foo<B: Tr<Item=u8>>(_: B) {
+            let a: B::Item = 0;
+            a;
+        } //^ u8
+    """)
+
+    fun `test associated type binding in trait object`() = testExpr("""
+        trait Tr {
+            type Item;
+            fn foo(&self) -> Self::Item;
+        }
+
+        fn foo(a: &Tr<Item=u8>) {
+            let b = a.foo();
+            b;
+        } //^ u8
+    """)
+
+    fun `test aliased associated type binding in trait object`() = testExpr("""
+        trait Tr {
+            type Item;
+            fn foo(&self) -> Self::Item;
+        }
+
+        type TrAlias<T> = Tr<Item=T>;
+
+        fn foo(a: &TrAlias<u8>) {
+            let b = a.foo();
+            b;
+        } //^ u8
+    """)
+
+    fun `test associated type binding in 'impl Trait'`() = testExpr("""
+        trait Tr {
+            type Item;
+            fn foo(&self) -> Self::Item;
+        }
+
+        fn new() -> impl Tr<Item=u8> { unimplemented!() }
+        fn main() {
+            let b = new().foo();
+            b;
+        } //^ u8
+    """)
 }
