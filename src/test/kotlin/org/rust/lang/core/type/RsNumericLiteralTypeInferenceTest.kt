@@ -414,10 +414,30 @@ class RsNumericLiteralTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
-    fun `test unify match pattern range`() = testExpr("""
+    fun `test unify match pattern inclusive range`() = testExpr("""
         fn main() {
             match 0u8 {
                 0...1 => {},
+              //^ u8
+                _ => {},
+            };
+        }
+    """)
+
+    fun `test unify match pattern inclusive range new syntax`() = testExpr("""
+        fn main() {
+            match 0u8 {
+                0..=1 => {},
+              //^ u8
+                _ => {},
+            };
+        }
+    """)
+
+    fun `test unify match pattern exclusive range`() = testExpr("""
+        fn main() {
+            match 0u8 {
+                0..1 => {},
               //^ u8
                 _ => {},
             };
@@ -478,5 +498,21 @@ class RsNumericLiteralTypeInferenceTest : RsTypificationTestBase() {
                 _ => {},
             };
         }
+    """)
+
+    fun `test unify unconstrained integer receiver with impl type`() = testExpr("""
+        trait T { fn foo(self); }
+        impl T for u8 { fn foo(self) {} }
+        fn main() {
+            0.foo();
+        } //^ u8
+    """)
+
+    fun `test unify unconstrained float receiver with impl type`() = testExpr("""
+        trait T { fn foo(self); }
+        impl T for f32 { fn foo(self) {} }
+        fn main() {
+            0.0.foo();
+        } //^ f32
     """)
 }

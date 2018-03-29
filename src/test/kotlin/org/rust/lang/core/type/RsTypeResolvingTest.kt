@@ -78,7 +78,7 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
         trait T { fn new() -> Self; }
 
         impl T for S { fn new() -> Self { S } }
-                                  //^ Self
+                                  //^ S
     """)
 
     fun `test primitive bool`() = testType("""
@@ -205,6 +205,15 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
                //^ [i32; <unknown>]
     """)
 
+    fun `test associated type`() = testType("""
+        trait Trait<T> {
+            type Item;
+        }
+        fn foo<B: Trait<u8>>(_: B) {
+            let a: B::Item;
+        }           //^ <B as Trait<u8>>::Item
+    """)
+
     fun `test associated types for impl`() = testType("""
         trait A {
             type Item;
@@ -214,7 +223,7 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
         impl A for S {
             type Item = S;
             fn foo(self) -> Self::Item { S }
-        }                         //^ <Self as A>::Item
+        }                         //^ S
     """)
 
     fun `test inherited associated types for impl`() = testType("""
@@ -226,7 +235,7 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
         impl A for S { type Item = S; }
         impl B for S {
             fn foo(self) -> Self::Item { S }
-        }                         //^ <Self as A>::Item
+        }                         //^ S
     """)
 
     fun `test generic trait object`() = testType("""

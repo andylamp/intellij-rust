@@ -959,6 +959,22 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test fn return associated type with generic trait bound`() = testExpr("""
+        trait SliceIndex<T> { type Output; }
+        struct S1; struct S2;
+        struct X; struct Y;
+        fn get1<I: SliceIndex<S1>>(index: I) -> I::Output { unimplemented!() }
+        fn get2<I: SliceIndex<S2>>(index: I) -> <I as SliceIndex<S2>>::Output
+            { unimplemented!() }
+        impl SliceIndex<S1> for usize { type Output = X; }
+        impl SliceIndex<S2> for usize { type Output = Y; }
+        fn main() {
+            let a = get1(0usize);
+            let b = get2(0usize);
+            (a, b);
+        } //^ (X, Y)
+    """)
+
     fun `test associated type bound`() = testExpr("""
         trait Tr { type Item; }
         trait Tr2<A> {}
@@ -1383,5 +1399,27 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let b = new().foo();
             b;
         } //^ u8
+    """)
+
+    fun `test select trait from unconstrained integer`() = testExpr("""
+        struct X;
+        trait Tr<A> {}
+        impl Tr<X> for u8 {}
+        fn foo<B: Tr<C>, C>(_: B) -> C { unimplemented!() }
+        fn main() {
+            let a = foo(0);
+            a;
+        } //^ X
+    """)
+
+    fun `test select projection from unconstrained integer`() = testExpr("""
+        struct X;
+        trait Tr { type Item; }
+        impl Tr for u8 { type Item = X; }
+        fn foo<B: Tr>(_: B) -> B::Item { unimplemented!() }
+        fn main() {
+            let a = foo(0);
+            a;
+        } //^ X
     """)
 }

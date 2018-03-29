@@ -1,3 +1,4 @@
+import org.jetbrains.intellij.tasks.PatchPluginXmlTask
 import org.jetbrains.intellij.tasks.PublishTask
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import de.undercouch.gradle.tasks.download.Download
@@ -30,8 +31,8 @@ val channel = prop("publishChannel")
 
 plugins {
     idea
-    kotlin("jvm") version "1.2.21"
-    id("org.jetbrains.intellij") version "0.2.18"
+    kotlin("jvm") version "1.2.30"
+    id("org.jetbrains.intellij") version "0.2.19"
     id("de.undercouch.download") version "3.2.0"
 }
 
@@ -63,9 +64,14 @@ allprojects {
     intellij {
         version = prop("ideaVersion")
         downloadSources = !CI
-        updateSinceUntilBuild = false
+        updateSinceUntilBuild = true
         instrumentCode = false
         ideaDependencyCachePath = file("deps").absolutePath
+
+        tasks.withType<PatchPluginXmlTask> {
+            sinceBuild(prop("sinceBuild"))
+            untilBuild(prop("untilBuild"))
+        }
     }
 
     configure<GrammarKitPluginExtension> {
@@ -96,15 +102,16 @@ allprojects {
     }
 }
 
-val versionSuffix = if (channel.isBlank()) "" else "-$channel"
+val channelSuffix = if (channel.isBlank()) "" else "-$channel"
 
 project(":") {
     val clionVersion = prop("clionVersion")
+    val versionSuffix = "-${prop("compatibilitySuffix")}$channelSuffix"
     version = "0.2.0.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
 //        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins("org.toml.lang:0.2.0.12")
+        setPlugins(project(":intellij-toml"))
     }
 
     repositories {
@@ -191,7 +198,7 @@ project(":") {
 }
 
 project(":intellij-toml") {
-    version = "0.2.0.${prop("buildNumber")}$versionSuffix"
+    version = "0.2.0.${prop("buildNumber")}$channelSuffix"
 
     val generateTomlLexer = task<GenerateLexer>("generateTomlLexer") {
         source = "src/main/grammars/TomlLexer.flex"

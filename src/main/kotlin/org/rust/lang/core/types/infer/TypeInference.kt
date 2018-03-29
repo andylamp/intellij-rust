@@ -402,7 +402,7 @@ class RsInferenceContext(
 
     /** See [optNormalizeProjectionType] */
     private fun optNormalizeProjectionTypeResolved(projectionTy: TyProjection, recursionDepth: Int): TyWithObligations<Ty>? {
-        if (projectionTy.type is TyInfer) return null
+        if (projectionTy.type is TyInfer.TyVar) return null
 
         val cacheResult = projectionCache.tryStart(projectionTy)
         return when (cacheResult) {
@@ -513,6 +513,17 @@ class RsInferenceContext(
             .map { it.substitute(subst) }
             .map { normalizeAssociatedTypesIn(it, recursionDepth) }
             .flatMap { it.obligations.asSequence() + Obligation(recursionDepth, Predicate.Trait(it.value)) }
+    }
+
+    /** Checks that [selfTy] satisfies all trait bounds of the [impl] */
+    fun canEvaluateBounds(impl: RsImplItem, selfTy: Ty): Boolean {
+        val ff = FulfillmentContext(this, lookup)
+        val subst = impl.generics.associate { it to typeVarForParam(it) }
+        return probe {
+            instantiateBounds(impl.bounds, subst).forEach(ff::registerPredicateObligation)
+            impl.typeReference?.type?.substitute(subst)?.let { combineTypes(selfTy, it) }
+            ff.selectUntilError()
+        }
     }
 
     override fun toString(): String {
@@ -852,8 +863,32 @@ private class RsFnInferenceContext(
     }
 
     private fun inferStructLiteralType(expr: RsStructLiteral, expected: Ty?): Ty {
+        // Extended version of `RsTypeAlias.baseType()`
+        fun resolveBaseType(typeAlias: RsTypeAlias, subst: Substitution): BoundElement<RsElement>? {
+            var base: RsElement = typeAlias
+            @Suppress("NAME_SHADOWING")
+            var subst = subst
+            val visited = mutableSetOf<RsElement>(typeAlias)
+            while (base is RsTypeAlias) {
+                val resolved = (base.typeReference?.typeElement as? RsBaseType)?.path?.reference?.advancedResolve() ?: return null
+                base = resolved.element
+                if (base in visited) return null
+                visited += base
+                subst = resolved.subst.substituteInValues(subst)
+            }
+            return BoundElement(base, subst)
+        }
+
         val boundElement = expr.path.reference.advancedResolve()
-        if (boundElement == null) {
+
+        // Resolve potential type aliases
+        val baseElement = if (boundElement != null && boundElement.element is RsTypeAlias) {
+            resolveBaseType(boundElement.element, boundElement.subst)
+        } else {
+            boundElement
+        }
+
+        if (baseElement == null) {
             for (field in expr.structLiteralBody.structLiteralFieldList) {
                 field.expr?.inferType()
             }
@@ -862,14 +897,7 @@ private class RsFnInferenceContext(
             return TyUnknown
         }
 
-        var (element, subst) = boundElement
-
-        // Resolve potential type aliases
-        while (element is RsTypeAlias) {
-            val resolved = (element.typeReference?.typeElement as? RsBaseType)?.path?.reference?.advancedResolve()
-            element = resolved?.element ?: return TyUnknown
-            subst = resolved.subst.substituteInValues(subst)
-        }
+        val (element, subst) = baseElement
 
         val genericDecl: RsGenericDeclaration = when (element) {
             is RsStructItem -> element
@@ -1017,12 +1045,7 @@ private class RsFnInferenceContext(
             // 2. Filter methods by trait bounds (try to select all obligations for each impl)
             TypeInferenceMarks.methodPickCheckBounds.hit()
             val impl = callee.impl ?: return@singleOrFilter true
-            val ff = FulfillmentContext(ctx, lookup)
-            val typeParameters = impl.generics.associate { it to ctx.typeVarForParam(it) }
-            ctx.instantiateBounds(impl.bounds, typeParameters)
-                .forEach(ff::registerPredicateObligation)
-            impl.typeReference?.type?.substitute(typeParameters)?.let { ctx.combineTypes(callee.selfTy, it) }
-            ctx.probe { ff.selectUntilError() }
+            ctx.canEvaluateBounds(impl, callee.selfTy)
         }.singleOrLet { list ->
             // 3. Pick results on the first deref level
             // TODO this is not how compiler actually work, see `test non inherent impl 2`
@@ -1242,7 +1265,7 @@ private class RsFnInferenceContext(
     private fun inferRangeType(expr: RsRangeExpr): Ty {
         val el = expr.exprList
         val dot2 = expr.dotdot
-        val dot3 = expr.dotdotdot
+        val dot3 = expr.dotdotdot ?: expr.dotdoteq
 
         val (rangeName, indexType) = when {
             dot2 != null && el.size == 0 -> "RangeFull" to null

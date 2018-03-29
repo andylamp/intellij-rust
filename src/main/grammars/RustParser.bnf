@@ -58,6 +58,7 @@
         DOT         =  '.'
         DOTDOT      =  '..'
         DOTDOTDOT   =  '...'
+        DOTDOTEQ    =  '..='
         FAT_ARROW   =  '=>'
         ARROW       =  '->'
         Q           =  '?'
@@ -360,7 +361,7 @@ ForLifetimes ::= for '<' LifetimesParams '>'
 
 ExternAbi ::= extern STRING_LITERAL?
 
-RetType ::= '->' TypeReference {
+RetType ::= '->' TypeReferenceNoImplicitTraitType {
   pin = 1
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
@@ -401,7 +402,7 @@ Pat ::= PatWild
       | PatStruct
       | PatEnum
       | PatIdent
-      | (PatConst !'...')
+      | (PatConst !('..' | '...' | '..='))
       | PatRange
       | PatUniq
 
@@ -427,7 +428,7 @@ private Pat_with_recover ::= Pat (',' | &(')' | ']' | '..'))
 private PatField_with_recover ::= PatField (',' | & '}')
 
 PatConst ::= PathExpr | LitExpr | &('-' LitExpr) UnaryExpr
-PatRange ::= PatConst '...' PatConst { pin = 2 }
+PatRange ::= PatConst ('..' | '...' | '..=') PatConst { pin = 2 }
 
 PatTup ::= '(' SeqPat ')'
 PatVec ::= '[' SeqPat ']'
@@ -701,9 +702,20 @@ private TypeReferenceInner ::= ArrayType
                                | FnPointerType
                                // External rule to find the difference between `(T)` and `(T,)`
                                | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
-                               | TraitType
-                               | ForInType
+                               | ExplicitTraitType
+                               | TrivialBaseType
+                               // External rule to find the difference between `T` and `T+T`
+                               | <<baseOrTraitType PathGenericArgsWithoutColons ImplicitTraitType TraitType_upper>>
+                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
+
+private TypeReferenceNoImplicitTraitTypeInner ::= ArrayType
+                               | RefLikeType
+                               | FnPointerType
+                               // External rule to find the difference between `(T)` and `(T,)`
+                               | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
+                               | ExplicitTraitType
                                | BaseType
+                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
 
 private ScalarTypeReferenceInner ::= ArrayType
                                    | RefLikeType
@@ -718,6 +730,7 @@ TypeReference ::= TypeReferenceInner {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
+TypeReferenceNoImplicitTraitType ::= TypeReferenceNoImplicitTraitTypeInner { elementType = TypeReference }
 ScalarTypeReference ::= ScalarTypeReferenceInner { elementType = TypeReference }
 
 ArrayType ::= '[' TypeReference [';' AnyExpr] ']' {
@@ -762,21 +775,31 @@ ForInType ::= ForLifetimes (FnPointerType | TraitRef) {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-BaseType ::= '(' ')' | '_' | '!' | PathGenericArgsWithoutColons {
+BaseType ::= TrivialBaseTypeInner | PathGenericArgsWithoutColons {
   implements = "org.rust.lang.core.psi.ext.RsTypeElement"
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsBaseTypeStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
+TrivialBaseType ::= TrivialBaseTypeInner { elementType = BaseType }
+private TrivialBaseTypeInner ::= '(' ')' | '_' | '!'
+
 // `impl Trait` or `dyn Trait` or `Trait+'a`
-TraitType ::= (impl | dyn) Polybound ('+' Polybound)*
-            | Polybound '+' Polybound ('+' Polybound)* {
+fake TraitType ::= ExplicitTraitTypeInner | ImplicitTraitTypeInner {
   implements = "org.rust.lang.core.psi.ext.RsTypeElement"
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsTraitTypeStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
+
+ExplicitTraitType ::= ExplicitTraitTypeInner { elementType = TraitType }
+private ExplicitTraitTypeInner ::= (impl | dyn) Polybound ('+' Polybound)*
+
+ImplicitTraitType ::= ImplicitTraitTypeInner { elementType = TraitType }
+private ImplicitTraitTypeInner ::= Polybound ('+' Polybound)+
+
+private TraitType_upper ::= ('+' Polybound)+
 
 TypeAlias ::= OuterAttr* default_? Vis? TYPE_KW identifier
               [ TypeParameterList WhereClause? | WhereClause | TypeParamBounds ]
@@ -837,7 +860,7 @@ Expr ::= RetExpr
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
 }
 
-private Expr_first ::= return | '|' | Path_first | '{' | '[' | '(' | '..' | '...' | true | false | box | QUOTE_IDENTIFIER
+private Expr_first ::= return | '|' | Path_first | '{' | '[' | '(' | '..' | '...' | '..=' | true | false | box | QUOTE_IDENTIFIER
   | '-' | '*' | '!' | '&' | move | LitExpr | while | if | for | continue | break  | loop | match | unsafe
 
 // https://github.com/rust-lang/rfcs/blob/master/text/0092-struct-grammar.md
@@ -1034,12 +1057,12 @@ ArrayExpr ::= OuterAttr* '[' ArrayInitializer ']' {
 }
 private ArrayInitializer ::= [ AnyExpr ( ';' AnyExpr | (',' AnyExpr)* ','? ) ]
 
-fake RangeExpr ::= Expr? ('..' | '...') Expr? {
+fake RangeExpr ::= Expr? ('..' | '...' | '..=') Expr? {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-FullRangeExpr ::= Expr ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
-OpenRangeExpr ::=      ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
+FullRangeExpr ::= Expr ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) | '..=' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
+OpenRangeExpr ::=      ( '..' (<<checkBraceAllowed>> Expr)? | '...' (<<checkBraceAllowed>> Expr) | '..=' (<<checkBraceAllowed>> Expr) ) { elementType = RangeExpr }
 
 IndexExpr ::= Expr IndexArg {
  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"

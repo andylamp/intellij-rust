@@ -211,11 +211,11 @@ class RsGotoTypeDeclarationTest : RsTestBase() {
         }
     """, """
         trait Foo {
-            type /*caret*/Bar;
+            type Bar;
             fn foo(&self) -> Self::Bar;
         }
         struct Baz;
-        struct Qwe;
+        struct /*caret*/Qwe;
         impl Foo for Baz {
             type Bar = Qwe;
 
@@ -226,6 +226,22 @@ class RsGotoTypeDeclarationTest : RsTestBase() {
 
         fn main() {
             let x = Baz.foo();
+        }
+    """)
+
+    fun `test impl trait`() = doTest("""
+        trait Foo {}
+        fn foo() -> impl Foo { unimplemented!() }
+
+        fn main() {
+            foo/*caret*/();
+        }
+    """, """
+        trait /*caret*/Foo {}
+        fn foo() -> impl Foo { unimplemented!() }
+
+        fn main() {
+            foo();
         }
     """)
 
