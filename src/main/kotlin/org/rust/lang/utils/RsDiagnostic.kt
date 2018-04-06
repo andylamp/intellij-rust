@@ -15,12 +15,14 @@ import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import com.intellij.xml.util.XmlStringUtil.escapeString
+import org.rust.ide.annotator.RsErrorAnnotator
 import org.rust.ide.annotator.fixes.*
+import org.rust.ide.inspections.RsExperimentalChecksInspection
+import org.rust.ide.inspections.RsTypeCheckInspection
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.StdKnownItems
-import org.rust.lang.core.resolve.withSubst
 import org.rust.lang.core.types.BoundElement
 import org.rust.lang.core.types.TraitRef
 import org.rust.lang.core.types.ty.*
@@ -35,7 +37,7 @@ private val MUT_REF_STR_TY = TyReference(TyStr, Mutability.MUTABLE)
 sealed class RsDiagnostic(
     val element: PsiElement,
     val endElement: PsiElement? = null,
-    val experimental: Boolean = false
+    val inspectionClass: Class<*> = RsErrorAnnotator::class.java
 ) {
     abstract fun prepare(): PreparedAnnotation
 
@@ -43,7 +45,7 @@ sealed class RsDiagnostic(
         element: PsiElement,
         private val expectedTy: Ty,
         private val actualTy: Ty
-    ) : RsDiagnostic(element, experimental = true) {
+    ) : RsDiagnostic(element, inspectionClass = RsTypeCheckInspection::class.java) {
         override fun prepare(): PreparedAnnotation {
             return PreparedAnnotation(
                 ERROR,
@@ -56,10 +58,23 @@ sealed class RsDiagnostic(
                     } else  if (element is RsElement) {
                         val items = StdKnownItems.relativeTo(element)
                         val lookup = ImplLookup(element.project, items)
-                        if (isFromActualImplForExpected(items, lookup)) {
+                        val canAddFromFix = isFromActualImplForExpected(items, lookup)
+                        if (canAddFromFix) {
                             add(ConvertToTyUsingFromTraitFix(element, expectedTy))
                         }
-                        if (isToOwnedImplWithExcpectedForActual(items, lookup)) {
+                        if (expectedTy is TyAdt && expectedTy.item == items.findResultItem()) {
+                            val (expOkTy, expErrTy) = expectedTy.typeArguments
+                            val resultErrTy = errTyOfTryFromActualImplForTy(expOkTy, items, lookup)
+                            if (resultErrTy != null && resultErrTy == expErrTy) {
+                                add(ConvertToTyUsingTryFromTraitFix(element, expOkTy))
+                            }
+                        } else if (!canAddFromFix) {
+                            val resultErrTy = errTyOfTryFromActualImplForTy(expectedTy, items, lookup)
+                            if (resultErrTy != null) {
+                                add(ConvertToTyUsingTryFromTraitAndUnpackFix(element, expectedTy, resultErrTy))
+                            }
+                        }
+                        if (isToOwnedImplWithExpectedForActual(items, lookup)) {
                             add(ConvertToOwnedTyFix(element, expectedTy))
                         }
                         val stringTy = items.findStringTy()
@@ -99,37 +114,45 @@ sealed class RsDiagnostic(
 
         private fun isFromActualImplForExpected(items: StdKnownItems, lookup: ImplLookup): Boolean {
             val fromTrait = items.findFromTrait() ?: return false
-            return lookup.select(TraitRef(expectedTy, fromTrait.withSubst(actualTy))).ok() != null
+            return lookup.canSelect(TraitRef(expectedTy, fromTrait.withSubst(actualTy)))
         }
 
-        private fun isToOwnedImplWithExcpectedForActual(items: StdKnownItems, lookup: ImplLookup): Boolean {
+        private fun errTyOfTryFromActualImplForTy(ty: Ty, items: StdKnownItems, lookup: ImplLookup): Ty? {
+            val fromTrait = items.findTryFromTrait() ?: return null
+            val result = lookup.selectProjectionStrict(TraitRef(ty, fromTrait.withSubst(actualTy)),
+                fromTrait.associatedTypesTransitively.find { it.name == "Error"} ?: return null)
+            return result.ok()?.value
+        }
+
+        private fun isToOwnedImplWithExpectedForActual(items: StdKnownItems, lookup: ImplLookup): Boolean {
             val toOwnedTrait = items.findToOwnedTrait() ?: return false
-            val result = lookup.selectProjection(TraitRef(actualTy, BoundElement(toOwnedTrait)),
-                toOwnedTrait.associatedTypesTransitively.find { it.name == "Owned" } ?: return false)
+            val result = lookup.selectProjectionStrictWithDeref(TraitRef(actualTy, BoundElement(toOwnedTrait)),
+                toOwnedTrait.findAssociatedType("Owned") ?: return false)
             return expectedTy == result.ok()?.value
         }
 
         private fun isToStringImplForActual(items: StdKnownItems, lookup: ImplLookup): Boolean {
             val toStringTrait = items.findToStringTrait() ?: return false
-            return lookup.select(TraitRef(actualTy, BoundElement(toStringTrait))).ok() != null
+            return lookup.canSelectWithDeref(TraitRef(actualTy, BoundElement(toStringTrait)))
         }
 
         private fun isTraitWithTySubstImplForActual(lookup: ImplLookup, trait: RsTraitItem?, ty: TyReference): Boolean =
-            trait != null && lookup.select(TraitRef(actualTy, trait.withSubst(ty.referenced))).ok() != null
+            trait != null && lookup.canSelectWithDeref(TraitRef(actualTy, trait.withSubst(ty.referenced)))
 
         private fun expectedFound(expectedTy: Ty, actualTy: Ty): String {
-            val expectedTyS = escapeTy(expectedTy.toString())
-            val actualTyS = escapeTy(actualTy.toString())
-            return "expected `$expectedTyS`, found `$actualTyS`"
+            return "expected `${expectedTy.escaped}`, found `${actualTy.escaped}`"
         }
+    }
 
-        // BACKCOMPAT: ???
-        // Fix for IntelliJ platform bug: https://youtrack.jetbrains.com/issue/IDEA-186991
-        // replace it with `escapeString()` after the end of support IDEs with the bug
-        private fun escapeTy(str: String): String = str
-            .replace("<", "&#60;")
-            .replace(">", "&#62;")
-            .replace("&", "&amp;")
+    class DerefError(
+        element: PsiElement,
+        val ty: Ty
+    ) : RsDiagnostic(element, inspectionClass = RsExperimentalChecksInspection::class.java) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0614,
+            "type ${ty.escaped} cannot be dereferenced"
+        )
     }
 
     class AccessError(
@@ -603,7 +626,7 @@ enum class RsErrorCode {
     E0308, E0379,
     E0403, E0407, E0415, E0424, E0426, E0428, E0449, E0463,
     E0569,
-    E0603, E0616, E0624;
+    E0603, E0614, E0616, E0624;
 
     val code: String
         get() = toString()
@@ -701,3 +724,13 @@ private val RsSelfParameter.canonicalDecl: String
         if (mutability.isMut) append("mut ")
         append("self")
     }
+
+// BACKCOMPAT: ???
+// Fix for IntelliJ platform bug: https://youtrack.jetbrains.com/issue/IDEA-186991
+// replace it with `escapeString()` after the end of support IDEs with the bug
+private fun escapeTy(str: String): String = str
+    .replace("<", "&#60;")
+    .replace(">", "&#62;")
+    .replace("&", "&amp;")
+
+private val Ty.escaped get() = escapeTy(toString())
