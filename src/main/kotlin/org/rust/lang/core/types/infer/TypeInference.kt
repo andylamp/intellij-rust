@@ -15,6 +15,7 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
+import org.rust.lang.core.resolve.Selection
 import org.rust.lang.core.resolve.SelectionResult
 import org.rust.lang.core.resolve.StdKnownItems
 import org.rust.lang.core.resolve.ref.*
@@ -618,7 +619,7 @@ private class RsFnInferenceContext(
             is RsMatchExpr -> inferMatchExprType(this, expected)
             is RsUnaryExpr -> inferUnaryExprType(this, expected)
             is RsBinaryExpr -> inferBinaryExprType(this)
-            is RsTryExpr -> inferTryExprType(this, expected)
+            is RsTryExpr -> inferTryExprType(this)
             is RsArrayExpr -> inferArrayType(this, expected)
             is RsRangeExpr -> inferRangeType(this)
             is RsIndexExpr -> inferIndexExprType(this)
@@ -1218,8 +1219,19 @@ private class RsFnInferenceContext(
         val op = expr.operatorType
         return when (op) {
             is BoolOp -> {
-                expr.left.inferType()
-                expr.right?.inferType()
+                val lhsType = expr.left.inferType()
+                if (op is OverloadableBinaryOperator) {
+                    val rhsType = expr.right?.inferType() ?: TyUnknown
+                    run {
+                        // TODO replace it via `selectOverloadedOp` and share the code with `AssignmentOp`
+                        // branch when cmp ops will become a real lang items in std
+                        val trait = items.findCoreItem("cmp::${op.traitName}") as? RsTraitItem
+                            ?: return@run SelectionResult.Err<Selection>()
+                        return@run lookup.select(TraitRef(lhsType, trait.withSubst(rhsType)))
+                    }.ok()?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
+                } else {
+                    expr.right?.inferTypeCoercableTo(lhsType)
+                }
                 TyBool
             }
             is ArithmeticOp -> {
@@ -1241,11 +1253,11 @@ private class RsFnInferenceContext(
         }
     }
 
-    private fun inferTryExprType(expr: RsTryExpr, expected: Ty?): Ty =
-        inferTryExprOrMacroType(expr.expr, expected, allowOption = true)
+    private fun inferTryExprType(expr: RsTryExpr): Ty =
+        inferTryExprOrMacroType(expr.expr, allowOption = true)
 
-    private fun inferTryExprOrMacroType(arg: RsExpr, expected: Ty?, allowOption: Boolean): Ty {
-        val base = arg.inferType(expected) as? TyAdt ?: return TyUnknown
+    private fun inferTryExprOrMacroType(arg: RsExpr, allowOption: Boolean): Ty {
+        val base = arg.inferType() as? TyAdt ?: return TyUnknown
         //TODO: make it work with generic `std::ops::Try` trait
         if (base.item == items.findResultItem() || (allowOption && base.item == items.findOptionItem())) {
             TypeInferenceMarks.questionOperator.hit()
@@ -1304,14 +1316,18 @@ private class RsFnInferenceContext(
         val tryArg = expr.macroCall.tryMacroArgument
         if (tryArg != null) {
             // See RsTryExpr where we handle the ? expression in a similar way
-            return inferTryExprOrMacroType(tryArg.expr, null, allowOption = false)
+            return inferTryExprOrMacroType(tryArg.expr, allowOption = false)
         }
 
         inferChildExprsRecursively(expr.macroCall)
         val vecArg = expr.macroCall.vecMacroArgument
         if (vecArg != null) {
-            val elementTypes = vecArg.exprList.map { ctx.getExprType(it) }
-            val elementType = getMoreCompleteType(elementTypes)
+            val elementType = if (vecArg.semicolon != null) {
+                vecArg.exprList.firstOrNull()?.inferType() ?: TyUnknown
+            } else {
+                val elementTypes = vecArg.exprList.map { ctx.getExprType(it) }
+                getMoreCompleteType(elementTypes)
+            }
             return items.findVecForElementTy(elementType)
         }
 
@@ -1321,6 +1337,9 @@ private class RsFnInferenceContext(
             name == "format" -> items.findStringTy()
             name == "format_args" -> items.findArgumentsTy()
             name == "unimplemented" || name == "unreachable" || name == "panic" -> TyNever
+            name == "write" || name == "writeln" -> {
+                (expr.macroCall.expansion?.singleOrNull() as? RsExpr)?.inferType() ?: TyUnknown
+            }
             expr.macroCall.formatMacroArgument != null || expr.macroCall.logMacroArgument != null -> TyUnit
 
             else -> TyUnknown

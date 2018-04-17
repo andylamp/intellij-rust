@@ -7,6 +7,8 @@ package org.rust.lang.core.type
 
 import org.rust.lang.core.psi.ext.ArithmeticAssignmentOp
 import org.rust.lang.core.psi.ext.ArithmeticOp
+import org.rust.lang.core.psi.ext.ComparisonOp
+import org.rust.lang.core.psi.ext.EqualityOp
 import org.rust.lang.core.types.ty.TyFloat
 import org.rust.lang.core.types.ty.TyInteger
 
@@ -129,6 +131,15 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             let x = vec!(1, 2u16, 4, 8);
             x;
           //^ Vec<u16>
+        }
+    """)
+
+    fun `test repeat vec!`() = stubOnlyTypeInfer("""
+    //- main.rs
+        fn main() {
+            let x = vec!(1u8, 2usize);
+            x;
+          //^ Vec<u8>
         }
     """)
 
@@ -427,14 +438,13 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             .forEach { (numeric, sign) -> doTestBinOp(numeric, sign, "0.0", "()") }
     }
 
-    // TODO lang attributes for cmp traits can't be collected correctly doe to `cfg_attr`
-    // TODO #[cfg_attr(stage0, lang = "ord")]
-//    fun `test all cmp ops with all numeric types`() {
-//        TyInteger.NAMES.permutations(ComparisonOp.values().map { it.sign })
-//            .forEach { (numeric, sign) -> doTestBinOp(numeric, sign, "0", "bool") }
-//        TyFloat.NAMES.permutations(ComparisonOp.values().map { it.sign })
-//            .forEach { (numeric, sign) -> doTestBinOp(numeric, sign, "0.0", "bool") }
-//    }
+    fun `test all cmp ops with all numeric types`() {
+        val signs = EqualityOp.values().map { it.sign } + ComparisonOp.values().map { it.sign }
+        TyInteger.NAMES.permutations(signs)
+            .forEach { (numeric, sign) -> doTestBinOp(numeric, sign, "0", "bool") }
+        TyFloat.NAMES.permutations(signs)
+            .forEach { (numeric, sign) -> doTestBinOp(numeric, sign, "0.0", "bool") }
+    }
 
     private fun <A, B> Collection<A>.permutations(other: Collection<B>): List<Pair<A, B>> {
         val result = ArrayList<Pair<A, B>>(size*other.size)
@@ -458,6 +468,17 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             let x = lhs $sign rhs;
             (x, rhs);
           //^ ($expectedOutputType, $lhsType)
+        }
+    """)
+
+    fun `test write macro`() = stubOnlyTypeInfer("""
+    //- main.rs
+        use std::fmt::Write;
+        fn main() {
+            let mut s = String::new();
+            let a = write!(s, "text");
+            a;
+          //^ Result<(), Error>
         }
     """)
 }
