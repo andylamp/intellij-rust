@@ -100,7 +100,7 @@ class RsPsiFactory(private val project: Project) {
 
     fun createStruct(text: String): RsStructItem =
         createFromText(text)
-            ?: error("Failed to create statement from text: `$text`")
+            ?: error("Failed to create struct from text: `$text`")
 
     fun createStatement(text: String): RsStmt =
         createFromText("fn main() { $text 92; }")
@@ -117,7 +117,7 @@ class RsPsiFactory(private val project: Project) {
     fun createMethodParam(text: String): PsiElement {
         val fnItem: RsFunction = createTraitMethodMember("fn foo($text);")
         return fnItem.selfParameter ?: fnItem.valueParameters.firstOrNull()
-            ?: error("Failed to create type from text: `$text`")
+            ?: error("Failed to create method param from text: `$text`")
     }
 
     fun createReferenceType(innerTypeText: String, mutable: Boolean): RsRefLikeType =
@@ -125,7 +125,7 @@ class RsPsiFactory(private val project: Project) {
 
     fun createModDeclItem(modName: String): RsModDeclItem =
         createFromText("mod $modName;")
-            ?: error("Failed to crate mod decl with name: `$modName`")
+            ?: error("Failed to create mod decl with name: `$modName`")
 
     fun createUseItem(text: String): RsUseItem =
         createFromText("use $text;")
@@ -133,7 +133,7 @@ class RsPsiFactory(private val project: Project) {
 
     fun createUseSpeck(text: String): RsUseSpeck =
         createFromText("use $text;")
-            ?: error("Failed to create use item from text: `$text`")
+            ?: error("Failed to create use speck from text: `$text`")
 
     fun createExternCrateItem(crateName: String): RsExternCrateItem =
         createFromText("extern crate $crateName;")
@@ -144,28 +144,23 @@ class RsPsiFactory(private val project: Project) {
             mod $modName {
                 $modText
             }"""
-        return createFromText(text) ?: error("Failed to create mod item from text: $modText")
+        return createFromText(text) ?: error("Failed to create mod item with name: `$modName` from text: `$modText`")
     }
 
-    fun createMembers(
-        traitMethods: List<RsFunction>,
-        traitTypeAliases: List<RsTypeAlias>,
-        traitConstants: List<RsConstant>,
-        subst: Substitution = emptySubstitution
-    ): RsMembers {
-        val members = (
-            traitConstants.map { "    const ${it.identifier.text}: ${it.typeReference?.substAndGetText(subst)} = unimplemented!();" } +
-                traitTypeAliases.map { "    type ${it.name} = ();" }
-            ).joinToString("\n")
+    fun createMembers(members: Collection<RsAbstractable>, subst: Substitution = emptySubstitution): RsMembers {
+        val body = members.joinToString(separator = "\n", transform = { when (it) {
+            is RsConstant ->
+                "    const ${it.identifier.text}: ${it.typeReference?.substAndGetText(subst)} = unimplemented!();"
+            is RsTypeAlias ->
+                "    type ${it.name} = ();"
+            is RsFunction ->
+                "    ${it.getSignatureText(subst) ?: ""}{\n        unimplemented!()\n    }"
+            else ->
+                error("Unknown trait member")
+        } })
 
-        val functions = traitMethods.map { "    ${it.getSignatureText(subst) ?: ""}{\n        unimplemented!()\n    }" }.joinToString("\n\n")
-        val text = "impl T for S {\n${when {
-            members.isEmpty() -> functions
-            functions.isEmpty() -> members
-            else -> members + "\n\n" + functions
-        }}\n}"
-        return createFromText(text)
-            ?: error("Failed to create an impl from text: `$text`")
+        val text = "impl T for S {$body}"
+        return createFromText(text) ?: error("Failed to create an impl from text: `$text`")
     }
 
     fun createTraitMethodMember(text: String): RsFunction {

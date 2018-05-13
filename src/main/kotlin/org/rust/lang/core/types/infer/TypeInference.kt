@@ -129,7 +129,18 @@ class RsInferenceContext(
             val (retTy, expr) = when (element) {
                 is RsConstant -> element.typeReference?.type to element.expr
                 is RsArrayType -> TyInteger.USize to element.expr
-                is RsVariantDiscriminant -> TyInteger.ISize to element.expr
+                is RsVariantDiscriminant -> {
+                    // A repr attribute like #[repr(u16)] changes the discriminant type of an enum
+                    // https://doc.rust-lang.org/nomicon/other-reprs.html#repru-repri
+                    val enum = element.ancestorStrict<RsEnumItem>()
+                    val reprType = enum?.queryAttributes?.reprAttributes
+                        ?.flatMap { it.metaItemArgs?.metaItemList?.asSequence() ?: emptySequence() }
+                        ?.mapNotNull { TyInteger.fromName(it.referenceName) }
+                        ?.lastOrNull()
+                        ?: TyInteger.ISize
+
+                    reprType to element.expr
+                }
                 else -> error("Type inference is not implemented for PSI element of type " +
                         "`${element.javaClass}` that implement `RsInferenceContextOwner`")
             }
@@ -1323,8 +1334,10 @@ private class RsFnInferenceContext(
         val vecArg = expr.macroCall.vecMacroArgument
         if (vecArg != null) {
             val elementType = if (vecArg.semicolon != null) {
-                vecArg.exprList.firstOrNull()?.inferType() ?: TyUnknown
+                // vec![value; repeat]
+                vecArg.exprList.firstOrNull()?.let { ctx.getExprType(it) } ?: TyUnknown
             } else {
+                // vec![value1, value2, value3]
                 val elementTypes = vecArg.exprList.map { ctx.getExprType(it) }
                 getMoreCompleteType(elementTypes)
             }
