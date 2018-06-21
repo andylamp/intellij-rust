@@ -30,12 +30,12 @@ data class RustToolchain(val location: Path) {
     fun queryVersionsSync(): VersionInfo = VersionInfo(scrapeRustcVersion(pathToExecutable(RUSTC)))
 
     fun rawCargo(): Cargo =
-        Cargo(pathToExecutable(CARGO), pathToExecutable(RUSTC))
+        Cargo(pathToExecutable(CARGO), pathToExecutable(RUSTC), pathToExecutable(RUSTFMT))
 
     fun cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
         val hasXargoToml = cargoProjectDirectory?.resolve(XARGO_TOML)?.let { Files.isRegularFile(it) } == true
         val cargoWrapper = if (hasXargoToml && hasExecutable(XARGO)) XARGO else CARGO
-        return Cargo(pathToExecutable(cargoWrapper), pathToExecutable(RUSTC))
+        return Cargo(pathToExecutable(cargoWrapper), pathToExecutable(RUSTC), pathToExecutable(RUSTFMT))
     }
 
     fun rustup(cargoProjectDirectory: Path): Rustup? =
@@ -62,6 +62,7 @@ data class RustToolchain(val location: Path) {
 
     companion object {
         private val RUSTC = "rustc"
+        private val RUSTFMT = "rustfmt"
         private val CARGO = "cargo"
         private val RUSTUP = "rustup"
         private val XARGO = "xargo"
@@ -79,10 +80,11 @@ data class RustToolchain(val location: Path) {
 
 data class RustcVersion(
     val semver: SemVer?,
+    val host: String?,
     val nightlyCommitHash: String?
 ) {
     companion object {
-        val UNKNOWN = RustcVersion(null, null)
+        val UNKNOWN = RustcVersion(null, null, null)
     }
 }
 
@@ -104,15 +106,17 @@ private fun scrapeRustcVersion(rustc: Path): RustcVersion {
     //  ```
     val commitHashRe = "commit-hash: (.*)".toRegex()
     val releaseRe = """release: (\d+\.\d+\.\d+)(.*)""".toRegex()
+    val hostRe = "host: (.*)".toRegex()
     val find = { re: Regex -> lines.mapNotNull { re.matchEntire(it) }.firstOrNull() }
 
     val commitHash = find(commitHashRe)?.let { it.groups[1]!!.value }
     val releaseMatch = find(releaseRe) ?: return RustcVersion.UNKNOWN
+    val hostText = find(hostRe)?.groups?.get(1)?.value ?: return RustcVersion.UNKNOWN
     val versionText = releaseMatch.groups[1]?.value ?: return RustcVersion.UNKNOWN
 
     val semVer = SemVer.parseFromText(versionText) ?: return RustcVersion.UNKNOWN
     val isStable = releaseMatch.groups[2]?.value.isNullOrEmpty()
-    return RustcVersion(semVer, if (isStable) null else commitHash)
+    return RustcVersion(semVer, hostText, if (isStable) null else commitHash)
 }
 
 private object Suggestions {
