@@ -116,23 +116,44 @@ fake Attr ::= MetaItem {
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
 }
 
-InnerAttr ::= '#' '!' '[' MetaItem ']' {
+InnerAttr ::= '#' '!' '[' AttrUpper {
   extends = Attr
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
-OuterAttr ::= '#'     '[' MetaItem ']' {
+OuterAttr ::= '#'     '[' AttrUpper {
   extends = Attr
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
+private AttrUpper ::= MetaItemWithoutTT ']' |  MetaItemWithTT ']'
 private OuterAttr_first ::= '#'
 
-MetaItem ::= identifier [ '=' (LitExpr | PathIdent) | MetaItemArgs ] {
-  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement" ]
+fake MetaItem ::= identifier [ '=' LitExpr | MetaItemArgs ] | CompactTT {
+  implements = [ "org.rust.lang.core.psi.ext.RsWeakReferenceElement"
+                 "com.intellij.psi.ContributedReferenceHost" ]
   mixin = "org.rust.lang.core.psi.ext.RsMetaItemImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsMetaItemStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
-MetaItemArgs ::= '(' [ <<comma_separated_list (MetaItem | LitExpr)>> ] ')' {
+
+// #[test]
+//   ~~~~
+// #[derive(Debug)]
+//   ~~~~~~~~~~~~~
+// #![crate_type = "lib"]
+//    ~~~~~~~~~~~~~~~~~~
+MetaItemWithoutTT ::= identifier [ '=' LitExpr | MetaItemArgs ] { elementType = MetaItem }
+
+// #[some::path]
+//   ~~~~~~~~~~
+// #[assert_instr(add_a.b)]
+//                ~~~~~~~
+// #[attr(value = C)]
+//        ~~~~~~~~~~
+// #[attr(foo::{bar, baz}, qwe())]
+//        ~~~~~~~~~~~~~~~~~~~~~~~
+MetaItemWithTT ::= CompactTT { elementType = MetaItem }
+
+MetaItemArgs ::= '(' ( [ <<comma_separated_list (LitExpr | MetaItemWithoutTT )>> ] ')' |  MetaItemWithTT ')' ) {
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -242,7 +263,7 @@ private Item ::= Constant
                | EnumItem
                | UseItem
                | ExternCrateItem
-               | MacroDefinition
+               | Macro
                | MacroCall
 
 private Item_with_recover ::= !('}' | <<eof>>) Item {
@@ -1109,20 +1130,20 @@ LitExpr ::= OuterAttr*
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-MacroDefinition ::= AttrsAndVis "macro_rules" '!' identifier MacroDefinitionBody <<macroSemicolon>>{
+Macro ::= AttrsAndVis "macro_rules" '!' identifier MacroBody <<macroSemicolon>>{
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsQualifiedNamedElement" ]
-  extends = "org.rust.lang.core.psi.ext.RsMacroDefinitionImplMixin"
-  stubClass = "org.rust.lang.core.stubs.RsMacroDefinitionStub"
+  extends = "org.rust.lang.core.psi.ext.RsMacroImplMixin"
+  stubClass = "org.rust.lang.core.stubs.RsMacroStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
   pin = 2
 }
 
-MacroDefinitionBody ::= <<any_braces (MacroDefinitionCase ';'?)*>>
+MacroBody ::= <<any_braces (MacroCase ';'?)*>>
 
-MacroDefinitionCase ::= MacroPattern '=>' MacroExpansion { pin = 1 }
+MacroCase ::= MacroPattern '=>' MacroExpansion { pin = 1 }
 
 MacroPattern ::= <<any_braces MacroPatternContents >>
 MacroPatternContents ::=
@@ -1168,7 +1189,7 @@ MacroCallNoSemicolons ::= MacroHead {
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
 }
 
-private MacroHead ::= AttrsAndVis &(identifier '!') (SpecialMacro | identifier '!' identifier? MacroArgument)
+private MacroHead ::= AttrsAndVis &(identifier '!') (SpecialMacro | CommonMacro)
 
 MacroArgument ::= <<any_braces CompactTT>>
 // `CompactTT` differs from `TT` in that it does not create an additional `TT` nodes for each unpaired token
@@ -1178,7 +1199,7 @@ CompactTT ::= (<<any_braces CompactTT>> | <<unpairedToken>>)*
 //noinspection BnfUnusedRule
 TT ::= <<any_braces TT*>> | <<unpairedToken>>
 
-
+private CommonMacro ::= identifier '!' identifier? MacroArgument { pin = 2 }
 private SpecialMacro ::= TryMacro | FormatLikeMacro | AssertMacro | VecMacro | LogMacro
 
 private TryMacro ::= "try" '!' TryMacroArgument { pin = 2 }
@@ -1206,7 +1227,7 @@ VecMacroArgument ::= <<any_braces ArrayInitializer >>
 
 private LogMacro ::=
   ( "trace" | "log" | "warn" | "debug" | "error" | "info" )
-  '!' LogMacroArgument { pin = 2 }
+  '!' LogMacroArgument
 
 LogMacroArgument ::=
   <<any_braces (('target' ':' Expr ','?)? (<<comma_separated_list FormatMacroArg>>)?)>>

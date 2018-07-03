@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2018/06/06/changelog-75.html">
-                 https://intellij-rust.github.io/2018/06/06/changelog-75.html
+        <a href="https://intellij-rust.github.io/2018/06/20/changelog-76.html">
+                 https://intellij-rust.github.io/2018/06/20/changelog-76.html
     ]]>
     </change-notes>
 
@@ -162,6 +162,11 @@
 
         <codeInsight.implementMethod language="Rust"
                                      implementationClass="org.rust.lang.refactoring.implementMembers.ImplementMembersHandler"/>
+
+        <!-- Resolve -->
+
+        <psi.referenceContributor language="Rust"
+                                  implementation="org.rust.lang.core.resolve.ref.RsMetaItemReferenceContributor"/>
 
         <!-- Completion -->
 
@@ -592,6 +597,7 @@
 
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsImplIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsLangItemIndex"/>
+        <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsMacroIndex"/>
 
         <!-- Notification Providers -->
 
@@ -628,6 +634,13 @@
             <implementation-class>org.rust.ide.update.UpdateComponent</implementation-class>
         </component>
     </application-components>
+
+    <project-components>
+        <component>
+            <interface-class>org.rust.lang.core.psi.RsPsiManager</interface-class>
+            <implementation-class>org.rust.lang.core.psi.RsPsiManagerImpl</implementation-class>
+        </component>
+    </project-components>
 
     <actions>
         <action id="Rust.NewRustFile"

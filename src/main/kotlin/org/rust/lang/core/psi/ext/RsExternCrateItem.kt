@@ -16,6 +16,11 @@ import org.rust.lang.core.resolve.ref.RsExternCrateReferenceImpl
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.stubs.RsExternCrateItemStub
 
+val RsExternCrateItem.nameWithAlias: String get() = alias?.name ?: referenceName
+
+val RsExternCrateItem.hasMacroUse: Boolean get() =
+    queryAttributes.hasAttribute("macro_use")
+
 abstract class RsExternCrateItemImplMixin : RsStubbedNamedElementImpl<RsExternCrateItemStub>,
                                             RsExternCrateItem {
 
@@ -33,8 +38,5 @@ abstract class RsExternCrateItemImplMixin : RsStubbedNamedElementImpl<RsExternCr
 
     override fun getIcon(flags: Int) = RsIcons.CRATE
 
-    override fun getContext() = ExpansionResult.getContextImpl(this)
+    override fun getContext(): PsiElement? = ExpansionResult.getContextImpl(this)
 }
-
-val RsExternCrateItem.hasMacroUse: Boolean get() =
-    queryAttributes.hasAttribute("macro_use")
