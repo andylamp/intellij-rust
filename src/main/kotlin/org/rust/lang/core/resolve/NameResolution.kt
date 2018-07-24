@@ -7,6 +7,8 @@
 
 package org.rust.lang.core.resolve
 
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.psi.PsiElement
@@ -21,11 +23,16 @@ import org.rust.lang.core.resolve.NameResolutionTestmarks.missingMacroUse
 import org.rust.lang.core.resolve.NameResolutionTestmarks.selfInGroup
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
 import org.rust.lang.core.resolve.indexes.RsMacroIndex
-import org.rust.lang.core.resolve.ref.MethodCallee
+import org.rust.lang.core.resolve.ref.DotExprResolveVariant
+import org.rust.lang.core.resolve.ref.FieldResolveVariant
+import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
 import org.rust.lang.core.types.infer.foldTyTypeParameterWith
 import org.rust.lang.core.types.infer.substitute
+import org.rust.lang.core.types.toTypeSubst
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.openapiext.Testmark
@@ -70,19 +77,29 @@ import org.rust.stdext.buildList
 //     a code fragment in a temporary file and attaching it to some existing file. See the usages of
 //     [RsCodeFragmentFactory]
 
+private val LOG = Logger.getInstance("org.rust.lang.core.resolve.NameResolution")
+
+fun processDotExprResolveVariants(
+    lookup: ImplLookup,
+    receiverType: Ty,
+    processor: (DotExprResolveVariant) -> Boolean
+): Boolean {
+    if (processFieldExprResolveVariants(lookup, receiverType, processor)) return true
+    if (processMethodDeclarationsWithDeref(lookup, receiverType) { processor(it) }) return true
+
+    return false
+}
+
 fun processFieldExprResolveVariants(
     lookup: ImplLookup,
     receiverType: Ty,
-    isCompletion: Boolean,
-    processor: RsResolveProcessor
+    processor: (FieldResolveVariant) -> Boolean
 ): Boolean {
-    for (ty in lookup.coercionSequence(receiverType)) {
+    for ((i, ty) in lookup.coercionSequence(receiverType).withIndex()) {
         if (ty !is TyAdt || ty.item !is RsStructItem) continue
-        if (processFieldDeclarations(ty.item, processor)) return true
+        if (processFieldDeclarations(ty.item) { processor(FieldResolveVariant(it.name, it.element!!, ty, i)) }) return true
     }
-    if (isCompletion && processMethodDeclarationsWithDeref(lookup, receiverType, processor)) {
-        return true
-    }
+
     return false
 }
 
@@ -120,7 +137,8 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
 
     val explicitPath = modDecl.pathAttribute
     if (explicitPath != null) {
-        val vFile = dir.virtualFile.findFileByRelativePath(FileUtil.toSystemIndependentName(explicitPath)) ?: return false
+        val vFile = dir.virtualFile.findFileByRelativePath(FileUtil.toSystemIndependentName(explicitPath))
+            ?: return false
         val mod = vFile.toPsiFile(modDecl.project)?.rustFile ?: return false
 
         val name = modDecl.name ?: return false
@@ -183,14 +201,15 @@ fun processExternCrateResolveVariants(crate: RsExternCrateItem, isCompletion: Bo
     return false
 }
 
-private val RsPath.qualifier: RsPath? get() {
-    path?.let { return it }
-    var ctx = context
-    while (ctx is RsPath) {
-        ctx = ctx.context
+private val RsPath.qualifier: RsPath?
+    get() {
+        path?.let { return it }
+        var ctx = context
+        while (ctx is RsPath) {
+            ctx = ctx.context
+        }
+        return (ctx as? RsUseSpeck)?.qualifier
     }
-    return (ctx as? RsUseSpeck)?.qualifier
-}
 
 fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
 
@@ -207,7 +226,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     if (qualifier != null) {
         val primitiveType = TyPrimitive.fromPath(qualifier)
         if (primitiveType != null) {
-            val selfSubst = mapOf(TyTypeParameter.self() to primitiveType)
+            val selfSubst = mapOf(TyTypeParameter.self() to primitiveType).toTypeSubst()
             if (processAssociatedItemsWithSelfSubst(lookup, primitiveType, ns, selfSubst, processor)) return true
         }
 
@@ -239,13 +258,13 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
                     // it means that all possible `TyInfer` has already substituted (with `_`)
                     subst
                 } else {
-                    subst.mapValues { (_, v) -> v.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
+                    subst.mapTypeValues { (_, v) -> v.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
                 }
                 base.declaredType.substitute(realSubst)
             }
             val isSelf = qualifier.hasColonColon || !qualifier.hasCself
             val selfSubst = if (isSelf && base !is RsTraitItem) {
-                mapOf(TyTypeParameter.self() to selfTy)
+                mapOf(TyTypeParameter.self() to selfTy).toTypeSubst()
             } else {
                 emptySubstitution
             }
@@ -257,7 +276,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     if (typeQual != null) {
         // <T as Trait>::Item
         val trait = typeQual.traitRef?.resolveToBoundTrait ?: return false
-        val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type)
+        val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type).toTypeSubst()
         val subst = trait.subst.substituteInValues(selfSubst) + selfSubst
         if (processAllWithSubst(trait.element.members?.typeAliasList.orEmpty(), subst, processor)) return true
     }
@@ -284,7 +303,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     // Paths in use items are implicitly global.
     if (path.hasColonColon || path.contextStrict<RsUseItem>() != null) {
         if (crateRoot != null) {
-            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor)) return true
+            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor, true)) return true
         }
         return false
     }
@@ -480,16 +499,17 @@ private fun visibleMacrosInternal(scope: RsItemsOwner): List<RsMacro> {
 }
 
 private fun exportedMacros(scope: RsFile): List<RsMacro> {
-    check(scope.isCrateRoot)
+    if (!scope.isCrateRoot) {
+        LOG.warn("`${scope.virtualFile}` should be crate root")
+        return emptyList()
+    }
     return CachedValuesManager.getCachedValue(scope) {
         val macros = exportedMacrosInternal(scope)
-        CachedValueProvider.Result.create(macros, PsiModificationTracker.MODIFICATION_COUNT)
+        CachedValueProvider.Result.create(macros, scope.project.rustStructureModificationTracker)
     }
 }
 
 private fun exportedMacrosInternal(scope: RsFile): List<RsMacro> {
-    check(scope.isCrateRoot)
-
     val allExportedMacros = RsMacroIndex.allExportedMacros(scope.project)
     return buildList {
         addAll(allExportedMacros[scope].orEmpty())
@@ -549,7 +569,7 @@ private fun reexportedMacros(item: RsExternCrateItem): List<RsMacro>? {
 private fun collectExportedMacros(
     useItem: RsUseItem,
     exportingMacrosCrates: Map<String, RsMod>
-) : List<RsMacro> {
+): List<RsMacro> {
     return buildList {
         val root = useItem.useSpeck ?: return@buildList
 
@@ -606,7 +626,7 @@ private fun processFieldDeclarations(struct: RsFieldsOwner, processor: RsResolve
 private fun processMethodDeclarationsWithDeref(lookup: ImplLookup, receiver: Ty, processor: RsMethodResolveProcessor): Boolean {
     return lookup.coercionSequence(receiver).withIndex().any { (i, ty) ->
         val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, impl) ->
-            element is RsFunction && !element.isAssocFn && processor(MethodCallee(name, element, impl, ty, i))
+            element is RsFunction && !element.isAssocFn && processor(MethodResolveVariant(name, element, impl, ty, i))
         }
         processAssociatedItems(lookup, ty, VALUES, methodProcessor)
     }
@@ -658,11 +678,10 @@ private fun processAssociatedItems(
         }
 
         if (Namespace.Values in ns) {
-            if (processMembersWithDefaults({ it.functionList })) return true
-            if (processMembersWithDefaults({ it.constantList })) return true
+            if (processMembersWithDefaults { it.expandedMembers.functionsAndConstants }) return true
         }
         if (Namespace.Types in ns) {
-            if (processMembersWithDefaults({ it.typeAliasList })) return true
+            if (processMembersWithDefaults { it.expandedMembers.types }) return true
         }
         return false
     }
@@ -838,6 +857,7 @@ private fun walkUp(
     var cameFrom = start
     var scope = start.context as RsElement?
     while (scope != null) {
+        ProgressManager.checkCanceled()
         if (processor(cameFrom, scope)) return true
         if (stopAfter(scope)) break
         cameFrom = scope

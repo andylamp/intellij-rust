@@ -31,6 +31,9 @@ class RsHighlightingPerformanceTest : RustWithToolchainTestBase() {
     fun `test highlighting mysql_async`() =
         repeatTest { highlightProjectFile("mysql_async", "https://github.com/blackbeam/mysql_async", "src/conn/mod.rs") }
 
+    fun `test highlighting mysql_async 2`() =
+        repeatTest { highlightProjectFile("mysql_async", "https://github.com/blackbeam/mysql_async", "src/connection_like/mod.rs") }
+
     private fun repeatTest(f: () -> Timings) {
         var result = Timings()
         println("${name.substring("test ".length)}:")
@@ -73,15 +76,18 @@ class RsHighlightingPerformanceTest : RustWithToolchainTestBase() {
             refs.forEach { it.reference.resolve() }
         }
 
-        val stmt = myFixture.file.descendantsOfType<RsFunction>().asSequence()
-            .mapNotNull { it.block?.stmtList?.lastOrNull() }.first()
-        myFixture.editor.caretModel.moveToOffset(stmt.textOffset)
-        myFixture.type("2+2;")
-        PsiDocumentManager.getInstance(project).commitAllDocuments() // process PSI modification events
+        myFixture.file.descendantsOfType<RsFunction>()
+            .asSequence()
+            .mapNotNull { it.block?.stmtList?.lastOrNull() }
+            .forEach { stmt ->
+                myFixture.editor.caretModel.moveToOffset(stmt.textOffset)
+                myFixture.type("2+2;")
+                PsiDocumentManager.getInstance(project).commitAllDocuments() // process PSI modification events
 
-        timings.measure("resolve_after_typing") {
-            refs.forEach { it.reference.resolve() }
-        }
+                timings.measureAverage("resolve_after_typing") {
+                    refs.forEach { it.reference.resolve() }
+                }
+            }
 
         return timings
     }

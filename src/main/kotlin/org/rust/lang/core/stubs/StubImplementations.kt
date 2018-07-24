@@ -33,7 +33,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 133
+        override fun getStubVersion(): Int = 136
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -118,6 +118,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "SELF_PARAMETER" -> RsSelfParameterStub.Type
     "TYPE_PARAMETER_LIST" -> RsPlaceholderStub.Type("TYPE_PARAMETER_LIST", ::RsTypeParameterListImpl)
     "TYPE_PARAMETER" -> RsTypeParameterStub.Type
+    "LIFETIME" -> RsLifetimeStub.Type
     "LIFETIME_PARAMETER" -> RsLifetimeParameterStub.Type
     "TYPE_ARGUMENT_LIST" -> RsPlaceholderStub.Type("TYPE_ARGUMENT_LIST", ::RsTypeArgumentListImpl)
     "ASSOC_TYPE_BINDING" -> RsAssocTypeBindingStub.Type
@@ -133,7 +134,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "MACRO" -> RsMacroStub.Type
     "MACRO_CALL" -> RsMacroCallStub.Type
 
-    "INNER_ATTR" -> RsPlaceholderStub.Type("INNER_ATTR", ::RsInnerAttrImpl)
+    "INNER_ATTR" -> RsInnerAttrStub.Type
     "OUTER_ATTR" -> RsPlaceholderStub.Type("OUTER_ATTR", ::RsOuterAttrImpl)
 
     "META_ITEM" -> RsMetaItemStub.Type
@@ -944,6 +945,31 @@ class RsArrayTypeStub(
     }
 }
 
+class RsLifetimeStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    override val name: String?
+) : StubBase<RsLifetime>(parent, elementType),
+    RsNamedStub {
+
+    object Type : RsStubElementType<RsLifetimeStub, RsLifetime>("LIFETIME") {
+        override fun createPsi(stub: RsLifetimeStub) =
+            RsLifetimeImpl(stub, this)
+
+        override fun createStub(psi: RsLifetime, parentStub: StubElement<*>?) =
+            RsLifetimeStub(parentStub, this, psi.referenceName)
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
+            RsLifetimeStub(parentStub, this,
+                dataStream.readNameAsString()
+            )
+
+        override fun serialize(stub: RsLifetimeStub, dataStream: StubOutputStream) =
+            with(dataStream) {
+                writeName(stub.name)
+            }
+    }
+}
+
 class RsLifetimeParameterStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val name: String?
@@ -1032,6 +1058,27 @@ class RsMacroCallStub(
             RsMacroCallStub(parentStub, this, psi.macroName, psi.macroBody)
 
         override fun indexStub(stub: RsMacroCallStub, sink: IndexSink) = Unit
+    }
+}
+
+class RsInnerAttrStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>
+) : StubBase<RsInnerAttr>(parent, elementType) {
+
+    object Type : RsStubElementType<RsInnerAttrStub, RsInnerAttr>("INNER_ATTR") {
+        override fun createPsi(stub: RsInnerAttrStub): RsInnerAttr = RsInnerAttrImpl(stub, this)
+
+        override fun serialize(stub: RsInnerAttrStub, dataStream: StubOutputStream) {}
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsInnerAttrStub =
+            RsInnerAttrStub(parentStub, this)
+
+        override fun createStub(psi: RsInnerAttr, parentStub: StubElement<*>?): RsInnerAttrStub =
+            RsInnerAttrStub(parentStub, this)
+
+        override fun indexStub(stub: RsInnerAttrStub, sink: IndexSink) {
+            sink.indexInnerAttr(stub)
+        }
     }
 }
 

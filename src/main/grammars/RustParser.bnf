@@ -85,7 +85,7 @@
     elementType(".+BinExpr") = BinaryExpr
     elementType(".+BinOp") = BinaryOp
 
-    extends("Pat(Wild|Ref|Tup|Vec|Macro|Struct|Enum|Ident|Range|Uniq|QualPath|Const)") = Pat
+    extends("Pat(Wild|Ref|Tup|Slice|Macro|Struct|TupleStruct|Ident|Range|Uniq|QualPath|Const)") = Pat
 
     generateTokenAccessors=true
 
@@ -111,17 +111,16 @@ File ::= [ SHEBANG_LINE ] InnerAttr* Items
 // Attributes
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-fake Attr ::= MetaItem {
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
-}
-
 InnerAttr ::= '#' '!' '[' AttrUpper {
-  extends = Attr
+  implements = [ "org.rust.lang.core.psi.ext.RsAttr" ]
+  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
+  stubClass = "org.rust.lang.core.stubs.RsInnerAttrStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 OuterAttr ::= '#'     '[' AttrUpper {
-  extends = Attr
+  implements = [ "org.rust.lang.core.psi.ext.RsAttr" ]
+  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
+  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 private AttrUpper ::= MetaItemWithoutTT ']' |  MetaItemWithTT ']'
@@ -168,7 +167,7 @@ private PathIdentInner ::= !("union" identifier) identifier | self | super | 'Se
 
 fake Path ::= (Path '::' | '::' | TypeQual)? PathIdentInner PathTypeArguments? {
   implements = [ "org.rust.lang.core.psi.ext.RsPathReferenceElement"
-                 "org.rust.lang.core.macros.ExpansionResult" ]
+                 "org.rust.lang.core.macros.RsExpandedElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsPathImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsPathStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -279,6 +278,8 @@ private Items ::= Item_with_recover*
 Lifetime ::= QUOTE_IDENTIFIER {
   implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsLifetimeImplMixin"
+  stubClass = "org.rust.lang.core.stubs.RsLifetimeStub"
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -420,10 +421,10 @@ Function ::= OuterAttr*
 Pat ::= PatWild
       | PatRef
       | PatTup
-      | PatVec
+      | PatSlice
       | PatMacro
       | PatStruct
-      | PatEnum
+      | PatTupleStruct
       | PatIdent
       | (PatConst !('..' | '...' | '..='))
       | PatRange
@@ -444,7 +445,7 @@ PatUniq ::= box Pat
 PatIdent ::= PatBinding [ '@' Pat ]
 
 PatStruct ::= PathGenericArgsWithColonsNoTypeQual '{' PatField_with_recover* '..'? '}'
-PatEnum   ::= PathGenericArgsWithColonsNoTypeQual '(' SeqPat ')'
+PatTupleStruct   ::= PathGenericArgsWithColonsNoTypeQual '(' SeqPat ')'
 
 // TODO: actual recover
 private Pat_with_recover ::= Pat (',' | &(')' | ']' | '..'))
@@ -454,7 +455,7 @@ PatConst ::= PathExpr | LitExpr | &('-' LitExpr) UnaryExpr
 PatRange ::= PatConst ('..' | '...' | '..=') PatConst { pin = 2 }
 
 PatTup ::= '(' SeqPat ')'
-PatVec ::= '[' SeqPat ']'
+PatSlice ::= '[' SeqPat ']'
 // NB: there are `[x, .. , y]` and `[x, z.. , y]`
 private SeqPat ::= Pat_with_recover* ['..' [',' Pat_with_recover+] ]
 
@@ -478,7 +479,7 @@ Constant ::= OuterAttr* default_? Vis? (static mut? | const) identifier TypeAscr
                  "org.rust.lang.core.psi.ext.RsItemElement"
                  "org.rust.lang.core.psi.ext.RsAbstractable"
                  "org.rust.lang.core.psi.ext.RsInferenceContextOwner"
-                 "org.rust.lang.core.macros.ExpansionResult" ]
+                 "org.rust.lang.core.macros.RsExpandedElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsConstantImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsConstantStub"
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
@@ -880,7 +881,7 @@ Expr ::= RetExpr
        | UnaryExpr
        | TryExpr
        | AtomExpr {
-  implements = "org.rust.lang.core.macros.ExpansionResult"
+  implements = "org.rust.lang.core.macros.RsExpandedElement"
   mixin = "org.rust.lang.core.psi.ext.RsExprMixin"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
 }
@@ -1123,6 +1124,8 @@ LitExpr ::= OuterAttr*
   | INTEGER_LITERAL | FLOAT_LITERAL
   | BOOL_LITERAL) {
  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+ implements = "com.intellij.psi.PsiLanguageInjectionHost"
+ mixin = "org.rust.lang.core.psi.ext.RsLitExprMixin"
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1175,7 +1178,7 @@ MacroExpansionGroupSeparator ::= <<macroBindingGroupSeparatorToken>>
 MacroCall ::= MacroHead <<macroSemicolon>> {
   implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement"
                  "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
-                 "org.rust.lang.core.macros.ExpansionResult" ]
+                 "org.rust.lang.core.macros.RsExpandedElement" ]
   pin = 2
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
   mixin = "org.rust.lang.core.psi.ext.RsMacroCallImplMixin"

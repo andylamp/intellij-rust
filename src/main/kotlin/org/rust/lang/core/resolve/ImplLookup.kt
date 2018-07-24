@@ -15,8 +15,7 @@ import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.indexes.RsImplIndex
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
 import org.rust.lang.core.resolve.ref.resolvePath
-import org.rust.lang.core.types.BoundElement
-import org.rust.lang.core.types.TraitRef
+import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.*
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
@@ -24,8 +23,8 @@ import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.core.types.ty.TyFloat.F32
 import org.rust.lang.core.types.ty.TyFloat.F64
 import org.rust.lang.core.types.ty.TyInteger.*
-import org.rust.lang.core.types.type
 import org.rust.openapiext.ProjectCache
+import org.rust.openapiext.testAssert
 import org.rust.stdext.buildSet
 import org.rust.stdext.zipValues
 import kotlin.LazyThreadSafetyMode.NONE
@@ -136,7 +135,7 @@ class ImplLookup(
         ArithmeticAssignmentOp.values().mapNotNull { RsLangItemIndex.findLangItem(project, it.itemName, it.modName) }
     }
     private val comparisionOps by lazy(NONE) {
-        listOfNotNull (
+        listOfNotNull(
             items.findPartialOrdTrait(),
             items.findPartialEqTrait()
         )
@@ -213,12 +212,12 @@ class ImplLookup(
                 ty.item == items.findCoreItem("slice::Iter") -> {
                     val trait = items.findIteratorTrait() ?: return emptyList()
                     listOf(trait.substAssocType("Item",
-                        TyReference(ty.typeParameterValues.valueByName("T"), IMMUTABLE)))
+                        TyReference(ty.typeParameterValues.typeByName("T"), IMMUTABLE)))
                 }
                 ty.item == items.findCoreItem("slice::IterMut") -> {
                     val trait = items.findIteratorTrait() ?: return emptyList()
                     listOf(trait.substAssocType("Item",
-                        TyReference(ty.typeParameterValues.valueByName("T"), MUTABLE)))
+                        TyReference(ty.typeParameterValues.typeByName("T"), MUTABLE)))
                 }
                 else -> emptyList()
             }
@@ -289,7 +288,8 @@ class ImplLookup(
 
     private fun findSimpleImpls(selfTy: Ty): Collection<RsImplItem> {
         return RsImplIndex.findPotentialImpls(project, selfTy).mapNotNull { impl ->
-            val subst = impl.generics.associate { it to ctx.typeVarForParam(it) }
+            val subst = impl.generics.associate { it to ctx.typeVarForParam(it) }.toTypeSubst()
+            // TODO: take into account the lifetimes (?)
             val formalSelfTy = impl.typeReference?.type?.substitute(subst) ?: return@mapNotNull null
             impl.takeIf { ctx.canCombineTypes(formalSelfTy, selfTy) }
         }
@@ -401,7 +401,7 @@ class ImplLookup(
             }
             ref.selfTy is TyAnon -> {
                 ref.selfTy.getTraitBoundsTransitively().find { it.element == element }
-                    ?.let { setOf(SelectionCandidate.TypeParameter(it)) } ?: emptySet()
+                    ?.let { setOf(SelectionCandidate.TraitObject) } ?: emptySet()
             }
             else -> buildSet {
                 addAll(assembleImplCandidates(ref))
@@ -409,10 +409,10 @@ class ImplLookup(
                 if (ref.selfTy is TyFunction && element in fnTraits) add(SelectionCandidate.Closure)
                 if (ref.selfTy is TyTraitObject) {
                     ref.selfTy.trait.flattenHierarchy.find { it.element == ref.trait.element }
-                        ?.let { add(SelectionCandidate.TypeParameter(it)) }
+                        ?.let { add(SelectionCandidate.TraitObject) }
                 }
                 getHardcodedImpls(ref.selfTy).filter { be ->
-                    be.element == element && ctx.probe { ctx.combinePairs(zipValues(be.subst, ref.trait.subst)) }
+                    be.element == element && ctx.probe { ctx.combinePairs(be.subst.zipTypeValues(ref.trait.subst)) }
                 }.forEach { add(SelectionCandidate.HardcodedImpl) }
             }
         }
@@ -458,13 +458,13 @@ class ImplLookup(
         val newRecDepth = recursionDepth + 1
         return when (candidate) {
             is SelectionCandidate.Impl -> {
-                assert(!candidate.formalSelfTy.containsTyOfClass(TyInfer::class.java))
-                assert(!candidate.formalTrait.containsTyOfClass(TyInfer::class.java))
+                testAssert { !candidate.formalSelfTy.containsTyOfClass(TyInfer::class.java) }
+                testAssert { !candidate.formalTrait.containsTyOfClass(TyInfer::class.java) }
                 val (subst, preparedRef) = candidate.prepareSubstAndTraitRef(ctx, ref.selfTy)
                 ctx.combineTraitRefs(ref, preparedRef)
                 // pre-resolve type vars to simplify caching of already inferred obligation on fulfillment
-                val candidateSubst = subst.mapValues { (_, v) -> ctx.resolveTypeVarsIfPossible(v) } +
-                    mapOf(TyTypeParameter.self() to ref.selfTy)
+                val candidateSubst = subst.mapTypeValues { (_, v) -> ctx.resolveTypeVarsIfPossible(v) } +
+                    mapOf(TyTypeParameter.self() to ref.selfTy).toTypeSubst()
                 val obligations = ctx.instantiateBounds(candidate.impl.bounds, candidateSubst, newRecDepth).toList()
                 Selection(candidate.impl, obligations, candidateSubst)
             }
@@ -476,20 +476,34 @@ class ImplLookup(
                 Selection(trait, emptyList())
             }
             is SelectionCandidate.TypeParameter -> {
-                assert(!candidate.bound.containsTyOfClass(TyInfer::class.java))
-                ctx.combinePairs(zipValues(candidate.bound.subst, ref.trait.subst))
-                ctx.combinePairs(zipValues(candidate.bound.assoc, ref.trait.assoc))
+                testAssert { !candidate.bound.containsTyOfClass(TyInfer::class.java) }
+                combineBoundElements(candidate.bound, ref.trait)
                 Selection(candidate.bound.element, emptyList())
+            }
+            SelectionCandidate.TraitObject -> {
+                val traits = when (ref.selfTy) {
+                    is TyTraitObject -> ref.selfTy.trait.flattenHierarchy
+                    is TyAnon -> ref.selfTy.getTraitBoundsTransitively()
+                    else -> error("unreachable")
+                }
+                // should be nonnull because already checked in `assembleCandidates`
+                val be = traits.find { it.element == ref.trait.element } ?: error("Corrupted trait selection")
+                combineBoundElements(be, ref.trait)
+                Selection(be.element, emptyList())
             }
             is SelectionCandidate.HardcodedImpl -> {
                 val impl = getHardcodedImpls(ref.selfTy).first { be ->
-                    be.element == ref.trait.element && ctx.probe { ctx.combinePairs(zipValues(be.subst, ref.trait.subst)) }
+                    be.element == ref.trait.element && ctx.probe { ctx.combinePairs(be.subst.zipTypeValues(ref.trait.subst)) }
                 }
-                ctx.combinePairs(zipValues(impl.subst, ref.trait.subst))
-                ctx.combinePairs(zipValues(impl.assoc, ref.trait.assoc))
-                Selection(impl.element, emptyList())
+                combineBoundElements(impl, ref.trait)
+                Selection(impl.element, emptyList(), mapOf(TyTypeParameter.self() to ref.selfTy).toTypeSubst())
             }
         }
+    }
+
+    private fun <T: RsElement> combineBoundElements(be1: BoundElement<T>, be2: BoundElement<T>) {
+        ctx.combinePairs(be1.subst.zipTypeValues(be2.subst))
+        ctx.combinePairs(zipValues(be1.assoc, be2.assoc))
     }
 
     fun coercionSequence(baseTy: Ty): Sequence<Ty> {
@@ -588,9 +602,8 @@ class ImplLookup(
             is TyTraitObject -> selfTy.trait.assoc[assocType]
             is TyAnon -> lookupAssocTypeInBounds(selfTy.getTraitBoundsTransitively(), res.impl, assocType)
             else -> {
-                val ty = lookupAssocTypeInSelection(res, assocType)
+                lookupAssocTypeInSelection(res, assocType)
                     ?: lookupAssocTypeInBounds(getHardcodedImpls(selfTy), res.impl, assocType)
-                ty?.substitute(mapOf(TyTypeParameter.self() to selfTy))
             }
         }
     }
@@ -720,6 +733,7 @@ private sealed class SelectionCandidate {
 
     data class DerivedTrait(val item: RsTraitItem) : SelectionCandidate()
     data class TypeParameter(val bound: BoundElement<RsTraitItem>) : SelectionCandidate()
+    object TraitObject : SelectionCandidate()
     /** @see ImplLookup.getHardcodedImpls */
     object HardcodedImpl : SelectionCandidate()
     object Closure : SelectionCandidate()
@@ -732,15 +746,15 @@ private fun prepareSubstAndTraitRefRaw(
     formalTrait: BoundElement<RsTraitItem>,
     selfTy: Ty
 ): Pair<Substitution, TraitRef> {
-    val subst = generics.associate { it to ctx.typeVarForParam(it) }
-    val boundSubst = formalTrait.substitute(subst).subst.mapValues { (k, v) ->
+    val subst = generics.associate { it to ctx.typeVarForParam(it) }.toTypeSubst()
+    val boundSubst = formalTrait.substitute(subst).subst.mapTypeValues { (k, v) ->
         if (k == v && k.parameter is TyTypeParameter.Named) {
             // Default type parameter values `trait Tr<T=Foo> {}`
             k.parameter.parameter.typeReference?.type?.substitute(subst) ?: v
         } else {
             v
         }
-    }.substituteInValues(mapOf(TyTypeParameter.self() to selfTy))
+    }.substituteInValues(mapOf(TyTypeParameter.self() to selfTy).toTypeSubst())
     return subst to TraitRef(formalSelfTy.substitute(subst), BoundElement(formalTrait.element, boundSubst))
 }
 
@@ -752,9 +766,6 @@ private fun BoundElement<RsTraitItem>.substAssocType(assocName: String, ty: Ty?)
 
 private fun RsTraitItem.substAssocType(assocName: String, ty: Ty?): BoundElement<RsTraitItem> =
     BoundElement(this).substAssocType(assocName, ty)
-
-private fun Substitution.valueByName(name: String): Ty =
-    entries.find { it.key.toString() == name }?.value ?: TyUnknown
 
 private fun lookupAssociatedType(impl: RsTraitOrImpl, name: String): Ty {
     return impl.associatedTypesTransitively

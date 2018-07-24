@@ -6,10 +6,7 @@
 package org.rust.lang.utils
 
 import com.intellij.codeInsight.intention.IntentionAction
-import com.intellij.codeInspection.InspectionManager
-import com.intellij.codeInspection.LocalQuickFix
-import com.intellij.codeInspection.ProblemHighlightType
-import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.codeInspection.*
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.TextRange
@@ -17,7 +14,6 @@ import com.intellij.psi.PsiElement
 import com.intellij.xml.util.XmlStringUtil.escapeString
 import org.rust.ide.annotator.RsErrorAnnotator
 import org.rust.ide.annotator.fixes.*
-import org.rust.ide.annotator.isMut
 import org.rust.ide.inspections.RsExperimentalChecksInspection
 import org.rust.ide.inspections.RsTypeCheckInspection
 import org.rust.lang.core.psi.*
@@ -500,6 +496,22 @@ sealed class RsDiagnostic(
         }
     }
 
+    class ReservedLifetimeNameError(
+        element: PsiElement,
+        private val lifetimeName: String
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0262,
+            errorText()
+        )
+
+        private fun errorText(): String {
+            val name = escapeString(lifetimeName)
+            return "`$name` is a reserved lifetime name"
+        }
+    }
+
     class DuplicateLifetimeError(
         element: PsiElement,
         private val fieldName: String
@@ -681,16 +693,29 @@ sealed class RsDiagnostic(
             fixes = listOf(ConvertToReferenceFix(element), ConvertToBoxFix(element))
         )
     }
+
+    class ExperimentalFeature(
+        element: PsiElement,
+        private val presentableFeatureName: String,
+        private val fix: AddFeatureAttributeFix? = null
+    ) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            E0658,
+            header = escapeString("$presentableFeatureName is experimental"),
+            fixes = listOfNotNull(fix)
+        )
+    }
 }
 
 enum class RsErrorCode {
     E0046, E0050, E0060, E0061, E0069,
     E0121, E0124, E0133, E0185, E0186, E0198, E0199,
-    E0200, E0201, E0202, E0261, E0263, E0277,
+    E0200, E0201, E0202, E0261, E0262, E0263, E0277,
     E0308, E0379,
     E0403, E0407, E0415, E0424, E0426, E0428, E0449, E0463,
     E0569,
-    E0603, E0614, E0616, E0624;
+    E0603, E0614, E0616, E0624, E0658;
 
     val code: String
         get() = toString()
