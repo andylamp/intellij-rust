@@ -610,14 +610,7 @@ class RsQuickNavigationInfoTest : RsDocumentationProviderTest() {
         fn foo((val, flag): &mut (u32, bool)) { let _ = val; }
                                                        //^
     """, """
-        value parameter <b>val</b>: &lt;unknown&gt;
-    """)
-
-    fun `test value parameter 3`() = doTest("""
-        fn foo((val, flag): &mut (u32, bool)) { let _ = flag; }
-                                                        //^
-    """, """
-        value parameter <b>flag</b>: &lt;unknown&gt;
+        value parameter <b>val</b>: &amp;mut u32
     """)
 
     fun `test match arm 1`() = doTest("""
@@ -672,13 +665,13 @@ class RsQuickNavigationInfoTest : RsDocumentationProviderTest() {
 
     fun `test match if let`() = doTest("""
         fn foo() {
-            if let Some(ref foo) = None {
-                *foo
+            if let Some(ref foo) = Some(0) {
+                *foo;
                  //^
             }
         }
     """, """
-        condition binding <b>foo</b>: &amp;T
+        condition binding <b>foo</b>: &amp;i32
     """)
 
     fun `test file 1`() = doTest("""
@@ -693,6 +686,16 @@ class RsQuickNavigationInfoTest : RsDocumentationProviderTest() {
                         //^
     """, """
         <b>crate</b> [lib.rs]
+    """)
+
+    fun `test item defined with a macro`() = doTest("""
+        macro_rules! foo { ($ i:item) => { $ i } }
+        foo! { struct S; }
+        type T = S;
+               //^
+    """, """
+        test_package
+        struct <b>S</b>
     """)
 
     private fun doTest(@Language("Rust") code: String, @Language("Html") expected: String)

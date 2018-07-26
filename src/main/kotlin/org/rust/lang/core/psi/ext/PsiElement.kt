@@ -29,6 +29,15 @@ val PsiElement.ancestorPairs: Sequence<Pair<PsiElement, PsiElement>> get() {
     }
 }
 
+val PsiElement.leftLeaves: Sequence<PsiElement>
+    get() = generateSequence(this, PsiTreeUtil::prevLeaf).drop(1)
+
+val PsiElement.rightSiblings: Sequence<PsiElement>
+    get() = generateSequence(this.nextSibling) { it.nextSibling }
+
+val PsiElement.leftSiblings: Sequence<PsiElement>
+    get() = generateSequence(this.prevSibling) { it.prevSibling }
+
 /**
  * Extracts node's element type
  */
@@ -50,13 +59,13 @@ inline fun <reified T : PsiElement> PsiElement.stubAncestorStrict(): T? =
     PsiTreeUtil.getStubOrPsiParentOfType(this, T::class.java)
 
 /**
- * Same as [ancestorStrict], but with "fake" parent links. See [org.rust.lang.core.macros.ExpansionResult].
+ * Same as [ancestorStrict], but with "fake" parent links. See [org.rust.lang.core.macros.RsExpandedElement].
  */
 inline fun <reified T : PsiElement> PsiElement.contextStrict(): T? =
     PsiTreeUtil.getContextOfType(this, T::class.java, /* strict */ true)
 
 /**
- * Same as [ancestorOrSelf], but with "fake" parent links. See [org.rust.lang.core.macros.ExpansionResult].
+ * Same as [ancestorOrSelf], but with "fake" parent links. See [org.rust.lang.core.macros.RsExpandedElement].
  */
 inline fun <reified T : PsiElement> PsiElement.contextOrSelf(): T? =
     PsiTreeUtil.getContextOfType(this, T::class.java, /* strict */ false)
@@ -80,7 +89,7 @@ inline fun <reified T : PsiElement> PsiElement.descendantsOfType(): Collection<T
     PsiTreeUtil.findChildrenOfType(this, T::class.java)
 
 /**
- * Same as [PsiElement.getContainingFile], but return a "fake" file. See [org.rust.lang.core.macros.ExpansionResult].
+ * Same as [PsiElement.getContainingFile], but return a "fake" file. See [org.rust.lang.core.macros.RsExpandedElement].
  */
 val PsiElement.contextualFile: PsiFile
     get() = contextOrSelf() ?: error("Element outside of file: $text")
@@ -97,5 +106,5 @@ fun PsiElement?.getPrevNonCommentSibling(): PsiElement? =
 fun PsiElement?.getNextNonCommentSibling(): PsiElement? =
     PsiTreeUtil.skipSiblingsForward(this, PsiWhiteSpace::class.java, PsiComment::class.java)
 
-fun RsElement.isParentOf(child: PsiElement): Boolean =
+fun RsElement.isAncestorOf(child: PsiElement): Boolean =
     child.ancestors.contains(this)

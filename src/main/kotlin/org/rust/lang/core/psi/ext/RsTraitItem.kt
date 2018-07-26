@@ -14,16 +14,17 @@ import com.intellij.psi.stubs.IStubElementType
 import com.intellij.util.Query
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.ide.icons.RsIcons
-import org.rust.lang.core.macros.ExpansionResult
+import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.resolve.STD_DERIVABLE_TRAITS
 import org.rust.lang.core.stubs.RsTraitItemStub
 import org.rust.lang.core.types.BoundElement
 import org.rust.lang.core.types.RsPsiTypeImplUtil
+import org.rust.lang.core.types.emptySubstitution
 import org.rust.lang.core.types.infer.substitute
+import org.rust.lang.core.types.toTypeSubst
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyTypeParameter
-import org.rust.lang.core.types.ty.emptySubstitution
 import org.rust.openapiext.filterIsInstanceQuery
 import org.rust.openapiext.filterQuery
 import org.rust.openapiext.mapQuery
@@ -81,7 +82,7 @@ fun RsTraitItem.withSubst(vararg subst: Ty): BoundElement<RsTraitItem> {
         typeParameterList.withIndex().associate { (i, par) ->
             val param = TyTypeParameter.named(par)
             param to (subst.getOrNull(i) ?: param)
-        }
+        }.toTypeSubst()
     }
     return BoundElement(this, substitution)
 }
@@ -111,7 +112,7 @@ abstract class RsTraitItemImplMixin : RsStubbedNamedElementImpl<RsTraitItemStub>
 
     override val declaredType: Ty get() = RsPsiTypeImplUtil.declaredType(this)
 
-    override fun getContext(): PsiElement? = ExpansionResult.getContextImpl(this)
+    override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
 }
 
 

@@ -172,9 +172,9 @@ class CargoProjectsServiceImpl(
     ): CompletableFuture<List<CargoProjectImpl>> =
         projects.updateAsync(f)
             .thenApply { projects ->
-                directoryIndex.resetIndex()
                 ApplicationManager.getApplication().invokeAndWait {
                     runWriteAction {
+                        directoryIndex.resetIndex()
                         ProjectRootManagerEx.getInstanceEx(project)
                             .makeRootsChange(EmptyRunnable.getInstance(), false, true)
                     }
@@ -194,6 +194,14 @@ class CargoProjectsServiceImpl(
         testProject.setRootDir(rootDir)
         modifyProjects { _ ->
             CompletableFuture.completedFuture(listOf(testProject))
+        }.get(1, TimeUnit.MINUTES)
+    }
+
+    @TestOnly
+    override fun setRustcInfo(rustcInfo: RustcInfo) {
+        modifyProjects { projects ->
+            val updatedProjects = projects.map { it.copy(rustcInfo = rustcInfo, rustcInfoStatus = UpdateStatus.UpToDate) }
+            CompletableFuture.completedFuture(updatedProjects)
         }.get(1, TimeUnit.MINUTES)
     }
 
