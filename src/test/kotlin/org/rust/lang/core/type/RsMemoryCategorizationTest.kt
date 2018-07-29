@@ -5,13 +5,16 @@
 
 package org.rust.lang.core.type
 
+import com.intellij.testFramework.LightProjectDescriptor
 import org.intellij.lang.annotations.Language
 import org.rust.lang.RsTestBase
 import org.rust.lang.core.psi.RsExpr
 import org.rust.lang.core.types.infer.mutabilityCategory
 
 class RsMemoryCategorizationTest : RsTestBase() {
-    private fun testExpr(@Language("Rust") code: String, description: String = "", allowErrors: Boolean = false) {
+    override fun getProjectDescriptor(): LightProjectDescriptor = WithStdlibRustProjectDescriptor
+
+    private fun testExpr(@Language("Rust") code: String, description: String = "") {
         InlineFile(code)
         check(description)
     }
@@ -195,6 +198,13 @@ class RsMemoryCategorizationTest : RsTestBase() {
         fn main() {
           (if true { S } else { S });
                                  //^ Declared
+        }
+    """)
+
+    fun `test array`() = testExpr("""
+        fn f(buf: &mut [u8]) {
+            (buf[0]);
+                 //^ Inherited
         }
     """)
 }
