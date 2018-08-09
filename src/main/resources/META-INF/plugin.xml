@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2018/07/24/changelog-79.html">
-                 https://intellij-rust.github.io/2018/07/24/changelog-79.html
+        <a href="https://intellij-rust.github.io/2018/08/06/changelog-80.html">
+                 https://intellij-rust.github.io/2018/08/06/changelog-80.html
     ]]>
     </change-notes>
 
@@ -64,7 +64,8 @@
         <postFormatProcessor implementation="org.rust.ide.formatter.processors.RsTrailingCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsMatchArmCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsStatementSemicolonFormatProcessor"/>
-        <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsSingleImportRemoveBracesFormatProcessor"/>
+        <preFormatProcessor
+            implementation="org.rust.ide.formatter.processors.RsSingleImportRemoveBracesFormatProcessor"/>
 
         <!-- Refactoring support -->
 
@@ -151,6 +152,8 @@
                                         implementationClass="org.rust.ide.lineMarkers.RsTraitItemImplLineMarkerProvider"/>
         <codeInsight.lineMarkerProvider language="Rust"
                                         implementationClass="org.rust.ide.lineMarkers.RsCrateDocLineMarkerProvider"/>
+        <codeInsight.lineMarkerProvider language="Rust"
+                                        implementationClass="org.rust.ide.lineMarkers.RsMethodLineSeparatorProvider"/>
 
         <runLineMarkerContributor language="Rust"
                                   implementationClass="org.rust.ide.lineMarkers.CargoExecutableRunLineMarkerContributor"/>
@@ -431,6 +434,16 @@
                          enabledByDefault="true" level="WEAK WARNING"
                          implementationClass="org.rust.ide.inspections.RsSortImplTraitMembersInspection"/>
 
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Needless lifetimes"
+                         enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="org.rust.ide.inspections.RsNeedlessLifetimesInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Assign to immutable"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsAssignToImmutableInspection"/>
+
         <!-- Surrounders -->
 
         <lang.surroundDescriptor language="Rust"
@@ -557,6 +570,14 @@
             <className>org.rust.ide.intentions.FlipBinaryExpressionIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.RsShowRecursiveMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.RsShowSingleStepMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -632,6 +653,8 @@
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsItemUpDownMover"/>
 
 
+        <lang.elementManipulator forClass="org.rust.lang.core.psi.RsLitExpr"
+                                 implementationClass="org.rust.ide.injected.RsStringLiteralManipulator"/>
         <multiHostInjector implementation="org.rust.ide.injected.RsRegExpInjector"/>
 
 
@@ -719,6 +742,23 @@
                 text="Detach Cargo project"
                 icon="AllIcons.ToolbarDecorator.Remove"
                 use-shortcut-of="$Delete"/>
+
+        <action id="Rust.ShowSingleStepMacroExpansionAction"
+                class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction"
+                text="Show expanded macro">
+        </action>
+        <action id="Rust.ShowRecursiveMacroExpansionAction"
+                class="org.rust.ide.actions.macroExpansion.RsShowRecursiveMacroExpansionAction"
+                text="Show recursively expanded macro">
+        </action>
+        <group id="Rust.MacroExpansionActions"
+               text="Show Macro Expansion"
+               class="org.rust.ide.actions.macroExpansion.RsShowMacroExpansionGroup">
+            <add-to-group group-id="EditorPopupMenu"/>
+            <separator/>
+            <reference id="Rust.ShowRecursiveMacroExpansionAction"/>
+            <reference id="Rust.ShowSingleStepMacroExpansionAction"/>
+        </group>
 
         <group id="Rust.Cargo">
             <reference id="Rust.RefreshCargoProject"/>

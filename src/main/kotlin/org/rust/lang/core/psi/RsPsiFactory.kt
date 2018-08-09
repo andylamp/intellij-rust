@@ -114,9 +114,12 @@ class RsPsiFactory(private val project: Project) {
         createStatement("let ${"mut".iff(mutable)}$name${if (type != null) ": ${type.text}" else ""} = ${expr.text};") as RsLetDecl
 
 
-    fun createType(text: String): RsTypeReference =
-        createFromText("fn main() { let a : $text; }")
+    fun createType(text: CharSequence): RsTypeReference =
+        tryCreateType(text)
             ?: error("Failed to create type from text: `$text`")
+
+    fun tryCreateType(text: CharSequence): RsTypeReference? =
+        createFromText("fn main() { let a : $text; }")
 
     fun createMethodParam(text: String): PsiElement {
         val fnItem: RsFunction = createTraitMethodMember("fn foo($text);")
@@ -217,6 +220,13 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create type from text: `$text`")
     }
 
+    fun createTypeArgumentList(
+        params: Iterable<String>
+    ): RsTypeArgumentList {
+        val text = params.joinToString(prefix = "<", separator = ", ", postfix = ">")
+        return createFromText("type T = a$text") ?: error("Failed to create type argument from text: `$text`")
+    }
+
     fun createOuterAttr(text: String): RsOuterAttr =
         createFromText("#[$text] struct Dummy;")
             ?: error("Failed to create an outer attribute from text: `$text`")
@@ -277,6 +287,9 @@ class RsPsiFactory(private val project: Project) {
             ?.valueParameterList?.valueParameterList?.get(0)
             ?: error("Failed to create parameter element")
     }
+
+    fun tryCreatePat(text: CharSequence): RsPat? =
+        createFromText("fn f($text: ()) {}")
 
     fun createPatBinding(name: String, mutable: Boolean = false, ref: Boolean = false): RsPatBinding =
         (createStatement("let ${"ref ".iff(ref)}${"mut ".iff(mutable)}$name = 10;") as RsLetDecl).pat

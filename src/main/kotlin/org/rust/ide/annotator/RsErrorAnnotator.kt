@@ -66,6 +66,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitDotExpr(o: RsDotExpr) = checkDotExpr(holder, o)
             override fun visitArrayType(o: RsArrayType) = collectDiagnostics(holder, o)
             override fun visitVariantDiscriminant(o: RsVariantDiscriminant) = collectDiagnostics(holder, o)
+            override fun visitPolybound(o: RsPolybound) = checkPolybound(holder, o)
         }
 
         element.accept(visitor)
@@ -197,6 +198,12 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
                 RsDiagnostic.SelfInStaticMethodError(path, function).addToHolder(holder)
             }
         }
+
+        val crate = path.crate
+        if (crate != null && child != null) {
+            holder.createErrorAnnotation(crate, "`crate` is allowed only at the beginning")
+        }
+
         checkReferenceIsPublic(path, path, holder)
     }
 
@@ -413,6 +420,12 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     private fun checkExternCrate(holder: AnnotationHolder, el: RsExternCrateItem) {
         if (el.reference.multiResolve().isNotEmpty() || el.containingCargoPackage?.origin != PackageOrigin.WORKSPACE) return
         RsDiagnostic.CrateNotFoundError(el, el.identifier.text).addToHolder(holder)
+    }
+
+    private fun checkPolybound(holder: AnnotationHolder, o: RsPolybound) {
+        if (o.lparen != null && o.bound.lifetime != null) {
+            holder.createErrorAnnotation(o, "Parenthesized lifetime bounds are not supported")
+        }
     }
 
     private fun isInTraitImpl(o: RsVis): Boolean {
