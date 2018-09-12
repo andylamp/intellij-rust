@@ -94,6 +94,15 @@ object RsPsiPattern {
                 .with("deriveCondition") { e -> e is RsMetaItem && e.name == "derive" }
         )
 
+    val includeMacroLiteral: PsiElementPattern.Capture<RsLitExpr> = psiElement<RsLitExpr>()
+        .withParent(psiElement<RsIncludeMacroArgument>())
+
+    val pathAttrLiteral: PsiElementPattern.Capture<RsLitExpr> = psiElement<RsLitExpr>()
+        .withParent(psiElement<RsMetaItem>()
+            .withSuperParent(2, StandardPatterns.or(psiElement<RsModDeclItem>(), psiElement<RsModItem>()))
+            .with("pathAttrCondition") { metaItem -> metaItem.name == "path" }
+        )
+
     val whitespace: PsiElementPattern.Capture<PsiElement> = psiElement().whitespace()
 
     val error: PsiElementPattern.Capture<PsiErrorElement> = psiElement<PsiErrorElement>()

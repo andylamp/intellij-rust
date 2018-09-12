@@ -128,6 +128,7 @@
 
         <codeInsight.typeInfo language="Rust" implementationClass="org.rust.ide.hints.RsExpressionTypeProvider"/>
         <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsParameterInfoHandler"/>
+        <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsGenericParameterInfoHandler"/>
         <codeInsight.parameterNameHints language="Rust"
                                         implementationClass="org.rust.ide.hints.RsInlayParameterHintsProvider"/>
 
@@ -188,6 +189,8 @@
 
         <psi.referenceContributor language="Rust"
                                   implementation="org.rust.lang.core.resolve.ref.RsMetaItemReferenceContributor"/>
+        <psi.referenceContributor language="Rust"
+                                  implementation="org.rust.lang.core.resolve.ref.RsLitExprReferenceContributor"/>
 
         <!-- Completion -->
 

@@ -14,8 +14,7 @@ import com.intellij.testFramework.fixtures.CodeInsightTestFixture
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
-import org.rust.cargo.project.workspace.CargoWorkspace.CrateType
-import org.rust.cargo.project.workspace.CargoWorkspace.TargetKind
+import org.rust.cargo.project.workspace.CargoWorkspace.*
 import org.rust.cargo.project.workspace.CargoWorkspaceData
 import org.rust.cargo.project.workspace.CargoWorkspaceData.Package
 import org.rust.cargo.project.workspace.CargoWorkspaceData.Target
@@ -24,7 +23,6 @@ import org.rust.cargo.project.workspace.StandardLibrary
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.cargo.toolchain.Rustup
 import java.nio.file.Paths
-import java.util.*
 
 object DefaultDescriptor : RustProjectDescriptorBase()
 
@@ -54,17 +52,18 @@ open class RustProjectDescriptorBase : LightProjectDescriptor() {
         return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, emptyMap()))
     }
 
-    protected fun testCargoPackage(contentRoot: String, name: String = "test-package") = Package(
+    protected fun testCargoPackage(contentRoot: String, name: String = "test-package") = CargoWorkspaceData.Package(
         id = "$name 0.0.1",
         contentRootUrl = contentRoot,
         name = name,
         version = "0.0.1",
         targets = listOf(
-            Target("$contentRoot/main.rs", name, TargetKind.BIN, listOf(CrateType.BIN)),
-            Target("$contentRoot/lib.rs", name, TargetKind.LIB, listOf(CrateType.LIB))
+            Target("$contentRoot/main.rs", name, TargetKind.BIN, listOf(CrateType.BIN), edition = Edition.EDITION_2015),
+            Target("$contentRoot/lib.rs", name, TargetKind.LIB, listOf(CrateType.LIB), edition = Edition.EDITION_2015)
         ),
         source = null,
-        origin = PackageOrigin.WORKSPACE
+        origin = PackageOrigin.WORKSPACE,
+        edition = Edition.EDITION_2015
     )
 }
 
@@ -100,19 +99,28 @@ open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustPro
 }
 
 object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
-    private fun externalPackage(contentRoot: String, source: String?, name: String, targetName: String = name): Package {
+    private fun externalPackage(
+        contentRoot: String,
+        source: String?,
+        name: String,
+        targetName: String = name,
+        version: String = "0.0.1",
+        origin: PackageOrigin = PackageOrigin.DEPENDENCY
+    ): Package {
         return Package(
-            id = "$name 0.0.1",
+            id = "$name $version",
             contentRootUrl = "",
             name = name,
-            version = "0.0.1",
+            version = version,
             targets = listOf(
                 // don't use `FileUtil.join` here because it uses `File.separator`
                 // which is system dependent although all other code uses `/` as separator
-                Target(source?.let { "$contentRoot/$it" } ?: "", targetName, TargetKind.LIB, listOf(CrateType.BIN))
+                Target(source?.let { "$contentRoot/$it" } ?: "", targetName,
+                    TargetKind.LIB, listOf(CrateType.BIN), Edition.EDITION_2015)
             ),
             source = source,
-            origin = PackageOrigin.DEPENDENCY
+            origin = origin,
+            edition = Edition.EDITION_2015
         )
     }
 
@@ -128,13 +136,16 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
             testCargoPackage(contentRoot),
             externalPackage(contentRoot, "dep-lib/lib.rs", "dep-lib", "dep-lib-target"),
             externalPackage(contentRoot, null, "nosrc-lib", "nosrc-lib-target"),
-            externalPackage(contentRoot, "trans-lib/lib.rs", "trans-lib"))
-
-        val depNodes = ArrayList<CargoWorkspaceData.DependencyNode>()
-        depNodes.add(CargoWorkspaceData.DependencyNode(0, listOf(1, 2)))   // Our package depends on dep_lib and dep_nosrc_lib
+            externalPackage(contentRoot, "trans-lib/lib.rs", "trans-lib"),
+            externalPackage(contentRoot, "dep-lib-new/lib.rs", "dep-lib", "dep-lib-target",
+                version = "0.0.2", origin = PackageOrigin.TRANSITIVE_DEPENDENCY)
+        )
 
         return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, mapOf(
-            packages[0].id to setOf(packages[1].id, packages[2].id)
+            // Our package depends on dep_lib 0.0.1 and nosrc_lib
+            packages[0].id to setOf(packages[1].id, packages[2].id),
+            // dep_lib 0.0.1 depends on dep_lib 0.0.2
+            packages[1].id to setOf(packages[4].id)
         )))
     }
 }
