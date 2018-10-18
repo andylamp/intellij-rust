@@ -20,20 +20,29 @@ import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
 const val KEYWORD_PRIORITY = 10.0
+private const val ENUM_VARIANT_PRIORITY = 4.0
+private const val FIELD_DECL_PRIORITY = 3.0
+private const val INHERENT_IMPL_MEMBER_PRIORITY = 2.0
+private const val DEFAULT_PRIORITY = 0.0
 private const val MACRO_PRIORITY = -0.1
 
 fun createLookupElement(element: RsElement, scopeName: String): LookupElement {
     val base = element.getLookupElementBuilder(scopeName)
-        .withInsertHandler { context: InsertionContext, _ -> getInsertHandler(element, scopeName, context) }
+        .withInsertHandler { context, _ -> getInsertHandler(element, scopeName, context) }
 
-    if (element is RsMacro) return base.withPriority(MACRO_PRIORITY)
+    val priority = when {
+        element is RsMacro -> MACRO_PRIORITY
+        element is RsEnumVariant -> ENUM_VARIANT_PRIORITY
+        element is RsFieldDecl -> FIELD_DECL_PRIORITY
+        element is RsAbstractable && element.owner.isInherentImpl -> INHERENT_IMPL_MEMBER_PRIORITY
+        else -> DEFAULT_PRIORITY
+    }
 
-    return base
+    return base.withPriority(priority)
 }
 
-
 fun LookupElementBuilder.withPriority(priority: Double): LookupElement =
-    PrioritizedLookupElement.withPriority(this, priority)
+    if (priority == DEFAULT_PRIORITY) this else PrioritizedLookupElement.withPriority(this, priority)
 
 private fun RsElement.getLookupElementBuilder(scopeName: String): LookupElementBuilder {
     val base = LookupElementBuilder.create(this, scopeName)
@@ -57,20 +66,11 @@ private fun RsElement.getLookupElementBuilder(scopeName: String): LookupElementB
             .appendTailText(extraTailText, true)
 
         is RsStructItem -> base
-            .withTailText(when {
-                blockFields != null -> " { ... }"
-                tupleFields != null -> tupleFields!!.text
-                else -> ""
-            })
+            .withTailText(getFieldsOwnerTailText(this))
 
         is RsEnumVariant -> base
             .withTypeText(ancestorStrict<RsEnumItem>()?.name ?: "")
-            .withTailText(when {
-                blockFields != null -> " { ... }"
-                tupleFields != null ->
-                    tupleFields!!.tupleFieldDeclList.joinToString(prefix = "(", postfix = ")") { it.typeReference.text }
-                else -> ""
-            })
+            .withTailText(getFieldsOwnerTailText(this))
 
         is RsPatBinding -> base
             .withTypeText(type.let {
@@ -86,6 +86,13 @@ private fun RsElement.getLookupElementBuilder(scopeName: String): LookupElementB
 
         else -> base
     }
+}
+
+private fun getFieldsOwnerTailText(owner: RsFieldsOwner) = when {
+    owner.blockFields != null -> " { ... }"
+    owner.tupleFields != null ->
+        owner.positionalFields.joinToString(prefix = "(", postfix = ")") { it.typeReference.text }
+    else -> ""
 }
 
 private fun getInsertHandler(element: RsElement, scopeName: String, context: InsertionContext) {
@@ -111,7 +118,7 @@ private fun getInsertHandler(element: RsElement, scopeName: String, context: Ins
 
         is RsFunction -> {
             if (curUseItem != null) {
-                appendSemicolon(context, curUseItem);
+                appendSemicolon(context, curUseItem)
             } else {
                 if (!context.alreadyHasCallParens) {
                     context.document.insertString(context.selectionEndOffset, "()")

@@ -5,6 +5,9 @@
 
 package org.rust.ide.inspections.import
 
+import org.rust.MockEdition
+import org.rust.cargo.project.workspace.CargoWorkspace
+
 class AutoImportFixTest : AutoImportFixTestBase() {
 
     fun `test import struct`() = checkAutoImportFixByText("""
@@ -199,6 +202,32 @@ class AutoImportFixTest : AutoImportFixTestBase() {
 
         fn main() {
             let f = Foo/*caret*/;
+        }
+    """)
+
+    fun `test insert use item after outer attributes`() = checkAutoImportFixByText("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        #[cfg(test)]
+        mod tests {
+            fn foo() {
+                let f = <error descr="Unresolved reference: `Foo`">Foo/*caret*/</error>;
+            }
+        }
+    """, """
+        mod foo {
+            pub struct Foo;
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use foo::Foo;
+
+            fn foo() {
+                let f = Foo/*caret*/;
+            }
         }
     """)
 
@@ -1273,6 +1302,27 @@ class AutoImportFixTest : AutoImportFixTestBase() {
 
         fn bar<T: foo::Foo>(t: T) {
             t.foo/*caret*/();
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test import item in root module (edition 2018)`() = checkAutoImportFixByText("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        fn main() {
+            let f = <error descr="Unresolved reference: `Foo`">Foo/*caret*/</error>;
+        }
+    """, """
+        use crate::foo::Foo;
+
+        mod foo {
+            pub struct Foo;
+        }
+
+        fn main() {
+            let f = Foo/*caret*/;
         }
     """)
 }

@@ -12,10 +12,12 @@ import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import com.intellij.util.Consumer
+import com.intellij.psi.search.GlobalSearchScope
+import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates
+import org.rust.ide.search.RsCargoProjectScope
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
@@ -53,10 +55,9 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         if (candidates.size == 1) {
             importItem(project, candidates.first(), element)
         } else {
-            val consumer = Consumer<DataContext> { chooseItemAndImport(project, it, candidates, element) }
-            // BACKCOMPAT: 2018.1
-            @Suppress("DEPRECATION")
-            DataManager.getInstance().dataContextFromFocus.doWhenDone(consumer)
+            DataManager.getInstance().dataContextFromFocusAsync.onSuccess {
+                chooseItemAndImport(project, it, candidates, element)
+            }
         }
         isConsumed = true
     }
@@ -83,6 +84,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         // we uses this info to create correct relative use item path if needed
         var relativeDepth: Int? = null
 
+        val isEdition2018 = originalElement.containingCargoTarget?.edition == CargoWorkspace.Edition.EDITION_2018
         val info = candidate.info
         // if crate of importing element differs from current crate
         // we need to add new extern crate item
@@ -99,7 +101,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 // we don't add corresponding extern crate item manually for the same reason
                 attributes == RsFile.Attributes.NO_STD && target.isCore -> Testmarks.autoInjectedCoreCrate.hit()
                 else -> {
-                    if (info.needInsertExternCrateItem) {
+                    if (info.needInsertExternCrateItem && !isEdition2018) {
                         crateRoot?.insertExternCrateItem(psiFactory, info.externCrateName)
                     } else {
                         if (info.depth != null) {
@@ -112,7 +114,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         }
 
         val prefix = when (relativeDepth) {
-            null -> ""
+            null -> if (info is ImportInfo.LocalImportInfo && isEdition2018) "crate::" else ""
             0 -> "self::"
             else -> "super::".repeat(relativeDepth)
         }
@@ -162,12 +164,14 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             val pathMod = path.containingMod
             val pathSuperMods = LinkedHashSet(pathMod.superMods)
 
-            val explicitItems = RsNamedElementIndex.findElementsByName(project, basePath.referenceName)
+            val scope = RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project))
+
+            val explicitItems = RsNamedElementIndex.findElementsByName(project, basePath.referenceName, scope)
                 .asSequence()
                 .filterIsInstance<RsQualifiedNamedElement>()
                 .map { QualifiedNamedItem.ExplicitItem(it) }
 
-            val reexportedItems = RsReexportIndex.findReexportsByName(project, basePath.referenceName)
+            val reexportedItems = RsReexportIndex.findReexportsByName(project, basePath.referenceName, scope)
                 .asSequence()
                 .mapNotNull {
                     val item = it.path?.reference?.resolve() as? RsQualifiedNamedElement ?: return@mapNotNull null
@@ -475,7 +479,7 @@ private val RsPath.namespaceFilter: (RsQualifiedNamedElement) -> Boolean get() =
 
 private val RsElement.stdlibAttributes: RsFile.Attributes
     get() = (crateRoot?.containingFile as? RsFile)?.attributes ?: RsFile.Attributes.NONE
-private val RsItemsOwner.firstItem: RsElement get() = itemsAndMacros.first { it !is RsInnerAttr }
+private val RsItemsOwner.firstItem: RsElement get() = itemsAndMacros.first { it !is RsAttr }
 private val <T: RsElement> List<T>.lastElement: T? get() = maxBy { it.textOffset }
 
 private val CargoWorkspace.Target.isStd: Boolean

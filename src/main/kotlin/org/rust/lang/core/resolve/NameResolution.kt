@@ -229,6 +229,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
         is RsPathExpr -> if (isCompletion) TYPES_N_VALUES else VALUES
         else -> TYPES_N_VALUES
     }
+    val isEdition2018 = path.containingCargoTarget?.edition == CargoWorkspace.Edition.EDITION_2018
 
     if (qualifier != null) {
         val primitiveType = TyPrimitive.fromPath(qualifier)
@@ -253,7 +254,10 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
             selfInGroup.hit()
             if (processor("self", base)) return true
         }
-        if (processItemOrEnumVariantDeclarations(base, ns, processor, isSuperChain(qualifier))) return true
+        val isSuperChain = isSuperChain(qualifier)
+        if (processItemOrEnumVariantDeclarations(base, ns, processor,
+                withPrivateImports = isSuperChain,
+                withPlainExternCrateItems = isSuperChain || !isEdition2018)) return true
         if (base is RsTypeDeclarationElement && parent !is RsUseSpeck) {
             // Foo::<Bar>::baz
             val selfTy = if (base is RsImplItem && qualifier.hasCself) {
@@ -286,6 +290,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
         val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type).toTypeSubst()
         val subst = trait.subst.substituteInValues(selfSubst) + selfSubst
         if (processAllWithSubst(trait.element.members?.typeAliasList.orEmpty(), subst, processor)) return true
+        return false
     }
 
     if (isCompletion) {
@@ -305,9 +310,18 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
             val superMod = containingMod.`super`
             if (superMod != null && processor("super", superMod)) return true
             if (crateRoot != null && processor("crate", crateRoot)) return true
-            if (path.kind == PathKind.IDENTIFIER &&
-                path.containingCargoTarget?.edition == CargoWorkspace.Edition.EDITION_2018) {
-                if (processExternCrateResolveVariants(path, isCompletion, processor)) return true
+            if (path.kind == PathKind.IDENTIFIER && isEdition2018) {
+                val attributes = (crateRoot as? RsFile)?.attributes
+                val implicitExternCrate = when (attributes) {
+                    NONE -> "std"
+                    NO_STD -> "core"
+                    else -> null
+                }
+                // We shouldn't process implicit extern crate here
+                // because we add it in `ItemResolutionKt.processItemDeclarations`
+                if (path.referenceName != implicitExternCrate) {
+                    if (processExternCrateResolveVariants(path, isCompletion, processor)) return true
+                }
             }
         }
     }
@@ -315,12 +329,14 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     // Paths in use items are implicitly global.
     if (path.hasColonColon || path.contextStrict<RsUseItem>() != null) {
         if (crateRoot != null) {
-            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor, true)) return true
+            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor,
+                    withPrivateImports = true,
+                    withPlainExternCrateItems = !isEdition2018)) return true
         }
         return false
     }
 
-    return processNestedScopesUpwards(path, processor, ns)
+    return processNestedScopesUpwards(path, processor, ns, !isEdition2018)
 }
 
 fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
@@ -418,7 +434,7 @@ fun processMacroCallVariants(element: PsiElement, processor: RsResolveProcessor)
     }
     if (result) return true
 
-    val prelude = (element.contextOrSelf<RsElement>())?.findDependencyCrateRoot("std") ?: return false
+    val prelude = (element.contextOrSelf<RsElement>())?.findDependencyCrateRoot(STD) ?: return false
     return processAll(exportedMacros(prelude), processor)
 }
 
@@ -658,11 +674,11 @@ private fun processAssociatedItems(
                 // trait SliceIndex<T> { type Output; }
                 // fn get<I: : SliceIndex<S>>(index: I) -> I::Output
                 // Resulting subst will contains mapping T => S
-                traitBounds.find { it.element == traitOrImpl.value }?.subst ?: emptySubstitution
+                traitBounds.filter { it.element == traitOrImpl.value }.map { it.subst }
             } else {
-                emptySubstitution
+                listOf(emptySubstitution)
             }
-            return processor(AssocItemScopeEntry(name, entry, subst, traitOrImpl))
+            return subst.any { processor(AssocItemScopeEntry(name, entry, it, traitOrImpl)) }
         }
 
         /**
@@ -706,13 +722,18 @@ private fun processAssociatedItemsWithSelfSubst(
     selfSubst: Substitution,
     processor: RsResolveProcessor
 ): Boolean {
-    val assocItemsProcessor: RsResolveProcessor = {
-        processor(it.name, it.element!!, it.subst + selfSubst)
+    return processAssociatedItems(lookup, type, ns) {
+        processor(it.copy(subst = it.subst + selfSubst))
     }
-    return processAssociatedItems(lookup, type, ns, assocItemsProcessor)
 }
 
-private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, ns: Set<Namespace>, processor: RsResolveProcessor): Boolean {
+private fun processLexicalDeclarations(
+    scope: RsElement,
+    cameFrom: PsiElement,
+    ns: Set<Namespace>,
+    withPlainExternCrateItems: Boolean = true,
+    processor: RsResolveProcessor
+): Boolean {
     check(cameFrom.context == scope)
 
     fun processPattern(pattern: RsPat, processor: RsResolveProcessor): Boolean {
@@ -730,7 +751,9 @@ private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, n
 
     when (scope) {
         is RsMod -> {
-            if (processItemDeclarations(scope, ns, processor, withPrivateImports = true)) return true
+            if (processItemDeclarations(scope, ns, processor,
+                    withPrivateImports = true,
+                    withPlainExternCrateItems = withPlainExternCrateItems)) return true
         }
 
         is RsStructItem,
@@ -830,7 +853,12 @@ private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, n
     return false
 }
 
-private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResolveProcessor, ns: Set<Namespace>): Boolean {
+private fun processNestedScopesUpwards(
+    scopeStart: RsElement,
+    processor: RsResolveProcessor,
+    ns: Set<Namespace>,
+    withPlainExternCrateItems: Boolean = true
+): Boolean {
     val prevScope = mutableSetOf<String>()
     walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
         val currScope = mutableListOf<String>()
@@ -840,13 +868,16 @@ private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResol
                 processor(e)
             }
         }
-        if (processLexicalDeclarations(scope, cameFrom, ns, shadowingProcessor)) return@walkUp true
+        if (processLexicalDeclarations(scope, cameFrom, ns, withPlainExternCrateItems, shadowingProcessor)) return@walkUp true
         prevScope.addAll(currScope)
         false
     }
 
     val prelude = findPrelude(scopeStart)
-    if (prelude != null && processItemDeclarations(prelude, ns, { v -> v.name !in prevScope && processor(v) }, false)) return true
+    val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
+    if (prelude != null && processItemDeclarations(prelude, ns, preludeProcessor,
+            withPrivateImports = false,
+            withPlainExternCrateItems = withPlainExternCrateItems)) return true
 
     return false
 }
