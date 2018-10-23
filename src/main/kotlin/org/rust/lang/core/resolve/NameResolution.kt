@@ -18,6 +18,8 @@ import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.RsConstants
+import org.rust.lang.core.macros.MACRO_CRATE_IDENTIFIER_PREFIX
+import org.rust.lang.core.macros.findMacroCallExpandedFrom
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsFile.Attributes.*
 import org.rust.lang.core.psi.ext.*
@@ -305,6 +307,20 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     val containingMod = path.containingMod
     val crateRoot = path.crateRoot
     if (!path.hasColonColon) {
+        run { // hacks around $crate macro metavar. See `expandDollarCrateVar` function docs
+            val referenceName = path.referenceName
+            if (referenceName.startsWith(MACRO_CRATE_IDENTIFIER_PREFIX) && path.findMacroCallExpandedFrom() != null) {
+                val crate = referenceName.removePrefix(MACRO_CRATE_IDENTIFIER_PREFIX)
+                val result = if (crate == "self") {
+                    processor.lazy(referenceName) { path.crateRoot }
+                } else {
+                    processExternCrateResolveVariants(path, false) {
+                        if (it.name == crate) processor.lazy(referenceName) { it.element } else false
+                    }
+                }
+                if (result) return true
+            }
+        }
         if (Namespace.Types in ns) {
             if (processor("self", containingMod)) return true
             val superMod = containingMod.`super`
@@ -342,9 +358,8 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
 fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
     return processNestedScopesUpwards(binding, { entry ->
         processor.lazy(entry.name) {
-            val element = entry.element
-            val isConstant = element is RsConstant
-                || (element is RsEnumVariant && element.blockFields == null && element.tupleFields == null)
+            val element = entry.element ?: return@lazy null
+            val isConstant = element.isConstantLike
             val isPathOrDestructable = when (element) {
                 is RsMod, is RsEnumItem, is RsEnumVariant, is RsStructItem -> true
                 else -> false
@@ -394,6 +409,7 @@ fun processLocalVariables(place: RsElement, processor: (RsPatBinding) -> Unit) {
  * Resolves an absolute path.
  */
 fun resolveStringPath(path: String, workspace: CargoWorkspace, project: Project): Pair<RsNamedElement, CargoWorkspace.Package>? {
+    check(!path.startsWith("::"))
     val parts = path.split("::", limit = 2)
     if (parts.size != 2) return null
     val pkg = workspace.findPackage(parts[0]) ?: run {
@@ -853,14 +869,14 @@ private fun processLexicalDeclarations(
     return false
 }
 
-private fun processNestedScopesUpwards(
+fun processNestedScopesUpwards(
     scopeStart: RsElement,
     processor: RsResolveProcessor,
     ns: Set<Namespace>,
     withPlainExternCrateItems: Boolean = true
 ): Boolean {
     val prevScope = mutableSetOf<String>()
-    walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
+    if (walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
         val currScope = mutableListOf<String>()
         val shadowingProcessor = { e: ScopeEntry ->
             e.name !in prevScope && run {
@@ -871,6 +887,8 @@ private fun processNestedScopesUpwards(
         if (processLexicalDeclarations(scope, cameFrom, ns, withPlainExternCrateItems, shadowingProcessor)) return@walkUp true
         prevScope.addAll(currScope)
         false
+    }) {
+        return true
     }
 
     val prelude = findPrelude(scopeStart)

@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2018/10/10/changelog-84.html">
-                 https://intellij-rust.github.io/2018/10/10/changelog-84.html
+        <a href="https://intellij-rust.github.io/2018/10/22/changelog-85.html">
+                 https://intellij-rust.github.io/2018/10/22/changelog-85.html
     ]]>
     </change-notes>
 
@@ -30,7 +30,7 @@
         <!-- Rust -->
 
         <!-- Project Creation -->
-
+        <projectOpenProcessor id="Cargo" implementation="org.rust.cargo.project.CargoProjectOpenProcessor"/>
         <directoryProjectGenerator implementation="org.rust.ide.newProject.RsDirectoryProjectGenerator"/>
 
         <!-- File-type Factory -->
@@ -607,6 +607,10 @@
         </intentionAction>
         <intentionAction>
             <className>org.rust.ide.intentions.RsShowSingleStepMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.NestUseStatementsIntention</className>
             <category>Rust</category>
         </intentionAction>
 
