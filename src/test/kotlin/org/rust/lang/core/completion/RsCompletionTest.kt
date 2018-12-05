@@ -68,6 +68,14 @@ class RsCompletionTest : RsCompletionTestBase() {
         }}
     """)
 
+    fun `test struct-like enum with braces`() = doSingleCompletion("""
+        enum E { Frobnicate { f: i32 } }
+        fn main() { E::Frob/*caret*/ {} }
+    """, """
+        enum E { Frobnicate { f: i32 } }
+        fn main() { E::Frobnicate {/*caret*/} }
+    """)
+
     fun `test function call with parens with arg`() = doSingleCompletion("""
         fn frobnicate(foo: i32) {}
         fn main() { frob/*caret*/() }
@@ -667,5 +675,23 @@ class RsCompletionTest : RsCompletionTestBase() {
     fun `test no std completion`() = checkNoCompletion("""
         extern crate dep_lib_target;
         pub use dep_lib_target::st/*caret*/
+    """)
+
+    fun `test complete with identifier escaping`() = doSingleCompletion("""
+        fn r#else() {}
+        fn main() {
+            els/*caret*/
+        }
+    """, """
+        fn r#else() {}
+        fn main() {
+            r#else()/*caret*/
+        }
+    """)
+
+    fun `test complete lifetime`() = doSingleCompletion("""
+        fn foo<'aaaaaa>(x:&'a/*caret*/ str) {}
+    """, """
+        fn foo<'aaaaaa>(x:&'aaaaaa/*caret*/ str) {}
     """)
 }

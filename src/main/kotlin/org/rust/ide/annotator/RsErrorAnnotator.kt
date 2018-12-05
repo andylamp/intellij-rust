@@ -18,6 +18,7 @@ import org.rust.cargo.toolchain.RustChannel
 import org.rust.ide.annotator.fixes.AddFeatureAttributeFix
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
+import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
 import org.rust.lang.core.CRATE_IN_PATHS
 import org.rust.lang.core.CRATE_VISIBILITY_MODIFIER
 import org.rust.lang.core.CompilerFeature
@@ -61,6 +62,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitTypeParameter(o: RsTypeParameter) = checkDuplicates(holder, o)
             override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkLifetimeParameter(holder, o)
             override fun visitVis(o: RsVis) = checkVis(holder, o)
+            override fun visitVisRestriction(o: RsVisRestriction) = checkVisRestriction(holder, o)
             override fun visitBinaryExpr(o: RsBinaryExpr) = checkBinary(holder, o)
             override fun visitCallExpr(o: RsCallExpr) = checkCallExpr(holder, o)
             override fun visitMethodCall(o: RsMethodCall) = checkMethodCallExpr(holder, o)
@@ -86,6 +88,21 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     private fun checkDotExpr(holder: AnnotationHolder, o: RsDotExpr) {
         val field = o.fieldLookup ?: o.methodCall ?: return
         checkReferenceIsPublic(field, o, holder)
+    }
+
+    private fun checkStaticUsageIsSafe(ref: RsReferenceElement, holder: AnnotationHolder) {
+        val element = ref.reference.resolve() as? RsConstant ?: return
+        val constantType = when {
+            element.kind == RsConstantKind.MUT_STATIC -> "mutable"
+            element.kind == RsConstantKind.STATIC && element.parent is RsForeignModItem -> "extern"
+            else -> return
+        }
+
+        val expr = ref.ancestorOrSelf<RsExpr>() ?: return
+        if (expr.isInUnsafeBlockOrFn()) return
+
+        RsDiagnostic.UnsafeError(expr, "Use of $constantType static is unsafe and requires unsafe function or block")
+            .addToHolder(holder)
     }
 
     private fun checkReferenceIsPublic(ref: RsReferenceElement, o: PsiElement, holder: AnnotationHolder) {
@@ -118,6 +135,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
 
     private fun checkMethodCallExpr(holder: AnnotationHolder, o: RsMethodCall) {
         val fn = o.reference.resolve() as? RsFunction ?: return
+
         if (fn.isUnsafe) {
             checkUnsafeCall(holder, o.parentDotExpr)
         }
@@ -126,6 +144,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     private fun checkCallExpr(holder: AnnotationHolder, o: RsCallExpr) {
         val path = (o.expr as? RsPathExpr)?.path ?: return
         val fn = path.reference.resolve() as? RsFunction ?: return
+
         if (fn.isUnsafe) {
             checkUnsafeCall(holder, o)
         }
@@ -186,7 +205,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         }
 
         val parent = path.parent
-        if (path.self != null && parent !is RsPath && parent !is RsUseSpeck) {
+        if (path.self != null && parent !is RsPath && parent !is RsUseSpeck && parent !is RsVisRestriction) {
             val function = path.ancestorStrict<RsFunction>()
             if (function == null) {
                 holder.createErrorAnnotation(path, "self value is not available in this context")
@@ -202,7 +221,8 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         val useSpeck = path.ancestorStrict<RsUseSpeck>()
         val edition = path.containingCargoTarget?.edition
 
-        if (crate != null) {
+        // `pub(crate)` should be annotated
+        if (crate != null && (qualifier != null || path.ancestorStrict<RsVisRestriction>() == null)) {
             if (qualifier != null || useSpeck != null && useSpeck.qualifier != null) {
                 RsDiagnostic.UndeclaredTypeOrModule(crate).addToHolder(holder)
             } else if (edition == Edition.EDITION_2015) {
@@ -210,6 +230,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             }
         }
 
+        checkStaticUsageIsSafe(path, holder)
         checkReferenceIsPublic(path, path, holder)
     }
 
@@ -237,6 +258,14 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         checkFeature(holder, crateModifier, CRATE_VISIBILITY_MODIFIER, "`crate` visibility modifier")
     }
 
+    private fun checkVisRestriction(holder: AnnotationHolder, visRestriction: RsVisRestriction) {
+        val path = visRestriction.path
+        // pub(foo) or pub(super::bar)
+        if (visRestriction.`in` == null && (path.path != null || path.kind == PathKind.IDENTIFIER)) {
+            RsDiagnostic.IncorrectVisibilityRestriction(visRestriction).addToHolder(holder)
+        }
+    }
+
     private fun checkFeature(
         holder: AnnotationHolder,
         element: PsiElement,
@@ -246,29 +275,21 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         val rsElement = element.ancestorOrSelf<RsElement>() ?: return
         val version = rsElement.cargoProject?.rustcInfo?.version ?: return
 
-        val diagnostic = when (feature.state) {
-            ACTIVE -> {
-                if (version.channel != RustChannel.NIGHTLY) {
-                    RsDiagnostic.ExperimentalFeature(element, presentableFeatureName)
-                } else {
-                    val crateRoot = rsElement.crateRoot ?: return
-                    val attrs = RsFeatureIndex.getFeatureAttributes(element.project, feature.name)
-                    if (attrs.none { it.crateRoot == crateRoot }) {
-                        val fix = AddFeatureAttributeFix(feature.name, crateRoot)
-                        RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, fix)
-                    } else {
-                        null
-                    }
-                }
-
-            }
-            ACCEPTED -> if (version.semver < feature.since) {
+        if (feature.state == ACTIVE || feature.state == ACCEPTED && version.semver < feature.since) {
+            val diagnostic = if (version.channel != RustChannel.NIGHTLY) {
                 RsDiagnostic.ExperimentalFeature(element, presentableFeatureName)
             } else {
-                null
+                val crateRoot = rsElement.crateRoot ?: return
+                val attrs = RsFeatureIndex.getFeatureAttributes(element.project, feature.name)
+                if (attrs.none { it.crateRoot == crateRoot }) {
+                    val fix = AddFeatureAttributeFix(feature.name, crateRoot)
+                    RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, fix)
+                } else {
+                    null
+                }
             }
+            diagnostic?.addToHolder(holder)
         }
-        diagnostic?.addToHolder(holder)
     }
 
     private fun checkLabel(holder: AnnotationHolder, label: RsLabel) {
@@ -451,10 +472,6 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
 
     private fun hasResolve(el: RsReferenceElement): Boolean =
         !(el.reference.resolve() != null || el.reference.multiResolve().size > 1)
-
-    companion object {
-        private val RESERVED_LIFETIME_NAMES: Set<String> = setOf("'_", "'static")
-    }
 }
 
 private fun RsExpr?.isComparisonBinaryExpr(): Boolean {

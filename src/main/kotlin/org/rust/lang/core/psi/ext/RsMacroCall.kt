@@ -13,6 +13,7 @@ import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.macros.expandMacro
 import org.rust.lang.core.psi.RsElementTypes.IDENTIFIER
 import org.rust.lang.core.psi.RsMacroCall
+import org.rust.lang.core.psi.unescapedText
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
 import org.rust.lang.core.resolve.ref.RsMacroCallReferenceImpl
 import org.rust.lang.core.resolve.ref.RsReference
@@ -39,14 +40,16 @@ val RsMacroCall.macroName: String
     get() {
         val stub = stub
         if (stub != null) return stub.macroName
-        return referenceNameElement.text
+        return referenceNameElement.unescapedText
     }
 
 val RsMacroCall.macroBody: String?
     get() {
         val stub = stub
         if (stub != null) return stub.macroBody
-        return macroArgument?.compactTT?.text ?: formatMacroArgument?.braceListBodyText()?.toString()
+        return macroArgument?.compactTT?.text
+            ?: formatMacroArgument?.braceListBodyText()?.toString()
+            ?: logMacroArgument?.braceListBodyText()?.toString()
     }
 
 val RsMacroCall.expansion: List<RsExpandedElement>?

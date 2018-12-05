@@ -20,6 +20,7 @@ chabapok
 chriskrycho
 contradictioned
 d9n
+DaryaShirokova
 daschl
 dem1tris
 devurandom
@@ -29,6 +30,7 @@ farodin91
 FatalCatharsis
 Filippok
 framlog
+garyttierney
 greg-kargin
 Guillaume Eveillard
 harrisjt
@@ -36,6 +38,7 @@ HeyLey
 himikof
 HybridEidolon
 idubrov
+isamborskiy
 JakubAdamWieczorek
 johnthagen
 jonas-schievink
@@ -60,7 +63,6 @@ mrhota
 msmorgan
 netvl
 nicholastmosher
-Nilera
 ninjabear
 oistein
 oleg-semenov
@@ -78,6 +80,7 @@ Shiroy
 shssoichiro
 sirgl
 slavam2605
+sohich
 stigger
 t-kameyama
 ThoseGrapefruits

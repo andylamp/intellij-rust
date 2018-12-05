@@ -19,6 +19,7 @@ import org.rust.ide.annotator.RsErrorAnnotator
 import org.rust.ide.annotator.fixes.*
 import org.rust.ide.inspections.RsExperimentalChecksInspection
 import org.rust.ide.inspections.RsTypeCheckInspection
+import org.rust.ide.refactoring.implementMembers.ImplementMembersFix
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
@@ -29,7 +30,6 @@ import org.rust.lang.core.types.TraitRef
 import org.rust.lang.core.types.asTy
 import org.rust.lang.core.types.isMutable
 import org.rust.lang.core.types.ty.*
-import org.rust.lang.refactoring.implementMembers.ImplementMembersFix
 import org.rust.lang.utils.RsErrorCode.*
 import org.rust.lang.utils.Severity.*
 import org.rust.stdext.buildList
@@ -808,6 +808,18 @@ sealed class RsDiagnostic(
             fixes = listOfNotNull(fix)
         )
     }
+
+    class IncorrectVisibilityRestriction(
+        private val visRestriction: RsVisRestriction
+    ) : RsDiagnostic(visRestriction.path) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            E0704,
+            "Incorrect visibility restriction",
+            "Visibility restriction with module path should start with `in` keyword",
+            fixes = listOf(FixVisRestriction(visRestriction))
+        )
+    }
 }
 
 enum class RsErrorCode {
@@ -817,7 +829,8 @@ enum class RsErrorCode {
     E0308, E0379, E0384,
     E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0449, E0463,
     E0569, E0594,
-    E0603, E0614, E0616, E0624, E0658;
+    E0603, E0614, E0616, E0624, E0658,
+    E0704;
 
     val code: String
         get() = toString()

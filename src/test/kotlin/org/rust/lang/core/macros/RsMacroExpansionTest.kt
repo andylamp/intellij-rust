@@ -575,14 +575,64 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         Option<i32>
     """)
 
-    fun `test expend macro definition`() = doTest("""
-       macro_rules! foo {
-           () => {
-               macro_rules! bar { () => {} }
-           }
+    // There was a problem with "debug" macro related to the fact that we parse macro call
+    // with such name as a specific syntax construction
+    fun `test macro with name "debug"`() = doTest("""
+       macro_rules! debug {
+           ($ t:ty) => { fn foo() -> $ t {} }
        }
-       foo!();
+       debug!(i32);
+    """, """
+        fn foo() -> i32 {}
+    """)
+
+    fun `test expend macro definition`() = doTest("""
+        macro_rules! foo {
+            () => {
+                macro_rules! bar { () => {} }
+            }
+        }
+        foo!();
     """, """
         macro_rules! bar { () => {} }
+    """)
+
+    fun `test macro defined with a macro`() = doTest("""
+        macro_rules! foo {
+            () => {
+                macro_rules! bar { () => { fn foo() {} } }
+                bar!();
+            }
+        }
+        foo!();
+    """, """
+        macro_rules! bar { () => { fn foo() {} } }
+        fn foo() {}
+    """)
+
+    fun `test expand vis matcher`() = doTest("""
+        macro_rules! foo {
+            ($ vis:vis $ name:ident) => { $ vis fn $ name() {}};
+        }
+        foo!(pub foo);
+        foo!(pub(crate) bar);
+        foo!(pub(in a::b) baz);
+    """, """
+        pub fn foo() {}
+    """, """
+        pub(crate) fn bar() {}
+    """, """
+        pub(in a::b) fn baz() {}
+    """)
+
+    fun `test expand macro defined in function`() = doTest("""
+        fn main() {
+            macro_rules! foo {
+                () => { 2 + 2 };
+            }
+            foo!();
+        }
+    """, """
+        2 + 2
     """)
 }

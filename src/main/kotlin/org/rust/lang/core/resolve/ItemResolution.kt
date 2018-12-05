@@ -9,38 +9,33 @@ import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
-import org.rust.lang.core.resolve.ItemResolutionTestmarks.externCrateItemAliasWithSameName
-import org.rust.lang.core.resolve.ItemResolutionTestmarks.externCrateItemWithoutAlias
 import org.rust.lang.core.resolve.ref.RsReference
-import org.rust.openapiext.Testmark
+import org.rust.stdext.intersects
 import java.util.*
 
 fun processItemOrEnumVariantDeclarations(
     scope: RsElement,
     ns: Set<Namespace>,
     processor: RsResolveProcessor,
-    withPrivateImports: Boolean = false,
-    withPlainExternCrateItems: Boolean = true
+    withPrivateImports: Boolean = false
 ): Boolean {
     when (scope) {
         is RsEnumItem -> {
             if (processAll(scope.enumBody?.enumVariantList.orEmpty(), processor)) return true
         }
         is RsMod -> {
-            if (processItemDeclarations(scope, ns, processor, withPrivateImports, withPlainExternCrateItems)) return true
+            if (processItemDeclarations(scope, ns, processor, withPrivateImports)) return true
         }
     }
 
     return false
 }
 
-
 fun processItemDeclarations(
     scope: RsItemsOwner,
     ns: Set<Namespace>,
     originalProcessor: RsResolveProcessor,
-    withPrivateImports: Boolean,
-    withPlainExternCrateItems: Boolean = true
+    withPrivateImports: Boolean
 ): Boolean {
     val starImports = mutableListOf<RsUseSpeck>()
     val itemImports = mutableListOf<RsUseSpeck>()
@@ -51,23 +46,24 @@ fun processItemDeclarations(
         originalProcessor(e)
     }
 
-    fun processItem(item: RsItemElement): Boolean {
+    loop@ for (item in scope.expandedItemsExceptImpls) {
         when (item) {
             is RsUseItem ->
                 if (item.isPublic || withPrivateImports) {
-                    val rootSpeck = item.useSpeck ?: return false
+                    val rootSpeck = item.useSpeck ?: continue@loop
                     rootSpeck.forEachLeafSpeck { speck ->
                         (if (speck.isStarImport) starImports else itemImports) += speck
                     }
                 }
 
             // Unit like structs are both types and values
-            is RsStructItem ->
-                if (item.namespaces.intersect(ns).isNotEmpty() && processor(item)) return true
+            is RsStructItem -> {
+                if (item.namespaces.intersects(ns) && processor(item)) return true
+            }
 
             is RsModDeclItem -> if (Namespace.Types in ns) {
-                val name = item.name ?: return false
-                val mod = item.reference.resolve() ?: return false
+                val name = item.name ?: continue@loop
+                val mod = item.reference.resolve() ?: continue@loop
                 if (processor(name, mod)) return true
             }
 
@@ -77,39 +73,18 @@ fun processItemDeclarations(
             is RsFunction, is RsConstant ->
                 if (Namespace.Values in ns && processor(item as RsNamedElement)) return true
 
-            is RsForeignModItem ->
+            is RsForeignModItem -> if (Namespace.Values in ns) {
                 if (processAll(item.functionList, processor) || processAll(item.constantList, processor)) return true
+            }
 
             is RsExternCrateItem -> {
                 if (item.isPublic || withPrivateImports) {
-                    val itemName = item.name
-                    val aliasName = item.alias?.name
-                    val name = aliasName ?: itemName ?: return false
-
-                    if (!withPlainExternCrateItems) {
-                        // In some situations (for example, absolute paths in edition 2018)
-                        // we should process only extern crate item
-                        // which brings new name into the scope, i.e. with alias,
-                        // because otherwise this item is already processed in other place
-                        if (aliasName == null) {
-                            externCrateItemWithoutAlias.hit()
-                            return false
-                        }
-                        if (aliasName == itemName) {
-                            externCrateItemAliasWithSameName.hit()
-                            return false
-                        }
-                    }
-                    val mod = item.reference.resolve() ?: return false
-                    if (processor(name, mod)) return true
+                    val mod = item.reference.resolve() ?: continue@loop
+                    if (processor(item.nameWithAlias, mod)) return true
                 }
             }
         }
-        return false
     }
-
-    if (scope.processExpandedItems(::processItem)) return true
-
 
     if (Namespace.Types in ns) {
         if (scope is RsFile && scope.isCrateRoot && withPrivateImports) {
@@ -157,8 +132,7 @@ fun processItemDeclarations(
 
         val found = processItemOrEnumVariantDeclarations(mod, ns,
             { it.name !in directlyDeclaredNames && originalProcessor(it) },
-            withPrivateImports = basePath != null && isSuperChain(basePath),
-            withPlainExternCrateItems = withPlainExternCrateItems
+            withPrivateImports = basePath != null && isSuperChain(basePath)
         )
         if (found) return true
     }
@@ -179,7 +153,7 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
     if (processor.lazy(name) {
         variants = ref.multiResolve()
             .filterIsInstance<RsNamedElement>()
-            .filter { ns.intersect(it.namespaces).isNotEmpty() }
+            .filter { ns.intersects(it.namespaces) }
         val first = variants.firstOrNull()
         if (first != null) {
             visitedNamespaces.addAll(first.namespaces)
@@ -195,9 +169,4 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
         if (processor(name, element)) return true
     }
     return false
-}
-
-object ItemResolutionTestmarks {
-    val externCrateItemWithoutAlias = Testmark("externCrateItemWithoutAlias")
-    val externCrateItemAliasWithSameName = Testmark("externCrateItemAliasWithSameName")
 }

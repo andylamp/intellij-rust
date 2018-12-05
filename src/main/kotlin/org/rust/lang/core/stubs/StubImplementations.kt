@@ -33,7 +33,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 143
+        override fun getStubVersion(): Int = 148
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -521,6 +521,7 @@ class RsFunctionStub(
     override val isPublic: Boolean get() = BitUtil.isSet(flags, PUBLIC_MASK)
     val isAbstract: Boolean get() = BitUtil.isSet(flags, ABSTRACT_MASK)
     val isTest: Boolean get() = BitUtil.isSet(flags, TEST_MASK)
+    val isBench: Boolean get() = BitUtil.isSet(flags, BENCH_MASK)
     val isCfg: Boolean get() = BitUtil.isSet(flags, CFG_MASK)
     val isConst: Boolean get() = BitUtil.isSet(flags, CONST_MASK)
     val isUnsafe: Boolean get() = BitUtil.isSet(flags, UNSAFE_MASK)
@@ -551,11 +552,12 @@ class RsFunctionStub(
             flags = BitUtil.set(flags, PUBLIC_MASK, psi.isPublic)
             flags = BitUtil.set(flags, ABSTRACT_MASK, psi.isAbstract)
             flags = BitUtil.set(flags, TEST_MASK, psi.isTest)
+            flags = BitUtil.set(flags, BENCH_MASK, psi.isBench)
             flags = BitUtil.set(flags, CFG_MASK, psi.queryAttributes.hasCfgAttr())
             flags = BitUtil.set(flags, CONST_MASK, psi.isConst)
             flags = BitUtil.set(flags, UNSAFE_MASK, psi.isUnsafe)
             flags = BitUtil.set(flags, EXTERN_MASK, psi.isExtern)
-            flags = BitUtil.set(flags, VARIADIC_MASK, psi.isExtern)
+            flags = BitUtil.set(flags, VARIADIC_MASK, psi.isVariadic)
             return RsFunctionStub(parentStub, this,
                 name = psi.name,
                 abiName = psi.abiName,
@@ -570,11 +572,12 @@ class RsFunctionStub(
         private val PUBLIC_MASK: Int = makeBitMask(0)
         private val ABSTRACT_MASK: Int = makeBitMask(1)
         private val TEST_MASK: Int = makeBitMask(2)
-        private val CFG_MASK: Int = makeBitMask(3)
-        private val CONST_MASK: Int = makeBitMask(4)
-        private val UNSAFE_MASK: Int = makeBitMask(5)
-        private val EXTERN_MASK: Int = makeBitMask(6)
-        private val VARIADIC_MASK: Int = makeBitMask(7)
+        private val BENCH_MASK: Int = makeBitMask(3)
+        private val CFG_MASK: Int = makeBitMask(4)
+        private val CONST_MASK: Int = makeBitMask(5)
+        private val UNSAFE_MASK: Int = makeBitMask(6)
+        private val EXTERN_MASK: Int = makeBitMask(7)
+        private val VARIADIC_MASK: Int = makeBitMask(8)
     }
 }
 
@@ -772,28 +775,23 @@ class RsTypeParameterStub(
 
 class RsValueParameterStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val patText: String?,
-    val typeReferenceText: String?
+    val patText: String?
 ) : StubBase<RsValueParameter>(parent, elementType) {
 
     object Type : RsStubElementType<RsValueParameterStub, RsValueParameter>("VALUE_PARAMETER") {
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsValueParameterStub(parentStub, this,
-                dataStream.readNameAsString(),
                 dataStream.readNameAsString()
             )
 
         override fun serialize(stub: RsValueParameterStub, dataStream: StubOutputStream) =
-            with(dataStream) {
-                dataStream.writeName(stub.patText)
-                dataStream.writeName(stub.typeReferenceText)
-            }
+            dataStream.writeName(stub.patText)
 
         override fun createPsi(stub: RsValueParameterStub): RsValueParameter =
             RsValueParameterImpl(stub, this)
 
         override fun createStub(psi: RsValueParameter, parentStub: StubElement<*>?) =
-            RsValueParameterStub(parentStub, this, psi.patText, psi.typeReferenceText)
+            RsValueParameterStub(parentStub, this, psi.patText)
     }
 }
 
@@ -880,7 +878,7 @@ class RsTraitTypeStub(
             )
 
         override fun serialize(stub: RsTraitTypeStub, dataStream: StubOutputStream) = with(dataStream) {
-            dataStream.writeBoolean(stub.isImpl)
+            writeBoolean(stub.isImpl)
         }
 
         override fun createPsi(stub: RsTraitTypeStub) = RsTraitTypeImpl(stub, this)
@@ -894,50 +892,25 @@ class RsTraitTypeStub(
 
 class RsBaseTypeStub private constructor(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    private val variant: Variant
+    val kind: RsBaseTypeStubKind
 ) : StubBase<RsBaseType>(parent, elementType) {
-
-    val isUnit: Boolean
-        get() = variant == Variant.UNIT
-    val isNever: Boolean
-        get() = variant == Variant.NEVER
-    val isUnderscore: Boolean
-        get() = variant == Variant.UNDERSCORE
 
     object Type : RsStubElementType<RsBaseTypeStub, RsBaseType>("BASE_TYPE") {
 
         override fun shouldCreateStub(node: ASTNode): Boolean = createStubIfParentIsStub(node)
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
-            RsBaseTypeStub(parentStub, this, Variant.valueOf(dataStream.readByte().toInt()))
+            RsBaseTypeStub(parentStub, this, dataStream.readEnum())
 
         override fun serialize(stub: RsBaseTypeStub, dataStream: StubOutputStream) = with(dataStream) {
-            dataStream.writeByte(stub.variant.ordinal)
+            writeEnum(stub.kind)
         }
 
         override fun createPsi(stub: RsBaseTypeStub) =
             RsBaseTypeImpl(stub, this)
 
         override fun createStub(psi: RsBaseType, parentStub: StubElement<*>?) =
-            RsBaseTypeStub(parentStub, this, Variant.fromPsi(psi))
-    }
-
-    private enum class Variant {
-        DEFAULT, UNIT, NEVER, UNDERSCORE;
-
-        companion object {
-            private val _values = values()
-
-            fun valueOf(ordinal: Int): Variant =
-                _values[ordinal]
-
-            fun fromPsi(psi: RsBaseType): Variant = when {
-                psi.isUnit -> UNIT
-                psi.isNever -> NEVER
-                psi.isUnderscore -> UNDERSCORE
-                else -> DEFAULT
-            }
-        }
+            RsBaseTypeStub(parentStub, this, psi.stubKind)
     }
 }
 
@@ -954,7 +927,7 @@ class RsArrayTypeStub(
             RsArrayTypeStub(parentStub, this, dataStream.readBoolean())
 
         override fun serialize(stub: RsArrayTypeStub, dataStream: StubOutputStream) = with(dataStream) {
-            dataStream.writeBoolean(stub.isSlice)
+            writeBoolean(stub.isSlice)
         }
 
         override fun createPsi(stub: RsArrayTypeStub) =
@@ -1057,7 +1030,10 @@ class RsMacroCallStub(
 ) : StubBase<RsMacroCall>(parent, elementType) {
 
     object Type : RsStubElementType<RsMacroCallStub, RsMacroCall>("MACRO_CALL") {
-        override fun shouldCreateStub(node: ASTNode): Boolean = node.psi.parent is RsMod
+        override fun shouldCreateStub(node: ASTNode): Boolean {
+            val parent = node.psi.parent
+            return parent is RsMod || parent is RsMembers
+        }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsMacroCallStub(parentStub, this,
@@ -1281,5 +1257,5 @@ private fun StubOutputStream.writeUTFFastAsNullable(value: String?) {
     }
 }
 
-private fun <E : Enum<E>> StubOutputStream.writeEnum(e: E?) = writeByte(e?.ordinal ?: -1)
-private inline fun <reified E : Enum<E>> StubInputStream.readEnum(): E = enumValues<E>()[readByte().toInt()]
+private fun <E : Enum<E>> StubOutputStream.writeEnum(e: E) = writeByte(e.ordinal)
+private inline fun <reified E : Enum<E>> StubInputStream.readEnum(): E = enumValues<E>()[readUnsignedByte()]

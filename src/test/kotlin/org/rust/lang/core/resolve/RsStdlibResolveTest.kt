@@ -7,6 +7,7 @@ package org.rust.lang.core.resolve
 
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.WithStdlibWithSymlinkRustProjectDescriptor
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.lang.core.types.infer.TypeInferenceMarks
@@ -415,6 +416,13 @@ class RsStdlibResolveTest : RsResolveTestBase() {
         }
     }
 
+    fun `test raw identifier in derive trait`() = stubOnlyResolve("""
+    //- main.rs
+        #[derive(r#Debug)]
+                 //^ ...libcore/fmt/mod.rs
+        struct Foo;
+    """)
+
     fun `test infer lambda expr`() = stubOnlyResolve("""
     //- main.rs
         struct S;
@@ -552,5 +560,12 @@ class RsStdlibResolveTest : RsResolveTestBase() {
         fn main() {
             S.clone();
         }   //^
+    """)
+
+    @ProjectDescriptor(WithStdlibWithSymlinkRustProjectDescriptor::class)
+    fun `test path to stdlib contains symlink`() = stubOnlyResolve("""
+    //- main.rs
+        fn foo(x: std::rc::Rc<i32>) {}
+                         //^ .../liballoc/rc.rs
     """)
 }

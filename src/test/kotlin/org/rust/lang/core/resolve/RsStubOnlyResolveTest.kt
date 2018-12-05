@@ -415,6 +415,16 @@ class RsStubOnlyResolveTest : RsResolveTestBase() {
         fn main() {}
     """)
 
+    fun `test resolve macro multi file 3`() = stubOnlyResolve("""
+    //- b.rs
+        macro_rules! foo_bar { () => () }
+        foo_bar!();
+        //^ b.rs
+    //- main.rs
+        #[macro_use]
+        mod b;
+    """)
+
     fun `test resolve crate keyword in path to crate root mod`() = stubOnlyResolve("""
     //- main.rs
         mod foo;
@@ -425,5 +435,18 @@ class RsStubOnlyResolveTest : RsResolveTestBase() {
     //- foo.rs
         use crate::bar::Foo;
             //^ main.rs
+    """)
+
+    fun `test raw identifier`() = stubOnlyResolve("""
+    //- main.rs
+        mod r#match;
+        use r#match::bar;
+
+        fn main() {
+            bar();
+           //^ match.rs
+        }
+    //- match.rs
+        pub fn bar() { println!("Bar"); }
     """)
 }

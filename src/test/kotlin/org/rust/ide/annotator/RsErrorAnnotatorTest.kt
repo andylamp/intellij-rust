@@ -129,7 +129,7 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
             fn variadic_2(p1: u32, p2: u32, ...);
         }
 
-        fn main() {
+        unsafe fn test() {
             variadic_1<error descr="This function takes at least 1 parameter but 0 parameters were supplied [E0060]">()</error>;
             variadic_1(42);
             variadic_1(42, 43);
@@ -436,13 +436,25 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         fn foo(a: &'static str) {}
     """)
 
-    fun `test reserved lifetime names E0262`() = checkErrors("""
-        fn foo<<error descr="`'_` is a reserved lifetime name [E0262]">'_</error>>(x: &'_ str) {}
-        fn bar<<error descr="`'static` is a reserved lifetime name [E0262]">'static</error>>(x: &'static str) {}
-        struct Str<<error>'static</error>> { a: &'static u32 }
-        impl<<error>'static</error>> Str<'static> {}
-        enum En<<error>'static</error>> { A(&'static str) }
-        trait Tr<<error>'static</error>> {}
+    fun `test not applied to underscore lifetimes E0261`() = checkErrors("""
+        const ZERO: &'_ u32 = &0;
+        fn foo(a: &'_ str) {}
+    """)
+
+    fun `test reserved lifetime name ('static) E0262`() = checkErrors("""
+        fn foo1<<error descr="`'static` is a reserved lifetime name [E0262]">'static</error>>(x: &'static str) {}
+        struct Str1<<error>'static</error>> { a: &'static u32 }
+        impl<<error>'static</error>> Str1<'static> {}
+        enum En1<<error>'static</error>> { A(&'static str) }
+        trait Tr1<<error>'static</error>> {}
+    """)
+
+    fun `test reserved lifetime name ('_) E0262`() = checkErrors("""
+        fn foo2<<error descr="`'_` is a reserved lifetime name [E0262]">'_</error>>(x: &'_ str) {}
+        struct Str2<<error>'_</error>> { a: &'_ u32 }
+        impl<<error>'_</error>> Str2<'_> {}
+        enum En2<<error>'_</error>> { A(&'_ str) }
+        trait Tr2<<error>'_</error>> {}
     """)
 
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
@@ -735,7 +747,7 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         }
     """)
 
-    fun `testE0424 self in impl`() = checkErrors("""
+    fun `test self in static method E0424`() = checkErrors("""
         struct Foo;
 
         impl Foo {
@@ -745,8 +757,23 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         }
     """)
 
+    fun `test self in vis restriction in static method no E0424`() = checkErrors("""
+        struct Foo;
+
+        impl Foo {
+            pub(self) fn foo() {}
+        }
+    """)
+
     fun `test self expression outside function`() = checkErrors("""
         const C: () = <error descr="self value is not available in this context">self</error>;
+    """)
+
+    fun `test do not annotate 'self' in visibility restriction`() = checkErrors("""
+        struct Foo {
+            pub(self) attr1: bool,
+            pub(in self) attr2: bool
+        }
     """)
 
     fun `test ignore non static E0424`() = checkErrors("""
@@ -783,7 +810,7 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
             use m::*;
 
             fn main() {
-                foo(1, 2, 3);
+                unsafe { foo(1, 2, 3); }
                 bar<error>(92)</error>;
                 let _ = S {};
             }  //^
@@ -1218,6 +1245,20 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         use crate::foo::Foo;
     """)
 
+    @MockRustcVersion("1.30.0")
+    fun `test crate in path feature E0658 4`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use crate::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test crate visibility restriction`() = checkErrors("""
+        pub(crate) fn foo() {}
+    """)
+
     fun `test E0404 expected trait`() = checkErrors("""
         struct S;
         enum E {}
@@ -1230,5 +1271,23 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         impl <error descr="Expected trait, found module `a` [E0404]">a</error> for S {}
         fn foo<A: <error descr="Expected trait, found struct `S` [E0404]">S</error>>() {}
         impl Trait for S {}
+    """)
+
+    fun `test extern static requires unsafe`() = checkErrors("""
+        extern {
+            static C: i32;
+        }
+
+        fn main() {
+            let a = <error descr="Use of extern static is unsafe and requires unsafe function or block [E0133]">C</error>;
+        }
+    """)
+
+    fun `test need unsafe static mutable`() = checkErrors("""
+        static mut test : u8 = 0;
+
+        fn main() {
+            <error descr="Use of mutable static is unsafe and requires unsafe function or block [E0133]">test</error> += 1;
+        }
     """)
 }
