@@ -10,8 +10,8 @@ import com.intellij.codeInsight.editorActions.JoinRawLinesHandlerDelegate
 import com.intellij.openapi.editor.Document
 import com.intellij.psi.PsiFile
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.RsElementTypes.*
-import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.RsElementTypes.COMMA
+import org.rust.lang.core.psi.RsElementTypes.LBRACE
 import org.rust.lang.core.psi.ext.*
 
 class RsJoinRawLinesHandler : JoinRawLinesHandlerDelegate {
@@ -43,14 +43,14 @@ class RsJoinRawLinesHandler : JoinRawLinesHandlerDelegate {
         when (parent) {
             is RsBlockExpr -> {
                 return when {
-                    parent.unsafe != null -> CANNOT_JOIN
+                    parent.isUnsafe || parent.isAsync || parent.isTry -> CANNOT_JOIN
                     else -> {
                         val grandpa = parent.parent
                         val newExpr = parent.replace(expr)
                         if (grandpa is RsMatchArm && grandpa.lastChild?.elementType != COMMA) {
                             grandpa.add(psiFactory.createComma())
                         }
-                        newExpr.textRange.startOffset
+                        newExpr.startOffset
                     }
                 }
 
@@ -58,7 +58,7 @@ class RsJoinRawLinesHandler : JoinRawLinesHandlerDelegate {
 
             is RsIfExpr, is RsElseBranch -> {
                 val newBlock = psiFactory.createBlockExpr(expr.text).block
-                return block.replace(newBlock).textRange.startOffset
+                return block.replace(newBlock).startOffset
             }
         }
 

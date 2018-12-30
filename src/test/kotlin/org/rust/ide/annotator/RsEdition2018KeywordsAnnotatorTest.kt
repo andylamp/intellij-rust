@@ -38,7 +38,7 @@ class RsEdition2018KeywordsAnnotatorTest : RsAnnotationTestBase() {
     fun `test reserved keywords in macro names in edition 2018`() = checkErrors("""
         fn main() {
             let x = async!();
-            let y = await!();
+            let y = await!(x);
             let z = try!(());
         }
     """)
@@ -74,6 +74,17 @@ class RsEdition2018KeywordsAnnotatorTest : RsAnnotationTestBase() {
     fun `test try in edition 2018`() = checkErrors("""
         fn main() {
             try { () };
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test don't analyze macro def-call bodies`() = checkErrors("""
+        macro_rules! foo {
+            () => { async };
+        }
+
+        fn main() {
+            foo!(async)
         }
     """)
 }

@@ -31,6 +31,7 @@ FatalCatharsis
 Filippok
 framlog
 garyttierney
+gfreezy
 greg-kargin
 Guillaume Eveillard
 harrisjt
@@ -40,6 +41,7 @@ HybridEidolon
 idubrov
 isamborskiy
 JakubAdamWieczorek
+Jezza
 johnthagen
 jonas-schievink
 Keats
@@ -92,5 +94,6 @@ Undin
 vasily-kirichenko
 vitvakatu
 vlad20012
+webdesus
 winger
 zjhmale

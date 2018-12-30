@@ -33,7 +33,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 149
+        override fun getStubVersion(): Int = 151
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -1025,7 +1025,6 @@ class RsMacroStub(
 
 class RsMacroCallStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val macroName: String,
     val macroBody: String?
 ) : StubBase<RsMacroCall>(parent, elementType) {
 
@@ -1037,13 +1036,11 @@ class RsMacroCallStub(
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsMacroCallStub(parentStub, this,
-                dataStream.readNameAsString()!!,
                 dataStream.readUTFFastAsNullable()
             )
 
         override fun serialize(stub: RsMacroCallStub, dataStream: StubOutputStream) =
             with(dataStream) {
-                writeName(stub.macroName)
                 writeUTFFastAsNullable(stub.macroBody)
             }
 
@@ -1051,7 +1048,7 @@ class RsMacroCallStub(
             RsMacroCallImpl(stub, this)
 
         override fun createStub(psi: RsMacroCall, parentStub: StubElement<*>?) =
-            RsMacroCallStub(parentStub, this, psi.macroName, psi.macroBody)
+            RsMacroCallStub(parentStub, this, psi.macroBody)
 
         override fun indexStub(stub: RsMacroCallStub, sink: IndexSink) = Unit
     }

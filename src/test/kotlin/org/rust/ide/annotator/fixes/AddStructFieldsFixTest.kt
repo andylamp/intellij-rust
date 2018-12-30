@@ -66,7 +66,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92, b: /*caret*/String::new() };
+            S { a: 92, b: /*caret*/"".to_string() };
         }
     """)
 
@@ -81,7 +81,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92, b: /*caret*/String::new() };
+            S { a: 92, b: /*caret*/"".to_string() };
         }
     """)
 
@@ -171,9 +171,9 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
 
         fn main() {
             Mesh{
-                name: String::new(),
-                vertices: Vec::new(),
-                faces: Vec::new(),
+                name: "".to_string(),
+                vertices: vec![],
+                faces: vec![],
                 material: None
             };
         }
@@ -182,6 +182,9 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test many type fields`() = checkBothQuickFix("""
         type AliasedString = String;
+        struct TrivialStruct;
+        struct EmptyTupleStruct();
+        struct EmptyStruct {}
 
         struct DataContainer<'a > {
             bool_field: bool,
@@ -207,6 +210,9 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             ref_mut_field: &'a mut String,
             tuple_field: (bool, char, i8, String),
             aliased_field: AliasedString,
+            trivial_struct: TrivialStruct,
+            empty_tuple_struct: EmptyTupleStruct,
+            empty_struct: EmptyStruct,
             unsupported_type_field: fn(i32) -> i32
         }
 
@@ -215,6 +221,9 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         }
     """, """
         type AliasedString = String;
+        struct TrivialStruct;
+        struct EmptyTupleStruct();
+        struct EmptyStruct {}
 
         struct DataContainer<'a > {
             bool_field: bool,
@@ -240,6 +249,9 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             ref_mut_field: &'a mut String,
             tuple_field: (bool, char, i8, String),
             aliased_field: AliasedString,
+            trivial_struct: TrivialStruct,
+            empty_tuple_struct: EmptyTupleStruct,
+            empty_struct: EmptyStruct,
             unsupported_type_field: fn(i32) -> i32
         }
 
@@ -261,13 +273,16 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                 f64_field: 0.0,
                 slice_field: [],
                 array_field: [],
-                str_field: String::new(),
-                vec_field: Vec::new(),
+                str_field: "".to_string(),
+                vec_field: vec![],
                 opt_field: None,
-                ref_field: &String::new(),
-                ref_mut_field: &mut String::new(),
-                tuple_field: (false, '', 0, String::new()),
-                aliased_field: String::new(),
+                ref_field: &"".to_string(),
+                ref_mut_field: &mut "".to_string(),
+                tuple_field: (false, '', 0, "".to_string()),
+                aliased_field: "".to_string(),
+                trivial_struct: TrivialStruct,
+                empty_tuple_struct: EmptyTupleStruct(),
+                empty_struct: EmptyStruct {},
                 unsupported_type_field: ()
             };
         }
@@ -275,6 +290,19 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
 
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test 1-level recursively fill struct`() = checkRecursiveQuickFix("""
+        union Union {
+            a: i32,
+            b: f32
+        }
+
+        enum Enum {
+            A { a: i32 },
+            B(i32),
+            C
+        }
+
+        struct TupleStruct(i32, i32);
+
         struct MetaData {
             author: String,
             licence: Option<String>,
@@ -286,13 +314,29 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             pub vertices: Vec<Vector3>,
             pub faces: Vec<Face>,
             pub material: Option<String>,
-            pub metadata: MetaData
+            pub un: Union,
+            pub en: Enum,
+            pub metadata: MetaData,
+            pub tupleStruct: TupleStruct
         }
 
         fn main() {
             <error>Mesh</error>{/*caret*/};
         }
     """, """
+        union Union {
+            a: i32,
+            b: f32
+        }
+
+        enum Enum {
+            A { a: i32 },
+            B(i32),
+            C
+        }
+
+        struct TupleStruct(i32, i32);
+
         struct MetaData {
             author: String,
             licence: Option<String>,
@@ -304,20 +348,26 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             pub vertices: Vec<Vector3>,
             pub faces: Vec<Face>,
             pub material: Option<String>,
-            pub metadata: MetaData
+            pub un: Union,
+            pub en: Enum,
+            pub metadata: MetaData,
+            pub tupleStruct: TupleStruct
         }
 
         fn main() {
             Mesh{
-                name: String::new(),
-                vertices: Vec::new(),
-                faces: Vec::new(),
+                name: "".to_string(),
+                vertices: vec![],
+                faces: vec![],
                 material: None,
+                un: (),
+                en: Enum::C,
                 metadata: MetaData {
-                    author: String::new(),
+                    author: "".to_string(),
                     licence: None,
                     specVersion: 0
-                }
+                },
+                tupleStruct: TupleStruct(0, 0)
             };
         }
     """)
@@ -370,15 +420,15 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
 
         fn main() {
             Mesh{
-                name: String::new(),
-                vertices: Vec::new(),
-                faces: Vec::new(),
+                name: "".to_string(),
+                vertices: vec![],
+                faces: vec![],
                 material: None,
                 metadata: MetaData {
-                    author: String::new(),
+                    author: "".to_string(),
                     licence: None,
                     specVersion: 0,
-                    tool: ToolInfo { name: String::new(), toolVersion: String::new() }
+                    tool: ToolInfo { name: "".to_string(), toolVersion: "".to_string() }
                 }
             };
         }

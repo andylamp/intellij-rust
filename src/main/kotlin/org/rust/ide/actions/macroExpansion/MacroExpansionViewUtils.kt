@@ -26,8 +26,7 @@ import org.rust.lang.core.macros.parseExpandedTextWithContext
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.RsMacroCall
 import org.rust.lang.core.psi.RsPsiFactory
-import org.rust.lang.core.psi.ext.expandAllMacrosRecursively
-import org.rust.lang.core.psi.ext.expansion
+import org.rust.lang.core.psi.ext.*
 import java.awt.BorderLayout
 import javax.swing.JPanel
 
@@ -89,9 +88,9 @@ private fun<T> Project.computeWithCancelableProgress(title: String, supplier: ()
 
 private fun getMacroExpansionViewTitle(macroToExpand: RsMacroCall, expandRecursively: Boolean): String =
     if (expandRecursively) {
-        "Recursive expansion of ${macroToExpand.referenceName}! macro"
+        "Recursive expansion of ${macroToExpand.macroName}! macro"
     } else {
-        "First level expansion of ${macroToExpand.referenceName}! macro"
+        "First level expansion of ${macroToExpand.macroName}! macro"
     }
 
 private fun getMacroExpansions(macroToExpand: RsMacroCall, expandRecursively: Boolean): List<RsExpandedElement> {
@@ -155,11 +154,7 @@ private class MacroExpansionViewComponent(expansions: List<RsExpandedElement>) :
 }
 
 private fun formatPsiFile(element: PsiFile) {
-    CodeStyleManager.getInstance(element.project).reformatText(
-        element,
-        element.textRange.startOffset,
-        element.textRange.endOffset
-    )
+    CodeStyleManager.getInstance(element.project).reformatText(element, element.startOffset, element.endOffset)
 }
 
 private fun Project.createReadOnlyEditorWithElements(expansions: Collection<PsiElement>): EditorEx {
