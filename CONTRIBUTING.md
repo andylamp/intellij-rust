@@ -43,6 +43,28 @@ plugins for Rust and TOML, which are organized as gradle subprojects. Running
 `./gradlew :task` executes the task only for Rust plugin, `:intellij-toml:task` will run
 the task for TOML and `./gradlew task` will do for both.
 
+### Modules
+
+Rust plugin sources are divided into several modules. Each module (except root) supports
+some functionality in particular IDE or integrate with another plugin. Like debugging in CLion or
+integration with `TOML` plugin.
+
+The main goal is to separate code that can be compiled only with specific dependencies
+(IDEA, CLion or another plugin) from each other. It helps to avoid accidental using
+of code from wrong optional dependency.
+Also, it should allow us to compile and run tests of core module with different platforms
+like IDEA and CLion but currently it's not implemented yet.
+
+The current Rust plugin modules:
+* `:` - root/core module
+* `:idea` - contains code available only in IDEA
+* `:debugger` - debugger related code
+* `:toml` - integration with TOML plugin
+* `:intelliLang` - integration with [intelliLang](https://github.com/JetBrains/intellij-community/tree/master/plugins/IntelliLang) plugin
+* `:copyright` - integration with [copyright](https://github.com/JetBrains/intellij-community/tree/master/plugins/copyright) plugin
+
+If you want to implement integration with another plugin/IDE, you should create a new gradle module for that.
+
 ### Platform versions
 
 We usually support the latest release platform version and EAPs of next version.
@@ -219,12 +241,12 @@ final state. It is good practice to put fixtures in the same package as tests.
                  +-- blocks.rs
                  +-- blocks_after.rs
 
-Another way of providing fixtures is to use Kotlin's tripple quoted multiline
+Another way of providing fixtures is to use Kotlin's triple quoted multiline
 string literals. You can get Rust syntax highlighting inside them if you have a
 `@Language("Rust")` annotation applied. You can see an example
 [here](https://github.com/intellij-rust/intellij-rust/blob/b5e680cc80e90523610016e662a131985aa88e56/src/test/kotlin/org/rust/ide/intentions/MoveTypeConstraintToWhereClauseIntentionTest.kt).
 
-In general, triple quoted string fixtures should be prefered over separate Rust files.
+In general, triple quoted string fixtures should be preferred over separate Rust files.
 
 
 #### Fixtures
