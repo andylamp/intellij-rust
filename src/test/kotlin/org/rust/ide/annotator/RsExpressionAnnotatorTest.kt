@@ -5,7 +5,7 @@
 
 package org.rust.ide.annotator
 
-class RsExpressionAnnotatorTest : RsAnnotationTestBase() {
+class RsExpressionAnnotatorTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.java) {
 
     fun `test unnecessary parens`() = checkWarnings("""
 
@@ -42,6 +42,11 @@ class RsExpressionAnnotatorTest : RsAnnotationTestBase() {
         }
         """)
 
+    fun `test nested parentheses`() = checkWarnings("""
+        fn test() {
+            let _ = (<weak_warning descr="Redundant parentheses in expression">((((4 + 3))))</weak_warning>);
+        }
+        """)
 
     fun `test struct expr`() = checkWarnings("""
 
