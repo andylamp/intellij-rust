@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2018/12/25/changelog-89.html">
-                 https://intellij-rust.github.io/2018/12/25/changelog-89.html
+        <a href="https://intellij-rust.github.io/2019/01/15/changelog-90.html">
+                 https://intellij-rust.github.io/2019/01/15/changelog-90.html
     ]]>
     </change-notes>
 
@@ -733,6 +733,11 @@
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsStatementUpDownMover"/>
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsItemUpDownMover"/>
 
+        <!-- Run Anything -->
+
+        <runAnything.executionProvider order="after RunAnythingRunConfigurationProvider"
+                                       implementation="org.rust.ide.actions.runAnything.CargoRunAnythingProvider"/>
+        <runAnything.helpGroup implementation="org.rust.ide.actions.runAnything.CargoRunAnythingHelpGroup"/>
 
         <lang.elementManipulator forClass="org.rust.lang.core.psi.RsLitExpr"
                                  implementationClass="org.rust.ide.injected.RsStringLiteralManipulator"/>

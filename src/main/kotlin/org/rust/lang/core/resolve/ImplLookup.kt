@@ -349,6 +349,12 @@ class ImplLookup(
     }
 
     private fun selectCandidate(ref: TraitRef, recursionDepth: Int): SelectionResult<SelectionCandidate> {
+        if (ref.selfTy is TyReference && ref.selfTy.referenced is TyInfer.TyVar) {
+            // This condition is related to TyFingerprint internals: TyFingerprint should not be created for
+            // TyInfer.TyVar, and TyReference is a single special case: it unwraps during TyFingerprint creation
+            return SelectionResult.Ambiguous()
+        }
+
         val candidates = assembleCandidates(ref)
 
         return when (candidates.size) {
@@ -408,6 +414,8 @@ class ImplLookup(
     private fun assembleCandidates(ref: TraitRef): List<SelectionCandidate> {
         val element = ref.trait.element
         return when {
+            // The `Sized` trait is hardcoded in the compiler. It cannot be implemented in source code.
+            // Trying to do so would result in a E0322.
             element == items.Sized -> sizedTraitCandidates(ref.selfTy, element)
             ref.selfTy is TyTypeParameter -> {
                 ref.selfTy.getTraitBoundsTransitively().asSequence()
@@ -676,6 +684,7 @@ class ImplLookup(
     fun isSized(ty: Ty): Boolean = ty.isTraitImplemented(items.Sized)
     fun isDebug(ty: Ty): Boolean = ty.isTraitImplemented(items.Debug)
     fun isPartialEq(ty: Ty, rhsType: Ty = ty): Boolean = ty.isTraitImplemented(items.PartialEq, rhsType)
+    fun isIntoIterator(ty: Ty): Boolean = ty.isTraitImplemented(items.IntoIterator)
 
     private fun Ty.isTraitImplemented(trait: RsTraitItem?, vararg subst: Ty): Boolean {
         if (trait == null) return false

@@ -10,15 +10,13 @@ jdk: oraclejdk8
 
 env:
   global:
-    - OLD_RUST_VERSION=1.25.0
-    - CURRENT_RUST_VERSION=1.31.0
+    - OLD_RUST_VERSION=1.26.0
+    - CURRENT_RUST_VERSION=1.32.0
     - NIGHLY_RUST_VERSION=nightly-2018-12-06
     - RUST_SRC_WITH_SYMLINK=$HOME/.rust-src
   matrix:
-    # 182 platform
-    - RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=182
     # 183 platform
-    - RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183 ORG_GRADLE_PROJECT_ideaVersion=183.4886.12 # modified by script
+    - RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183 ORG_GRADLE_PROJECT_ideaVersion=183.5429.1 # modified by script
     - RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183
     - RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183 ORG_GRADLE_PROJECT_ideaVersion=2018.3
 
@@ -36,6 +34,7 @@ before_script:
 
 script:
   - travis_wait ./gradlew check -Pkotlin.incremental=false --no-daemon
+  - (cd ./pretty_printers_tests; cargo run)
 
 # https://docs.travis-ci.com/user/languages/java/#Caching
 before_cache:

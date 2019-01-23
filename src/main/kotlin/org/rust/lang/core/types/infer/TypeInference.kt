@@ -862,6 +862,7 @@ class RsFnInferenceContext(
         val generics = parentFn.generics
         for (fn in variants) {
             for ((key, newValue) in generics.zip(fn.positionalTypeArguments)) {
+                @Suppress("NAME_SHADOWING")
                 collapsed.compute(key) { key, oldValue ->
                     if (oldValue == null || oldValue == newValue) newValue else TyInfer.TyVar(key)
                 }
@@ -1501,22 +1502,25 @@ class RsFnInferenceContext(
         return result
     }
 
-    private fun inferMacroExprType(expr: RsMacroExpr): Ty {
-        val tryArg = expr.macroCall.tryMacroArgument
-        if (tryArg != null) {
-            // See RsTryExpr where we handle the ? expression in a similar way
-            return inferTryExprOrMacroType(tryArg.expr, allowOption = false)
+    private fun inferMacroExprType(macroExpr: RsMacroExpr): Ty {
+        val name = macroExpr.macroCall.macroName
+        val exprArg = macroExpr.macroCall.exprMacroArgument
+        if (exprArg != null) {
+            val expr = exprArg.expr ?: return TyUnknown
+            return when (name) {
+                // See RsTryExpr where we handle the ? expression in a similar way
+                "try" -> inferTryExprOrMacroType(expr, allowOption = false)
+                "dbg" -> expr.inferType()
+                else -> {
+                    // TODO: type inference for async/await
+                    expr.inferType()
+                    TyUnknown
+                }
+            }
         }
 
-        val awaitArg = expr.macroCall.awaitMacroArgument
-        if (awaitArg != null) {
-            // TODO: type inference for async/await
-            awaitArg.expr.inferType()
-            return TyUnknown
-        }
-
-        inferChildExprsRecursively(expr.macroCall)
-        val vecArg = expr.macroCall.vecMacroArgument
+        inferChildExprsRecursively(macroExpr.macroCall)
+        val vecArg = macroExpr.macroCall.vecMacroArgument
         if (vecArg != null) {
             val elementType = if (vecArg.semicolon != null) {
                 // vec![value; repeat]
@@ -1529,7 +1533,6 @@ class RsFnInferenceContext(
             return items.findVecForElementTy(elementType)
         }
 
-        val name = expr.macroCall.macroName
         return when {
             "print" in name || "assert" in name -> TyUnit
             name == "format" -> items.String.asTy()
@@ -1546,9 +1549,9 @@ class RsFnInferenceContext(
             name == "cfg" -> TyBool
             name == "unimplemented" || name == "unreachable" || name == "panic" -> TyNever
             name == "write" || name == "writeln" -> {
-                (expr.macroCall.expansion?.singleOrNull() as? RsExpr)?.inferType() ?: TyUnknown
+                (macroExpr.macroCall.expansion?.singleOrNull() as? RsExpr)?.inferType() ?: TyUnknown
             }
-            expr.macroCall.formatMacroArgument != null || expr.macroCall.logMacroArgument != null -> TyUnit
+            macroExpr.macroCall.formatMacroArgument != null || macroExpr.macroCall.logMacroArgument != null -> TyUnit
 
             else -> TyUnknown
         }
@@ -1724,25 +1727,21 @@ val RsGenericDeclaration.bounds: List<TraitRef>
     }
 
 private fun RsGenericDeclaration.doGetBounds(): List<TraitRef> {
-    val whereBounds = this.whereClause?.wherePredList.orEmpty().asSequence()
+    val whereBounds = whereClause?.wherePredList.orEmpty().asSequence()
         .flatMap {
-            val (element, subst) = (it.typeReference?.typeElement as? RsBaseType)?.path?.reference?.advancedResolve()
-                ?: return@flatMap emptySequence<TraitRef>()
-            val selfTy = ((element as? RsTypeDeclarationElement)?.declaredType)
-                ?.substitute(subst)
-                ?: return@flatMap emptySequence<TraitRef>()
+            val selfTy = it.typeReference?.type ?: return@flatMap emptySequence<TraitRef>()
             it.typeParamBounds?.polyboundList.toTraitRefs(selfTy)
         }
-
-    return (typeParameters.asSequence().flatMap {
+    val bounds = typeParameters.asSequence().flatMap {
         val selfTy = TyTypeParameter.named(it)
         it.typeParamBounds?.polyboundList.toTraitRefs(selfTy)
-    } + whereBounds).toList()
+    }
+    return (bounds + whereBounds).toList()
 }
 
 private fun List<RsPolybound>?.toTraitRefs(selfTy: Ty): Sequence<TraitRef> = orEmpty().asSequence()
+    .filter { !it.hasQ } // ignore `?Sized`
     .mapNotNull { it.bound.traitRef?.resolveToBoundTrait }
-    .filter { !it.element.isSizedTrait }
     .map { TraitRef(selfTy, it) }
 
 private fun Sequence<Ty>.infiniteWithTyUnknown(): Sequence<Ty> =
