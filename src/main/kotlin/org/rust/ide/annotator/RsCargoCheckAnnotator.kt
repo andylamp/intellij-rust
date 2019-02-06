@@ -6,23 +6,25 @@
 package org.rust.ide.annotator
 
 import com.google.gson.JsonParser
+import com.intellij.CommonBundle
 import com.intellij.execution.ExecutionException
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.lang.annotation.ProblemGroup
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleUtil
+import com.intellij.openapi.progress.PerformInBackgroundOption
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.impl.BackgroundableProcessIndicator
+import com.intellij.openapi.util.Computable
 import com.intellij.openapi.util.TextRange
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
-import com.intellij.psi.util.CachedValueProvider
-import com.intellij.psi.util.CachedValuesManager
-import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.PathUtil
 import org.apache.commons.lang.StringEscapeUtils.escapeHtml
 import org.rust.cargo.project.settings.rustSettings
@@ -35,11 +37,13 @@ import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.cargoWorkspace
 import org.rust.lang.core.psi.ext.containingCargoPackage
 import org.rust.openapiext.isUnitTestMode
+import org.rust.openapiext.saveAllDocuments
 import java.nio.file.Path
 import java.util.*
 
+private val LOG = Logger.getInstance(RsCargoCheckAnnotator::class.java)
+
 data class CargoCheckAnnotationInfo(
-    val file: VirtualFile,
     val toolchain: RustToolchain,
     val projectPath: Path,
     val module: Module
@@ -51,14 +55,12 @@ class CargoCheckAnnotationResult(commandOutput: List<String>) {
         private val messageRegex = """\s*\{.*"message".*""".toRegex()
     }
 
-    val messages: List<CargoTopMessage> =
-        commandOutput
-            .filter { messageRegex.matches(it) }
-            .map { parser.parse(it) }
-            .filter { it.isJsonObject }
-            .mapNotNull { CargoTopMessage.fromJson(it.asJsonObject) }
-            // Cargo can duplicate some error messages when `--all-targets` attribute is used
-            .distinct()
+    val messages: List<CargoTopMessage> = commandOutput.asSequence()
+        .filter { messageRegex.matches(it) }
+        .map { parser.parse(it) }
+        .filter { it.isJsonObject }
+        .mapNotNull { CargoTopMessage.fromJson(it.asJsonObject) }
+        .toList()
 }
 
 class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoCheckAnnotationResult>() {
@@ -69,17 +71,10 @@ class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoC
         val ws = file.cargoWorkspace ?: return null
         val module = ModuleUtil.findModuleForFile(file.virtualFile, file.project) ?: return null
         val toolchain = module.project.toolchain ?: return null
-        return CargoCheckAnnotationInfo(file.virtualFile, toolchain, ws.contentRoot, module)
+        return CargoCheckAnnotationInfo(toolchain, ws.contentRoot, module)
     }
 
-    override fun doAnnotate(info: CargoCheckAnnotationInfo): CargoCheckAnnotationResult? =
-        CachedValuesManager.getManager(info.module.project)
-            .getCachedValue(info.module) {
-                CachedValueProvider.Result.create(
-                    checkProject(info),
-                    PsiModificationTracker.MODIFICATION_COUNT
-                )
-            }
+    override fun doAnnotate(info: CargoCheckAnnotationInfo): CargoCheckAnnotationResult? = checkProject(info)
 
     override fun apply(file: PsiFile, annotationResult: CargoCheckAnnotationResult?, holder: AnnotationHolder) {
         if (annotationResult == null) return
@@ -90,8 +85,11 @@ class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoC
         val doc = file.viewProvider.document
             ?: error("Can't find document for $file in Cargo check annotator")
 
-        for ((topMessage) in annotationResult.messages) {
-            val message = filterMessage(file, doc, topMessage) ?: continue
+        val filteredMessages = annotationResult.messages
+            .mapNotNull { (topMessage) -> filterMessage(file, doc, topMessage) }
+            // Cargo can duplicate some error messages when `--all-targets` attribute is used
+            .distinct()
+        for (message in filteredMessages) {
             // We can't control what messages cargo generates, so we can't test them well.
             // Let's use special message for tests to distinguish annotation from `RsCargoCheckAnnotator`
             val annotationMessage = if (isUnitTestMode) TEST_MESSAGE else message.message
@@ -108,25 +106,31 @@ class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoC
     }
 }
 
-// NB: executed asynchronously off EDT, so care must be taken not to access
-// disposed objects
+// NB: executed asynchronously off EDT, so care must be taken not to access disposed objects
 private fun checkProject(info: CargoCheckAnnotationInfo): CargoCheckAnnotationResult? {
-    // We have to save the file to disk to give cargo a chance to check fresh file content.
-    WriteAction.computeAndWait<Unit, Throwable> {
-        val fileDocumentManager = FileDocumentManager.getInstance()
-        val document = fileDocumentManager.getDocument(info.file)
-        if (document == null) {
-            fileDocumentManager.saveAllDocuments()
-        } else if (fileDocumentManager.isDocumentUnsaved(document)) {
-            fileDocumentManager.saveDocument(document)
-        }
+    val indicator = WriteAction.computeAndWait<ProgressIndicator, Throwable> {
+        saveAllDocuments() // We have to save files to disk to give cargo a chance to check fresh file content
+        BackgroundableProcessIndicator(
+            info.module.project,
+            "Analyzing File with Cargo Check",
+            PerformInBackgroundOption.ALWAYS_BACKGROUND,
+            CommonBundle.getCancelButtonText(),
+            CommonBundle.getCancelButtonText(),
+            true
+        )
     }
 
     val output = try {
-        info.toolchain.cargoOrWrapper(info.projectPath).checkProject(info.module.project, info.module, info.projectPath)
+        ProgressManager.getInstance().runProcess(Computable {
+            info.toolchain
+                .cargoOrWrapper(info.projectPath)
+                .checkProject(info.module.project, info.module, info.projectPath)
+        }, indicator)
     } catch (e: ExecutionException) {
+        LOG.debug(e)
         return null
     }
+
     if (output.isCancelled) return null
     return CargoCheckAnnotationResult(output.stdoutLines)
 }

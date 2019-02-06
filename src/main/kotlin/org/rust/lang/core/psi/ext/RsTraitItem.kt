@@ -12,17 +12,15 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.util.Query
-import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.resolve.STD_DERIVABLE_TRAITS
+import org.rust.lang.core.resolve.KNOWN_DERIVABLE_TRAITS
+import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.stubs.RsTraitItemStub
-import org.rust.lang.core.types.BoundElement
-import org.rust.lang.core.types.RsPsiTypeImplUtil
-import org.rust.lang.core.types.emptySubstitution
+import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.substitute
-import org.rust.lang.core.types.toTypeSubst
+import org.rust.lang.core.types.regions.ReEarlyBound
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyTypeParameter
 import org.rust.openapiext.filterIsInstanceQuery
@@ -39,10 +37,9 @@ val RsTraitItem.isSizedTrait: Boolean get() = langAttribute == "sized"
 val RsTraitItem.isAuto: Boolean
     get() = stub?.isAuto ?: (node.findChildByType(RsElementTypes.AUTO) != null)
 
-val RsTraitItem.isStdDerivable: Boolean get() {
-    val derivableTrait = STD_DERIVABLE_TRAITS[name] ?: return false
-    return containingCargoPackage?.origin == PackageOrigin.STDLIB &&
-        containingMod.modName == derivableTrait.modName
+val RsTraitItem.isKnownDerivable: Boolean get() {
+    val derivableTrait = KNOWN_DERIVABLE_TRAITS[name] ?: return false
+    return derivableTrait.findTrait(knownItems) == this
 }
 
 val BoundElement<RsTraitItem>.flattenHierarchy: Collection<BoundElement<RsTraitItem>> get() {
@@ -63,6 +60,15 @@ val BoundElement<RsTraitItem>.associatedTypesTransitively: Collection<RsTypeAlia
 
 fun RsTraitItem.findAssociatedType(name: String): RsTypeAlias? =
     associatedTypesTransitively.find { it.name == name }
+
+fun RsTraitItem.substAssocType(assocName: String, ty: Ty?): BoundElement<RsTraitItem> =
+    BoundElement(this).substAssocType(assocName, ty)
+
+fun BoundElement<RsTraitItem>.substAssocType(assocName: String, ty: Ty?): BoundElement<RsTraitItem> {
+    val assocType = element.findAssociatedType(assocName)
+    val assoc = if (assocType != null && ty != null) assoc + (assocType to ty) else assoc
+    return BoundElement(element, subst, assoc)
+}
 
 fun RsTraitItem.searchForImplementations(): Query<RsImplItem> {
     return ReferencesSearch.search(this, this.useScope)
@@ -99,6 +105,21 @@ fun RsTraitItem.withSubst(vararg subst: Ty): BoundElement<RsTraitItem> {
         }.toTypeSubst()
     }
     return BoundElement(this, substitution)
+}
+
+fun RsTraitItem.withDefaultSubst(): BoundElement<RsTraitItem> =
+    BoundElement(this, defaultSubstitution(this))
+
+private fun defaultSubstitution(item: RsTraitItem): Substitution {
+    val typeSubst = item.typeParameters.associate {
+        val parameter = TyTypeParameter.named(it)
+        parameter to parameter
+    }
+    val regionSubst = item.lifetimeParameters.associate {
+        val parameter = ReEarlyBound(it)
+        parameter to parameter
+    }
+    return Substitution(typeSubst, regionSubst)
 }
 
 abstract class RsTraitItemImplMixin : RsStubbedNamedElementImpl<RsTraitItemStub>, RsTraitItem {

@@ -17,21 +17,26 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Path
 import kotlin.concurrent.thread
+import org.apache.tools.ant.taskdefs.condition.Os.*
+import org.jetbrains.intellij.tasks.RunIdeTask
 
 val CI = System.getenv("CI") != null
 
 val channel = prop("publishChannel")
 val platformVersion = prop("platformVersion")
-
-val excludedJars = listOf(
-    "java-api.jar",
-    "java-impl.jar"
-)
+val baseIDE = prop("baseIDE")
+val ideaVersion = prop("ideaVersion")
+val clionVersion = prop("clionVersion")
+val baseVersion = when (baseIDE) {
+    "idea" -> ideaVersion
+    "clion" -> clionVersion
+    else -> error("Unexpected IDE name: `$baseIDE`")
+}
 
 plugins {
     idea
-    kotlin("jvm") version "1.3.11"
-    id("org.jetbrains.intellij") version "0.3.12"
+    kotlin("jvm") version "1.3.20"
+    id("org.jetbrains.intellij") version "0.4.2"
     id("org.jetbrains.grammarkit") version "2018.2.2"
     id("de.undercouch.download") version "3.4.3"
     id("net.saliman.properties") version "1.4.6"
@@ -64,11 +69,11 @@ allprojects {
     }
 
     intellij {
-        version = prop("ideaVersion")
+        version = baseVersion
         downloadSources = !CI
         updateSinceUntilBuild = true
         instrumentCode = false
-        ideaDependencyCachePath = file("deps").absolutePath
+        ideaDependencyCachePath = dependencyCachePath
 
         tasks.withType<PatchPluginXmlTask> {
             sinceBuild(prop("sinceBuild"))
@@ -85,8 +90,8 @@ allprojects {
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "1.8"
-            languageVersion = "1.2"
-            apiVersion = "1.2"
+            languageVersion = "1.3"
+            apiVersion = "1.3"
             freeCompilerArgs = listOf("-Xjvm-default=enable")
         }
     }
@@ -109,11 +114,6 @@ allprojects {
     }
 
     afterEvaluate {
-        val mainSourceSet = sourceSets.getByName("main")
-        val mainClassPath = mainSourceSet.compileClasspath
-        val exclusion = mainClassPath.filter { it.name in excludedJars }
-        mainSourceSet.compileClasspath = mainClassPath - exclusion
-
         tasks.withType<AbstractTestTask> {
             testLogging {
                 if (hasProp("showTestStatus") && prop("showTestStatus").toBoolean()) {
@@ -132,19 +132,34 @@ allprojects {
     }
 }
 
+
+val Project.dependencyCachePath get(): String {
+    val cachePath = file("${rootProject.projectDir}/deps")
+    // If cache path doesn't exist, we need to create it manually
+    // because otherwise gradle-intellij-plugin will ignore it
+    if (!cachePath.exists()) {
+        cachePath.mkdirs()
+    }
+    return cachePath.absolutePath
+}
+
 val channelSuffix = if (channel.isBlank()) "" else "-$channel"
-val clionVersion = prop("clionVersion")
-val clionFullName = if (CI) "clion" else "clion-$clionVersion"
+val patchVersion = prop("patchVersion").toInt().let { if (channel.isBlank()) it else it + 1 }
 
 val rustProjects = rootProject.subprojects.filter { it.name != "intellij-toml" }
 
 project(":") {
     val versionSuffix = "-$platformVersion$channelSuffix"
-    version = "0.2.0.${prop("buildNumber")}$versionSuffix"
+    version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
-//        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins(project(":intellij-toml"), "IntelliLang", "copyright")
+        if (baseIDE == "idea") {
+            setPlugins(project(":intellij-toml"), "IntelliLang", "copyright")
+        } else {
+            // BACKCOMPAT: 2018.3
+            // Add `IntelliLang` to plugin list because it is bundled in CLion since 191
+            setPlugins(project(":intellij-toml"))
+        }
     }
 
     val testOutput = configurations.create("testOutput")
@@ -154,6 +169,8 @@ project(":") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
+        // FIXME: hack to correctly run tests with CLion
+        testCompile(project(":debugger"))
         testOutput(sourceSets.getByName("test").output)
     }
 
@@ -179,26 +196,10 @@ project(":") {
         purgeOldFiles = true
     }
 
-    val downloadClion = task<Download>("downloadClion") {
-        onlyIf { !file("${project.projectDir}/deps/clion-$clionVersion.tar.gz").exists() }
-        src("https://download.jetbrains.com/cpp/CLion-$clionVersion.tar.gz")
-        dest(file("${project.projectDir}/deps/clion-$clionVersion.tar.gz"))
-    }
-
-    val unpackClion = task<Copy>("unpackClion") {
-        onlyIf { !file("${project.projectDir}/deps/$clionFullName").exists() }
-        from(tarTree("deps/clion-$clionVersion.tar.gz"))
-        into(file("${project.projectDir}/deps"))
-        doLast {
-            file("${project.projectDir}/deps/clion-$clionVersion").renameTo(file("${project.projectDir}/deps/$clionFullName"))
-        }
-        dependsOn(downloadClion)
-    }
-
     tasks.withType<KotlinCompile> {
         dependsOn(
             generateRustLexer, generateRustDocHighlightingLexer,
-            generateRustParser, unpackClion
+            generateRustParser
         )
     }
 
@@ -208,8 +209,15 @@ project(":") {
         }
     }
 
+    task("configureCLion") {
+        doLast {
+            intellij {
+                sandboxDirectory = "${project.buildDir.absolutePath}${File.separator}clion-sandbox"
+            }
+        }
+    }
+
     task("resolveDependencies") {
-        dependsOn(unpackClion)
         doLast {
             rootProject.allprojects
                 .map { it.configurations }
@@ -245,9 +253,28 @@ project(":") {
     tasks.withType<Jar> {
         dependsOn(copyXmls)
     }
+
+    tasks.withType<RunIdeTask> {
+        jvmArgs("-Xmx768m") // Default value for IDEA installation
+        // uncomment if `unexpected exception ProcessCanceledException` prevents you from debugging a running IDE
+//        jvmArgs("-Didea.ProcessCanceledException=disabled")
+    }
 }
 
 project(":idea") {
+    intellij {
+        version = ideaVersion
+    }
+    dependencies {
+        compile(project(":"))
+        testCompile(project(":", "testOutput"))
+    }
+}
+
+project(":clion") {
+    intellij {
+        version = clionVersion
+    }
     dependencies {
         compile(project(":"))
         testCompile(project(":", "testOutput"))
@@ -255,9 +282,11 @@ project(":idea") {
 }
 
 project(":debugger") {
+    intellij {
+        version = clionVersion
+    }
     dependencies {
         compile(project(":"))
-        compileOnly(files("${rootProject.projectDir}/deps/$clionFullName/lib/clion.jar"))
         testCompile(project(":", "testOutput"))
     }
 }
@@ -274,6 +303,9 @@ project(":toml") {
 
 project(":intelliLang") {
     intellij {
+        // BACKCOMPAT: 2018.3
+        // use `baseVersion` because `IntelliLang` is bundled in CLion since 191
+        version = ideaVersion
         setPlugins("IntelliLang")
     }
     dependencies {
@@ -284,6 +316,7 @@ project(":intelliLang") {
 
 project(":copyright") {
     intellij {
+        version = ideaVersion
         setPlugins("copyright")
     }
     dependencies {
@@ -315,6 +348,18 @@ project(":intellij-toml") {
     }
 }
 
+task("runPrettyPrintersTests") {
+    doLast {
+        val lldbPath = when {
+            // TODO: Use `lldb` Python module from CLion distribution
+            isFamily(FAMILY_MAC) -> "/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python"
+            isFamily(FAMILY_UNIX) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/lldb/linux/lib/python3.6/site-packages"
+            else -> error("Unsupported OS")
+        }
+        "cargo run --package pretty_printers_test --bin pretty_printers_test -- $lldbPath".execute("pretty_printers_tests")
+    }
+}
+
 task("makeRelease") {
     doLast {
         val newChangelog = commitChangelog()
@@ -329,7 +374,8 @@ task("makeRelease") {
             "https://intellij-rust.github.io/$newChangelogPath.html"
         )
         pluginXml.writeText(newText)
-        "git add $pluginXmlPath".execute()
+        updatePatchVersion()
+        "git add $pluginXmlPath gradle.properties".execute()
         "git commit -m Changelog".execute()
         "git push".execute()
         commitNightly()
@@ -353,6 +399,14 @@ fun commitChangelog(): String {
     if (!yes) error("Human says no")
     "git push".execute(website)
     return lastPost
+}
+
+fun updatePatchVersion() {
+    val properties = file("gradle.properties")
+    val propertiesText = properties.readText().replace(Regex("patchVersion=(\\d+)")) {
+        "patchVersion=${it.groupValues[1].toInt() + 1}"
+    }
+    properties.writeText(propertiesText)
 }
 
 fun commitNightly() {

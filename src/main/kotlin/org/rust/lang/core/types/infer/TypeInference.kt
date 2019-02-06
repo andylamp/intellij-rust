@@ -38,7 +38,8 @@ import org.rust.stdext.zipValues
 
 fun inferTypesIn(element: RsInferenceContextOwner): RsInferenceResult {
     val items = element.knownItems
-    val lookup = ImplLookup(element.project, items)
+    val paramEnv = if (element is RsGenericDeclaration) ParamEnv.buildFor(element) else ParamEnv.EMPTY
+    val lookup = ImplLookup(element.project, items, paramEnv)
     return recursionGuard(element, Computable { lookup.ctx.infer(element) })
         ?: error("Can not run nested type inference")
 }
@@ -175,12 +176,35 @@ class RsInferenceContext(
 
         fulfill.selectWherePossible()
 
+        fallbackUnresolvedTypeVarsIfPossible()
+
+        fulfill.selectWherePossible()
+
         exprTypes.replaceAll { _, ty -> fullyResolve(ty) }
         bindings.replaceAll { _, ty -> fullyResolve(ty) }
 
         performPathsRefinement(lookup)
 
         return RsInferenceResult(bindings, exprTypes, resolvedPaths, resolvedMethods, resolvedFields, diagnostics, adjustments)
+    }
+
+    private fun fallbackUnresolvedTypeVarsIfPossible() {
+        for (ty in exprTypes.values.asSequence() + bindings.values.asSequence()) {
+            ty.visitInferTys { tyInfer ->
+                val rty = shallowResolve(tyInfer)
+                if (rty is TyInfer) {
+                    fallbackIfPossible(rty)
+                }
+                false
+            }
+        }
+    }
+
+    private fun fallbackIfPossible(ty: TyInfer) {
+        when (ty) {
+            is TyInfer.IntVar -> intUnificationTable.unifyVarValue(ty, TyInteger.DEFAULT)
+            is TyInfer.FloatVar -> floatUnificationTable.unifyVarValue(ty, TyFloat.DEFAULT)
+        }
     }
 
     private fun performPathsRefinement(lookup: ImplLookup) {
@@ -361,7 +385,7 @@ class RsInferenceContext(
                 combinePairs(ty1.typeArguments.zip(ty2.typeArguments))
             }
             ty1 is TyTraitObject && ty2 is TyTraitObject && ty1.trait == ty2.trait -> true
-            ty1 is TyAnon && ty2 is TyAnon && ty1.definition == ty2.definition -> true
+            ty1 is TyAnon && ty2 is TyAnon && ty1.definition != null && ty1.definition == ty2.definition -> true
             ty1 is TyNever || ty2 is TyNever -> true
             else -> false
         }
@@ -406,8 +430,8 @@ class RsInferenceContext(
             if (ty !is TyInfer) return ty
 
             return when (ty) {
-                is TyInfer.IntVar -> intUnificationTable.findValue(ty) ?: TyInteger.DEFAULT
-                is TyInfer.FloatVar -> floatUnificationTable.findValue(ty) ?: TyFloat.DEFAULT
+                is TyInfer.IntVar -> intUnificationTable.findValue(ty) ?: TyUnknown
+                is TyInfer.FloatVar -> floatUnificationTable.findValue(ty) ?: TyUnknown
                 is TyInfer.TyVar -> varUnificationTable.findValue(ty)?.let(::go) ?: TyUnknown
             }
         }
@@ -554,23 +578,14 @@ class RsInferenceContext(
             val resolvedTy = shallowResolve(ty)
             return when {
                 resolvedTy is TyInfer -> true
-                !resolvedTy.hasTyInfer -> false
-                else -> resolvedTy.superVisitWith(this)
+                resolvedTy.hasTyInfer -> resolvedTy.superVisitWith(this)
+                else -> false
             }
         }
     })
 
-    fun <T : TypeFoldable<T>> hasResolvableTypeVars(_ty: T): Boolean {
-        return _ty.visitWith(object : TypeVisitor {
-            override fun visitTy(ty: Ty): Boolean {
-                return when {
-                    ty is TyInfer -> ty != shallowResolve(ty)
-                    !ty.hasTyInfer -> false
-                    else -> ty.superVisitWith(this)
-                }
-            }
-        })
-    }
+    fun <T : TypeFoldable<T>> hasResolvableTypeVars(ty: T): Boolean =
+        ty.visitInferTys { it != shallowResolve(it) }
 
     /** Return true if [ty] was instantiated or unified with another type variable */
     fun isTypeVarAffected(ty: TyInfer.TyVar): Boolean =
@@ -607,6 +622,8 @@ class RsFnInferenceContext(
     private val ctx: RsInferenceContext,
     private val returnTy: Ty
 ) {
+    private var tryTy: Ty? = returnTy
+    private var yieldTy: Ty? = null
     private val lookup get() = ctx.lookup
     private val items get() = ctx.items
     private val fulfill get() = ctx.fulfill
@@ -622,6 +639,33 @@ class RsFnInferenceContext(
 
     private fun selectObligationsWherePossible() {
         fulfill.selectWherePossible()
+    }
+
+    private fun inferBlockExprType(blockExpr: RsBlockExpr, expected: Ty? = null): Ty =
+        when {
+            blockExpr.isTry -> inferTryBlockExprType(blockExpr, expected)
+            blockExpr.isAsync -> inferAsyncBlockExprType(blockExpr)
+            else -> blockExpr.block.inferType(expected)
+        }
+
+    private fun inferTryBlockExprType(blockExpr: RsBlockExpr, expected: Ty? = null): Ty {
+        require(blockExpr.isTry)
+        val oldTryTy = tryTy
+        try {
+            tryTy = expected ?: TyInfer.TyVar()
+            val resultTy = tryTy ?: TyUnknown
+            val okTy = blockExpr.block.inferType()
+            registerTryProjection(blockExpr.knownItems, resultTy, "Ok", okTy)
+            return resultTy
+        } finally {
+            tryTy = oldTryTy
+        }
+    }
+
+    private fun inferAsyncBlockExprType(blockExpr: RsBlockExpr): TyUnknown {
+        require(blockExpr.isAsync)
+        blockExpr.block.inferType()
+        return TyUnknown
     }
 
     fun inferFnBody(block: RsBlock): Ty =
@@ -688,7 +732,7 @@ class RsFnInferenceContext(
             is RsCallExpr -> inferCallExprType(this, expected)
             is RsDotExpr -> inferDotExprType(this, expected)
             is RsLitExpr -> inferLitExprType(this, expected)
-            is RsBlockExpr -> this.block.inferType(expected)
+            is RsBlockExpr -> inferBlockExprType(this, expected)
             is RsIfExpr -> inferIfExprType(this, expected)
             is RsLoopExpr -> inferLoopExprType(this)
             is RsWhileExpr -> inferWhileExprType(this)
@@ -702,6 +746,7 @@ class RsFnInferenceContext(
             is RsIndexExpr -> inferIndexExprType(this)
             is RsMacroExpr -> inferMacroExprType(this)
             is RsLambdaExpr -> inferLambdaExprType(this, expected)
+            is RsYieldExpr -> inferYieldExprType(this)
             is RsRetExpr -> inferRetExprType(this)
             is RsBreakExpr -> inferBreakExprType(this)
             is RsContExpr -> TyNever
@@ -1078,37 +1123,42 @@ class RsFnInferenceContext(
             return methodType.retType
         }
 
-        val impl = callee.source.impl
-        var typeParameters = if (impl != null) {
-            val typeParameters = instantiateBounds(impl)
-            impl.typeReference?.type?.substitute(typeParameters)?.let { ctx.combineTypes(callee.selfTy, it) }
-            if (callee.element.owner is RsAbstractableOwner.Trait) {
-                impl.traitRef?.resolveToBoundTrait?.substitute(typeParameters)?.subst ?: emptySubstitution
-            } else {
-                typeParameters
-            }
-        } else {
-            // Method has been resolved to a trait, so we should add a predicate
-            // `Self : Trait<Args>` to select args and also refine method path if possible.
-            // Method path refinement needed if there are multiple impls of the same trait to the same type
-            val trait = (callee.element.owner as RsAbstractableOwner.Trait).trait
-            when (callee.selfTy) {
-                // All these branches except `else` are optimization, they can be removed without loss of functionality
-                is TyTypeParameter -> callee.selfTy.getTraitBoundsTransitively()
-                    .find { it.element == trait }?.subst ?: emptySubstitution
-                is TyAnon -> callee.selfTy.getTraitBoundsTransitively()
-                    .find { it.element == trait }?.subst ?: emptySubstitution
-                is TyTraitObject -> callee.selfTy.trait.flattenHierarchy
-                    .find { it.element == trait }?.subst ?: emptySubstitution
-                else -> {
-                    val typeParameters = instantiateBounds(trait)
-                    val subst = trait.generics.associateBy { it }.toTypeSubst()
-                    val boundTrait = BoundElement(trait, subst).substitute(typeParameters)
-                    val traitRef = TraitRef(callee.selfTy, boundTrait)
-                    fulfill.registerPredicateObligation(Obligation(Predicate.Trait(traitRef)))
-                    ctx.registerMethodRefinement(methodCall, traitRef)
+        val source = callee.source
+        var typeParameters = when (source) {
+            is TraitImplSource.ExplicitImpl -> {
+                val impl = source.value
+                val typeParameters = instantiateBounds(impl)
+                impl.typeReference?.type?.substitute(typeParameters)?.let { ctx.combineTypes(callee.selfTy, it) }
+                if (callee.element.owner is RsAbstractableOwner.Trait) {
+                    impl.traitRef?.resolveToBoundTrait?.substitute(typeParameters)?.subst ?: emptySubstitution
+                } else {
                     typeParameters
                 }
+            }
+            is TraitImplSource.TraitBound -> lookup.getEnvBoundTransitivelyFor(callee.selfTy)
+                .find { it.element == source.value }?.subst ?: emptySubstitution
+
+            is TraitImplSource.Derived -> emptySubstitution
+
+            is TraitImplSource.Object -> when (callee.selfTy) {
+                is TyAnon -> callee.selfTy.getTraitBoundsTransitively()
+                    .find { it.element == source.value }?.subst ?: emptySubstitution
+                is TyTraitObject -> callee.selfTy.trait.flattenHierarchy
+                    .find { it.element == source.value }?.subst ?: emptySubstitution
+                else -> emptySubstitution
+            }
+            is TraitImplSource.Collapsed, is TraitImplSource.Hardcoded -> {
+                // Method has been resolved to a trait, so we should add a predicate
+                // `Self : Trait<Args>` to select args and also refine method path if possible.
+                // Method path refinement needed if there are multiple impls of the same trait to the same type
+                val trait = source.value as RsTraitItem
+                val typeParameters = instantiateBounds(trait)
+                val subst = trait.generics.associateBy { it }.toTypeSubst()
+                val boundTrait = BoundElement(trait, subst).substitute(typeParameters)
+                val traitRef = TraitRef(callee.selfTy, boundTrait)
+                fulfill.registerPredicateObligation(Obligation(Predicate.Trait(traitRef)))
+                ctx.registerMethodRefinement(methodCall, traitRef)
+                typeParameters
             }
         }
         // TODO: borrow adjustments for self parameter
@@ -1375,26 +1425,15 @@ class RsFnInferenceContext(
             is BoolOp -> {
                 if (op is OverloadableBinaryOperator) {
                     val rhsType = resolveTypeVarsWithObligations(expr.right?.inferType() ?: TyUnknown)
+                    enforceOverloadedBinopTypes(lhsType, rhsType, op)
 
-                    run {
-                        // TODO replace it via `selectOverloadedOp` and share the code with `AssignmentOp`
-                        // branch when cmp ops will become a real lang items in std
-                        val trait = items.findItem("core::cmp::${op.traitName}") as? RsTraitItem
-                            ?: return@run null
+                    if (!isPrimitiveOrInferPrimitive(lhsType)) {
+                        val lhsAdjustment = BorrowReference(TyReference(lhsType, IMMUTABLE))
+                        ctx.addAdjustment(expr.left, lhsAdjustment)
 
-                        val boundTrait = trait.withSubst(rhsType)
-                        val selection = lookup.select(TraitRef(lhsType, boundTrait)).ok()
-
-                        if (!isPrimitiveOrInferPrimitive(lhsType)) {
-                            val lhsAdjustment = BorrowReference(TyReference(lhsType, IMMUTABLE))
-                            ctx.addAdjustment(expr.left, lhsAdjustment)
-
-                            val rhsAdjustment = BorrowReference(TyReference(rhsType, IMMUTABLE))
-                            expr.right?.let { ctx.addAdjustment(it, rhsAdjustment) }
-                        }
-
-                        selection
-                    }?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
+                        val rhsAdjustment = BorrowReference(TyReference(rhsType, IMMUTABLE))
+                        expr.right?.let { ctx.addAdjustment(it, rhsAdjustment) }
+                    }
                 } else {
                     expr.right?.inferTypeCoercableTo(lhsType)
                 }
@@ -1407,14 +1446,12 @@ class RsFnInferenceContext(
             is AssignmentOp -> {
                 if (op is OverloadableBinaryOperator) {
                     val rhsType = resolveTypeVarsWithObligations(expr.right?.inferType() ?: TyUnknown)
-                    val selection = lookup.selectOverloadedOp(lhsType, rhsType, op).ok()
+                    enforceOverloadedBinopTypes(lhsType, rhsType, op)
 
                     if (!isPrimitiveOrInferPrimitive(lhsType)) {
                         val lhsAdjustment = BorrowReference(TyReference(lhsType, MUTABLE))
                         ctx.addAdjustment(expr.left, lhsAdjustment)
                     }
-
-                    selection?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
                 } else {
                     expr.right?.inferTypeCoercableTo(lhsType)
                 }
@@ -1423,20 +1460,30 @@ class RsFnInferenceContext(
         }
     }
 
+    private fun enforceOverloadedBinopTypes(lhsType: Ty, rhsType: Ty, op: OverloadableBinaryOperator) {
+        val selection = lookup.selectOverloadedOp(lhsType, rhsType, op).ok()
+        selection?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
+    }
+
     private fun isPrimitiveOrInferPrimitive(lhsType: Ty) =
         lhsType is TyPrimitive || lhsType is TyInfer.IntVar || lhsType is TyInfer.FloatVar
 
-    private fun inferTryExprType(expr: RsTryExpr): Ty =
-        inferTryExprOrMacroType(expr.expr, allowOption = true)
+    private fun inferTryExprType(expr: RsTryExpr): Ty {
+        val base = expr.expr.inferType() as? TyAdt ?: return TyUnknown
+        // TODO: make it work with generic `std::ops::Try` trait
+        if (base.item != items.Result && base.item != items.Option) return TyUnknown
+        TypeInferenceMarks.questionOperator.hit()
+        val okTy = base.typeArguments.getOrElse(0) { TyUnknown }
+        val errTy = base.typeArguments.getOrElse(1) { TyUnknown }
+        val resultTy = tryTy ?: return okTy
+        registerTryProjection(expr.knownItems, resultTy, "Error", errTy)
+        return okTy
+    }
 
-    private fun inferTryExprOrMacroType(arg: RsExpr, allowOption: Boolean): Ty {
-        val base = arg.inferType() as? TyAdt ?: return TyUnknown
-        //TODO: make it work with generic `std::ops::Try` trait
-        if (base.item == items.Result || (allowOption && base.item == items.Option)) {
-            TypeInferenceMarks.questionOperator.hit()
-            return base.typeArguments.firstOrNull() ?: TyUnknown
-        }
-        return TyUnknown
+    private fun inferTryMacroArgumentType(expr: RsExpr): Ty {
+        val base = expr.inferType() as? TyAdt ?: return TyUnknown
+        if (base.item != items.Result) return TyUnknown
+        return base.typeArguments.firstOrNull() ?: TyUnknown
     }
 
     private fun inferRangeType(expr: RsRangeExpr): Ty {
@@ -1514,8 +1561,7 @@ class RsFnInferenceContext(
         if (exprArg != null) {
             val expr = exprArg.expr ?: return TyUnknown
             return when (name) {
-                // See RsTryExpr where we handle the ? expression in a similar way
-                "try" -> inferTryExprOrMacroType(expr, allowOption = false)
+                "try" -> inferTryMacroArgumentType(expr)
                 "dbg" -> expr.inferType()
                 else -> {
                     // TODO: type inference for async/await
@@ -1586,10 +1632,17 @@ class RsFnInferenceContext(
         val isFreshRetTy = expectedRetTy == null
         val retTy = expectedRetTy ?: TyInfer.TyVar()
 
-        expr.expr?.let { RsFnInferenceContext(ctx, retTy).inferLambdaBody(it) }
-
+        val lambdaBodyContext = RsFnInferenceContext(ctx, retTy)
+        expr.expr?.let { lambdaBodyContext.inferLambdaBody(it) }
         val isDefaultRetTy = isFreshRetTy && retTy is TyInfer.TyVar && !ctx.isTypeVarAffected(retTy)
-        return TyFunction(paramTypes, if (isDefaultRetTy) TyUnit else retTy)
+        val actualRetTy = if (isDefaultRetTy) TyUnit else retTy
+
+        val yieldTy = lambdaBodyContext.yieldTy
+        return if (yieldTy == null) {
+            TyFunction(paramTypes, actualRetTy)
+        } else {
+            wrapToGenerator(yieldTy, actualRetTy, expr.knownItems)
+        }
     }
 
     private fun deduceLambdaType(expected: Ty): TyFunction? {
@@ -1638,6 +1691,16 @@ class RsFnInferenceContext(
         return TyArray(elementType, size)
     }
 
+    private fun inferYieldExprType(expr: RsYieldExpr): Ty {
+        val oldYieldTy = yieldTy
+        if (oldYieldTy == null) {
+            yieldTy = expr.expr?.inferType()
+        } else {
+            expr.expr?.inferTypeCoercableTo(oldYieldTy)
+        }
+        return TyUnit
+    }
+
     private fun inferRetExprType(expr: RsRetExpr): Ty {
         expr.expr?.inferTypeCoercableTo(returnTy)
         return TyNever
@@ -1662,6 +1725,14 @@ class RsFnInferenceContext(
             ctx.combineTypes(ty1, ty2)
             ty1
         }
+    }
+
+    private fun registerTryProjection(knownItems: KnownItems, resultTy: Ty, assocTypeName: String, assocTypeTy: Ty) {
+        val tryTrait = knownItems.Try ?: return
+        val assocType = tryTrait.findAssociatedType(assocTypeName) ?: return
+        val projection = TyProjection.valueOf(resultTy, assocType)
+        val obligation = Obligation(Predicate.Projection(projection, assocTypeTy))
+        fulfill.registerPredicateObligation(obligation)
     }
 
     private fun <T> TyWithObligations<T>.register(): T {
@@ -1721,6 +1792,14 @@ private val RsFunction.typeOfValue: TyFunction
         return TyFunction(paramTypes, returnType)
     }
 
+private fun wrapToGenerator(yieldTy: Ty, returnTy: Ty, knownItems: KnownItems): Ty {
+    val generatorTrait = knownItems.Generator ?: return TyUnknown
+    val boundGenerator = generatorTrait
+        .substAssocType("Yield", yieldTy)
+        .substAssocType("Return", returnTy)
+    return TyAnon(null, listOf(boundGenerator))
+}
+
 val RsGenericDeclaration.generics: List<TyTypeParameter>
     get() = typeParameters.map { TyTypeParameter.named(it) }
 
@@ -1776,7 +1855,7 @@ private fun KnownItems.findOptionForElementTy(elementTy: Ty): Ty {
 }
 
 private fun KnownItems.findRangeTy(rangeName: String, indexType: Ty?): Ty {
-    val ty = (findItem("core::ops::$rangeName") as? RsTypeDeclarationElement)?.declaredType ?: TyUnknown
+    val ty = findItem<RsNamedElement>("core::ops::$rangeName")?.asTy() ?: TyUnknown
 
     if (indexType == null) return ty
 

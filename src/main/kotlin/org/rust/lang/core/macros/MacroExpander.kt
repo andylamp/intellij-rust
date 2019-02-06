@@ -206,7 +206,7 @@ class MacroExpander(val project: Project) {
             return CachedValuesManager.getCachedValue(this) {
                 CachedValueProvider.Result.create(
                     psiFactory.createMacroBody(text),
-                    PsiModificationTracker.MODIFICATION_COUNT
+                    modificationTracker
                 )
             }
         }
@@ -292,7 +292,7 @@ private class MacroPattern private constructor(
 
                     val lastOffset = macroCallBody.currentOffset
                     val parsed = parse(macroCallBody, type)
-                    if (!parsed || lastOffset == macroCallBody.currentOffset) {
+                    if (!parsed || (lastOffset == macroCallBody.currentOffset && type != "vis")) {
                         MacroExpansionMarks.failMatchPatternByBindingType.hit()
                         return null
                     }
@@ -342,7 +342,7 @@ private class MacroPattern private constructor(
                 "block" -> RustParser.SimpleBlock(adaptBuilder, 0)
                 "item" -> parseItem(adaptBuilder)
                 "meta" -> RustParser.MetaItemWithoutTT(adaptBuilder, 0)
-                "vis" -> RustParser.Vis(adaptBuilder, 0)
+                "vis" -> parseVis(adaptBuilder)
                 "tt" -> RustParser.TT(adaptBuilder, 0)
                 "lifetime" -> RustParser.Lifetime(adaptBuilder, 0)
                 "literal" -> RustParser.LitExpr(adaptBuilder, 0)
@@ -416,6 +416,11 @@ private class MacroPattern private constructor(
     private fun parseItem(b: PsiBuilder): Boolean =
         parseItemFns.any { it(b, 0) }
 
+    private fun parseVis(b: PsiBuilder): Boolean {
+        RustParser.Vis(b, 0)
+        return true // Vis can be empty
+    }
+
     companion object {
         fun valueOf(psi: RsMacroPatternContents): MacroPattern =
             MacroPattern(psi.childrenSkipWhitespaceAndComments().flatten())
@@ -452,13 +457,7 @@ private class MacroPattern private constructor(
          * Some tokens that treated as keywords by our lexer,
          * but rustc's macro parser treats them as identifiers
          */
-        private val IDENTIFIER_TOKENS = TokenSet.create(
-            RsElementTypes.IDENTIFIER,
-            RsElementTypes.SELF,
-            RsElementTypes.SUPER,
-            RsElementTypes.CRATE,
-            RsElementTypes.CSELF
-        )
+        private val IDENTIFIER_TOKENS = TokenSet.orSet(tokenSetOf(RsElementTypes.IDENTIFIER), RS_KEYWORDS)
     }
 }
 
@@ -492,7 +491,7 @@ private val RsMacroBindingGroup.availableVars: Set<String>
     get() = CachedValuesManager.getCachedValue(this) {
         CachedValueProvider.Result.create(
             collectAvailableVars(this),
-            PsiModificationTracker.MODIFICATION_COUNT // TODO use modtracker attached to the macro
+            ancestorStrict<RsMacro>()!!.modificationTracker
         )
     }
 

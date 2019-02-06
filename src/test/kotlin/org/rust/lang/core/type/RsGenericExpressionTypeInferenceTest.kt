@@ -1013,6 +1013,21 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test associated type bound 2`() = testExpr("""
+        trait Foo {
+            type Item;
+            fn foo(&self) -> Self::Item;
+        }
+        trait Bar<A> {}
+        fn bar<A: Bar<B>, B>(t: A) -> B { unimplemented!() }
+        fn baz<C, D>(t: C)
+            where C: Foo,
+                  C::Item: Bar<D> {
+            let a = bar(t.foo());
+            a;
+        } //^ D
+    """)
+
     fun `test simple unification`() = testExpr("""
         struct S<T>(T);
 
@@ -1284,6 +1299,15 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         } //^ u8
     """)
 
+    fun `test inherited generic type parameter method with bound for reference type`() = testExpr("""
+        trait Tr1<A> { fn foo(&self) -> A { unimplemented!() } }
+        trait Tr2<B>: Tr1<B> {}
+        fn bar<'a, T>(t: &'a T) where &'a T: Tr2<u8> {
+            let a = t.foo();
+            a;
+        } //^ u8
+    """)
+
     fun `test inherited generic type parameter bound`() = testExpr("""
         trait Tr1<A> {}
         trait Tr2<D>: Tr1<D> {}
@@ -1493,6 +1517,25 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         fn foo<'a, T1, T2>(t: &'a T1) -> T2 where &'a T1: Foo<T2> { unimplemented!() }
         fn main() {
             let a = foo(&S);
+            a;
+        } //^ i32
+    """)
+
+    fun `test type inferred after unconstrained integer fallback to i32`() = testExpr("""
+        pub trait MyAdd<RHS=Self> {
+            type Output;
+            fn my_add(self, rhs: RHS) -> Self::Output;
+        }
+        impl MyAdd for i32 {
+            type Output = i32;
+            fn my_add(self, other: i32) -> i32 { self + other }
+        }
+        impl MyAdd for u8 {
+            type Output = u8;
+            fn my_add(self, other: u8) -> u8 { self + other }
+        }
+        fn main() {
+            let a = 0.my_add(0);
             a;
         } //^ i32
     """)
