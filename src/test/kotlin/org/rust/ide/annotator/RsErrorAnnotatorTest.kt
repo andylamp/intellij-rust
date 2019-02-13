@@ -59,6 +59,11 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     //- bar/foo.rs
     """)
 
+    fun `test no E0583 if no semicolon after module declaration`() = checkByText("""
+        mod foo<error descr="';' or '{' expected"> </error>
+        // often happens during typing `mod foo {}`
+    """)
+
     @MockRustcVersion("1.29.0")
     fun `test create file and expand module quick fix`() = checkFixByFileTree("Create module file", """
     //- main.rs
@@ -325,6 +330,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         }
     """)
 
+    @MockRustcVersion("1.33.0-nightly")
     fun `test type placeholder in signatures E0121`() = checkErrors("""
         fn ok(_: &'static str) {
             let four = |x: _| 4;
@@ -1364,6 +1370,97 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
                 yield 1;
                 return "foo"
             };
+        }
+    """)
+
+    @MockRustcVersion("1.0.0")
+    fun `test box expression feature E0658 1`() = checkErrors("""
+        struct S;
+        fn main() {
+            let x = <error descr="`box` expression syntax is experimental [E0658]">box</error> S;
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test box expression feature E0658 2`() = checkErrors("""
+        #![feature(box_syntax)]
+
+        struct S;
+        fn main() {
+            let x = box S;
+        }
+    """)
+
+    @MockRustcVersion("1.0.0")
+    fun `test box pattern feature E0658 1`() = checkErrors("""
+        struct S { x: Box<i32> }
+        fn main() {
+            let s = Box::new(S { x: Box::new(0) });
+            let <error descr="`box` pattern syntax is experimental [E0658]">box</error> x = s;
+            let S { <error descr="`box` pattern syntax is experimental [E0658]">box</error> x } = x;
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test box pattern feature E0658 2`() = checkErrors("""
+        #![feature(box_patterns)]
+
+        struct S { x: Box<i32> }
+        fn main() {
+            let s = Box::new(S { x: Box::new(0) });
+            let box x = s;
+            let S { box x } = x;
+        }
+    """)
+
+    @MockRustcVersion("1.31.0")
+    fun `test irrefutable let pattern E0658 1`() = checkErrors("""
+        fn main() {
+            if let <error descr="irrefutable let pattern is experimental [E0658]">x</error> = 42 {}
+            while let <error descr="irrefutable let pattern is experimental [E0658]">x</error> = 42 {}
+        }
+    """)
+
+    @MockRustcVersion("1.32.0-nightly")
+    fun `test irrefutable let pattern E0658 2`() = checkErrors("""
+        fn main() {
+            if let <error descr="irrefutable let pattern is experimental [E0658]">x</error> = 42 {}
+            while let <error descr="irrefutable let pattern is experimental [E0658]">x</error> = 42 {}
+        }
+    """)
+
+    @MockRustcVersion("1.32.0-nightly")
+    fun `test irrefutable let pattern E0658 3`() = checkErrors("""
+        #![feature(irrefutable_let_patterns)]
+        fn main() {
+            if let x = 42 {}
+            while let x = 42 {}
+        }
+    """)
+
+    @MockRustcVersion("1.33.0-nightly")
+    fun `test irrefutable let pattern E0658 4`() = checkErrors("""
+        fn main() {
+            if let x = 42 {}
+            while let x = 42 {}
+        }
+    """)
+
+    @MockRustcVersion("1.31.0")
+    fun `test irrefutable let pattern E0658 for struct literals`() = checkErrors("""
+        struct S { x: i32 }
+        enum E1 {
+            V { x: i32 }
+        }
+        enum E2 {
+            A,
+            V { x: i32 }
+        }
+        fn foo(a: S, b: E1, c: E2, d: Unknown) {
+            if let <error descr="irrefutable let pattern is experimental [E0658]">S { x }</error> = a {}
+            if let <error descr="irrefutable let pattern is experimental [E0658]">E1::V { x }</error> = b {}
+            if let E2::V { x } = c {}
+            if let Unknown { x } = d {}
         }
     """)
 }

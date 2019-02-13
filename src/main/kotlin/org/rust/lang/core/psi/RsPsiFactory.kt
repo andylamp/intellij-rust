@@ -11,8 +11,9 @@ import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiParserFacade
 import org.rust.ide.presentation.insertionSafeText
 import org.rust.ide.presentation.insertionSafeTextWithLifetimes
-import org.rust.ide.refactoring.extractFunction.RsExtractFunctionConfig
 import org.rust.lang.RsFileType
+import org.rust.lang.core.psi.RsPsiFactory.PathNamespace.TYPES
+import org.rust.lang.core.psi.RsPsiFactory.PathNamespace.VALUES
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.emptySubstitution
@@ -70,14 +71,17 @@ class RsPsiFactory(private val project: Project) {
         return result
     }
 
-    fun createBlockExpr(body: String): RsBlockExpr =
+    fun createBlockExpr(body: CharSequence): RsBlockExpr =
         createExpressionOfType("{ $body }")
 
     fun createUnsafeBlockExpr(body: String): RsBlockExpr =
         createExpressionOfType("unsafe { $body }")
 
-    fun tryCreatePath(text: String): RsPath? {
-        val path = createFromText<RsPath>("fn foo(t: $text) {}") ?: return null
+    fun tryCreatePath(text: String, ns: PathNamespace = TYPES): RsPath? {
+        val path = when (ns) {
+            TYPES -> createFromText("fn foo(t: $text) {}")
+            VALUES -> createFromText<RsPathExpr>("fn main() { $text; }")?.path
+        } ?: return null
         if (path.text != text) return null
         return path
     }
@@ -223,6 +227,13 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create type from text: `$text`")
     }
 
+    fun createTypeParameterList(
+        params: String
+    ): RsTypeParameterList {
+        return createFromText<RsFunction>("fn foo<$params>() {}")?.typeParameterList
+            ?: error("Failed to create type parameters from text: `<$params`>")
+    }
+
     fun createTypeArgumentList(
         params: Iterable<String>
     ): RsTypeArgumentList {
@@ -280,10 +291,10 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create unsafe element")
 
     fun createFunction(
-        config: RsExtractFunctionConfig
+        text: String
     ): RsFunction =
-        createFromText(config.signature)
-            ?: error("Failed to create function element: ${config.name}")
+        createFromText(text)
+            ?: error("Failed to create function element: text")
 
     fun createImpl(name: String, functions: List<RsFunction>): RsImplItem =
         createFromText("impl $name {\n${functions.joinToString(separator = "\n", transform = { it.text })}\n}")
@@ -348,6 +359,11 @@ class RsPsiFactory(private val project: Project) {
     private inline fun <reified E : RsExpr> createExpressionOfType(text: String): E =
         createExpression(text) as? E
             ?: error("Failed to create ${E::class.simpleName} from `$text`")
+
+    enum class PathNamespace {
+        TYPES,
+        VALUES
+    }
 }
 
 private fun RsFunction.getSignatureText(subst: Substitution): String? {

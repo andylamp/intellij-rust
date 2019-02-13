@@ -192,6 +192,13 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn foo() {}
     """)
 
+    fun `test group with $crate usage`() = doTest(MacroExpansionMarks.groupInputEnd1, """
+        macro_rules! foo {
+            ($ ($ i:item)*; $ ($ j:item)*) => ($ ( use $ crate::$ i; )* $ ( use $ crate::$ i; )*)
+        }
+        foo! {;}
+    """, "")
+
     fun `test all items`() = doTest("""
         macro_rules! foo {
             ($ ($ i:item)*) => ($ (
@@ -569,6 +576,24 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         Option<i32>
     """)
 
+    fun `test stmt context`() = checkSingleMacro("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ident) => {
+                struct $ i;
+                let $ j = 0;
+                ($ i, $ j)
+            }
+        }
+
+        fn main() {
+            foo!(S, a);
+        } //^
+    """, """
+        struct S;
+        let a = 0;
+        (S, a)
+    """)
+
     // There was a problem with "debug" macro related to the fact that we parse macro call
     // with such name as a specific syntax construction
     fun `test macro with name "debug"`() = doTest("""
@@ -576,6 +601,15 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
            ($ t:ty) => { fn foo() -> $ t {} }
        }
        debug!(i32);
+    """, """
+        fn foo() -> i32 {}
+    """)
+
+    fun `test macro with name "vec"`() = doTest("""
+       macro_rules! vec {
+           ($ t:ty) => { fn foo() -> $ t {} }
+       }
+       vec!(i32);
     """, """
         fn foo() -> i32 {}
     """)

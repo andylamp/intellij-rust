@@ -10,6 +10,7 @@ import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.util.CachedValuesManager
+import org.rust.lang.core.macros.MacroExpansion
 import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.macros.expandMacro
 import org.rust.lang.core.psi.RsMacroCall
@@ -44,9 +45,12 @@ val RsMacroCall.macroBody: String?
         return macroArgument?.compactTT?.text
             ?: formatMacroArgument?.braceListBodyText()?.toString()
             ?: logMacroArgument?.braceListBodyText()?.toString()
+            ?: assertMacroArgument?.braceListBodyText()?.toString()
+            ?: exprMacroArgument?.braceListBodyText()?.toString()
+            ?: vecMacroArgument?.braceListBodyText()?.toString()
     }
 
-val RsMacroCall.expansion: List<RsExpandedElement>?
+val RsMacroCall.expansion: MacroExpansion?
     get() = CachedValuesManager.getCachedValue(this) {
         expandMacro(this)
     }
@@ -64,7 +68,7 @@ private fun RsMacroCall.expandAllMacrosRecursively(depth: Int): String {
             else -> element.text
         }
 
-    return expansion?.joinToString(" ") { toExpandedText(it) } ?: text
+    return expansion?.elements?.joinToString(" ") { toExpandedText(it) } ?: text
 }
 
 fun RsMacroCall.processExpansionRecursively(processor: (RsExpandedElement) -> Boolean): Boolean =
@@ -72,7 +76,7 @@ fun RsMacroCall.processExpansionRecursively(processor: (RsExpandedElement) -> Bo
 
 private fun RsMacroCall.processExpansionRecursively(processor: (RsExpandedElement) -> Boolean, depth: Int): Boolean {
     if (depth > DEFAULT_RECURSION_LIMIT) return true
-    return expansion.orEmpty().any { it.processRecursively(processor, depth) }
+    return expansion?.elements.orEmpty().any { it.processRecursively(processor, depth) }
 }
 
 private fun RsExpandedElement.processRecursively(processor: (RsExpandedElement) -> Boolean, depth: Int): Boolean {

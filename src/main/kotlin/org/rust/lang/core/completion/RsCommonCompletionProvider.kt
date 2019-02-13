@@ -16,8 +16,8 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.StubIndex
 import com.intellij.util.ProcessingContext
 import org.rust.ide.inspections.import.AutoImportFix
+import org.rust.ide.inspections.import.ImportContext
 import org.rust.ide.inspections.import.importItem
-import org.rust.ide.inspections.import.toImportContext
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psiElement
@@ -39,8 +39,12 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         context: ProcessingContext,
         result: CompletionResultSet
     ) {
-        val element = parameters.position.parent as RsReferenceElement
-        if (parameters.position !== element.referenceNameElement) return
+        // Use original position if possible to re-use caches of the real file
+        val position = CompletionUtil.getOriginalElement(parameters.position)
+            ?.takeIf { isAncestorTypesEquals(it, parameters.position) }
+            ?: parameters.position
+        val element = position.parent as RsReferenceElement
+        if (position !== element.referenceNameElement) return
 
         // This set will contain the names of all paths that have been added to the `result` by this provider.
         val processedPathNames = hashSetOf<String>()
@@ -77,7 +81,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
 
                 is RsMethodCall -> {
                     val lookup = ImplLookup.relativeTo(element)
-                    val receiver = element.receiver.type
+                    val receiver = CompletionUtil.getOriginalOrSelf(element.receiver).type
                     processMethodCallExprResolveVariants(
                         lookup,
                         receiver,
@@ -90,7 +94,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
 
                 is RsFieldLookup -> {
                     val lookup = ImplLookup.relativeTo(element)
-                    val receiver = element.receiver.type
+                    val receiver = CompletionUtil.getOriginalOrSelf(element.receiver).type
                     processDotExprResolveVariants(
                         lookup,
                         receiver,
@@ -118,7 +122,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         Testmarks.pathCompletionFromIndex.hit()
 
         val project = parameters.originalFile.project
-        val importContext = path.toImportContext(project)
+        val importContext = ImportContext.from(project, path, true)
         val pathMod = path.containingMod
 
         val keys = hashSetOf<String>().apply {
@@ -170,6 +174,9 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         val pathCompletionFromIndex = Testmark("pathCompletionFromIndex")
     }
 }
+
+private fun isAncestorTypesEquals(psi1: PsiElement, psi2: PsiElement): Boolean =
+    psi1.ancestors.zip(psi2.ancestors).all { (a, b) -> a.javaClass == b.javaClass }
 
 private fun filterAssocTypes(
     path: RsPath,

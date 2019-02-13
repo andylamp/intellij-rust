@@ -41,6 +41,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
         val visitor = object : RsVisitor() {
             override fun visitBaseType(o: RsBaseType) = checkBaseType(holder, o)
+            override fun visitCondition(o: RsCondition) = checkCondition(holder, o)
             override fun visitConstant(o: RsConstant) = checkConstant(holder, o)
             override fun visitValueArgumentList(o: RsValueArgumentList) = checkValueArgumentList(holder, o)
             override fun visitStructItem(o: RsStructItem) = checkDuplicates(holder, o)
@@ -52,6 +53,8 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitLifetime(o: RsLifetime) = checkLifetime(holder, o)
             override fun visitModDeclItem(o: RsModDeclItem) = checkModDecl(holder, o)
             override fun visitModItem(o: RsModItem) = checkDuplicates(holder, o)
+            override fun visitPatBox(o: RsPatBox)  = checkPatBox(holder, o)
+            override fun visitPatField(o: RsPatField) = checkPatField(holder, o)
             override fun visitPatBinding(o: RsPatBinding) = checkPatBinding(holder, o)
             override fun visitPath(o: RsPath) = checkPath(holder, o)
             override fun visitNamedFieldDecl(o: RsNamedFieldDecl) = checkDuplicates(holder, o)
@@ -62,6 +65,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkLifetimeParameter(holder, o)
             override fun visitVis(o: RsVis) = checkVis(holder, o)
             override fun visitVisRestriction(o: RsVisRestriction) = checkVisRestriction(holder, o)
+            override fun visitUnaryExpr(o: RsUnaryExpr) = checkUnary(holder, o)
             override fun visitBinaryExpr(o: RsBinaryExpr) = checkBinary(holder, o)
             override fun visitExternCrateItem(o: RsExternCrateItem) = checkExternCrate(holder, o)
             override fun visitDotExpr(o: RsDotExpr) = checkDotExpr(holder, o)
@@ -126,6 +130,15 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             || (owner is RsRetType && owner.parent is RsFunction) || owner is RsConstant) {
             RsDiagnostic.TypePlaceholderForbiddenError(type).addToHolder(holder)
         }
+    }
+
+    private fun checkPatBox(holder: AnnotationHolder, box: RsPatBox) {
+        checkFeature(holder, box.box, BOX_PATTERNS, "`box` pattern syntax")
+    }
+
+    private fun checkPatField(holder: AnnotationHolder, field: RsPatField) {
+        val box = field.box ?: return
+        checkFeature(holder, box, BOX_PATTERNS, "`box` pattern syntax")
     }
 
     private fun checkPatBinding(holder: AnnotationHolder, binding: RsPatBinding) {
@@ -256,7 +269,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             }
         }
 
-        if (modDecl.reference.resolve() == null) {
+        if (modDecl.reference.resolve() == null && modDecl.semicolon != null) {
             RsDiagnostic.ModuleNotFound(modDecl).addToHolder(holder)
         }
     }
@@ -327,6 +340,11 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         }
     }
 
+    private fun checkUnary(holder: AnnotationHolder, o: RsUnaryExpr) {
+        val box = o.box ?: return
+        checkFeature(holder, box, BOX_SYNTAX, "`box` expression syntax")
+    }
+
     private fun checkBinary(holder: AnnotationHolder, o: RsBinaryExpr) {
         if (o.isComparisonBinaryExpr() && (o.left.isComparisonBinaryExpr() || o.right.isComparisonBinaryExpr())) {
             val annotator = holder.createErrorAnnotation(o, "Chained comparison operator require parentheses")
@@ -346,6 +364,13 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             RsDiagnostic.TooFewParamsError(args, expectedCount, realCount).addToHolder(holder)
         } else if (!variadic && realCount != expectedCount) {
             RsDiagnostic.TooManyParamsError(args, expectedCount, realCount).addToHolder(holder)
+        }
+    }
+
+    private fun checkCondition(holder: AnnotationHolder, element: RsCondition) {
+        val pat = element.pat ?: return
+        if (pat.skipUnnecessaryTupDown().isIrrefutable) {
+            checkFeature(holder, pat, IRREFUTABLE_LET_PATTERNS, "irrefutable let pattern")
         }
     }
 

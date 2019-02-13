@@ -139,8 +139,7 @@ data class ParamEnv(val callerBounds: List<TraitRef>) {
         fun buildFor(decl: RsGenericDeclaration): ParamEnv = ParamEnv(buildList {
             addAll(decl.bounds)
             if (decl is RsAbstractable) {
-                val owner = decl.owner
-                when (owner) {
+                when (val owner = decl.owner) {
                     is RsAbstractableOwner.Trait -> {
                         add(TraitRef(TyTypeParameter.self(), owner.trait.withDefaultSubst()))
                         addAll(owner.trait.bounds)
@@ -505,6 +504,7 @@ class ImplLookup(
         return listOf(candidate)
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun autoTraitCandidates(ty: Ty, trait: RsTraitItem): List<SelectionCandidate> {
         // FOr now, just think that any type is Sync + Send
         // TODO implement auto trait logic
@@ -664,7 +664,7 @@ class ImplLookup(
     private fun lookupAssocTypeInSelection(selection: Selection, assoc: RsTypeAlias): Ty? =
         selection.impl.associatedTypesTransitively.find { it.name == assoc.name }?.typeReference?.type?.substitute(selection.subst)
 
-    private fun lookupAssocTypeInBounds(
+    fun lookupAssocTypeInBounds(
         subst: Sequence<BoundElement<RsTraitItem>>,
         trait: RsTraitOrImpl,
         assocType: RsTypeAlias
