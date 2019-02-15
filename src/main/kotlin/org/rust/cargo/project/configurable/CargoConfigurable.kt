@@ -7,6 +7,7 @@ package org.rust.cargo.project.configurable
 
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBCheckBox
+import org.rust.cargo.util.CargoCommandLineEditor
 import org.rust.ide.ui.layout
 import org.rust.openapiext.CheckboxDelegate
 import javax.swing.JComponent
@@ -22,33 +23,40 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
     private val useCargoCheckAnnotatorCheckbox: JBCheckBox = JBCheckBox()
     private var useCargoCheckAnnotator: Boolean by CheckboxDelegate(useCargoCheckAnnotatorCheckbox)
 
-    private val useOfflineForCargoCheckCheckbox: JBCheckBox = JBCheckBox()
-    private var useOfflineForCargoCheck: Boolean by CheckboxDelegate(useOfflineForCargoCheckCheckbox)
+    private val useOfflineCheckbox: JBCheckBox = JBCheckBox()
+    private var useOffline: Boolean by CheckboxDelegate(useOfflineCheckbox)
 
     private val compileAllTargetsCheckBox = JBCheckBox()
     private var compileAllTargets: Boolean by CheckboxDelegate(compileAllTargetsCheckBox)
 
+    private lateinit var cargoCheckArguments: CargoCommandLineEditor
+
     override fun getDisplayName(): String = "Cargo"
 
     override fun createComponent(): JComponent = layout {
+        cargoCheckArguments = CargoCommandLineEditor(project, "check ") { null }
+
         row("Watch Cargo.toml:", autoUpdateEnabledCheckbox, """
             Update project automatically if `Cargo.toml` changes.
-        """)
-        row("Use cargo check to analyze code:", useCargoCheckAnnotatorCheckbox, """
-            Enable external annotator to add code highlighting based on `cargo check` result.
-            Can be CPU-consuming.
-        """)
-        row("Use cargo check when build project:", useCargoCheckForBuildCheckbox, """
-            Use `cargo check` instead of `cargo build`.
-            It should decrease action time because it doesn't generate binaries.
         """)
         row("Compile all project targets if possible:", compileAllTargetsCheckBox, """
             Pass `--target-all` option to cargo build/check command.
         """)
-        row("Offline mode (nightly only):", useOfflineForCargoCheckCheckbox, """
+        row("Offline mode (nightly only):", useOfflineCheckbox, """
             Pass `-Z offline` option to cargo not to perform network requests.
             Used only for nightly toolchain.
         """)
+        block("Cargo Check") {
+            row("Use cargo check to analyze code:", useCargoCheckAnnotatorCheckbox, """
+                Enable external annotator to add code highlighting based on `cargo check` result.
+                Can be CPU-consuming.
+            """)
+            row("Use cargo check when build project:", useCargoCheckForBuildCheckbox, """
+                Use `cargo check` instead of `cargo build`.
+                It should decrease action time because it doesn't generate binaries.
+            """)
+            row("Additional cargo check arguments:", cargoCheckArguments)
+        }
     }
 
     override fun isModified(): Boolean {
@@ -56,7 +64,8 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
             || useCargoCheckForBuild != settings.useCargoCheckForBuild
             || useCargoCheckAnnotator != settings.useCargoCheckAnnotator
             || compileAllTargets != settings.compileAllTargets
-            || useOfflineForCargoCheck != settings.useOfflineForCargoCheck
+            || useOffline != settings.useOffline
+            || cargoCheckArguments.text != settings.cargoCheckArguments
     }
 
     override fun apply() {
@@ -65,8 +74,9 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
             autoUpdateEnabled = autoUpdateEnabled,
             useCargoCheckForBuild = useCargoCheckForBuild,
             useCargoCheckAnnotator = useCargoCheckAnnotator,
+            cargoCheckArguments = cargoCheckArguments.text,
             compileAllTargets = compileAllTargets,
-            useOfflineForCargoCheck = useOfflineForCargoCheck
+            useOffline = useOffline
         )
     }
 
@@ -74,7 +84,8 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
         autoUpdateEnabled = settings.autoUpdateEnabled
         useCargoCheckForBuild = settings.useCargoCheckForBuild
         useCargoCheckAnnotator = settings.useCargoCheckAnnotator
+        cargoCheckArguments.text = settings.cargoCheckArguments
         compileAllTargets = settings.compileAllTargets
-        useOfflineForCargoCheck = settings.useOfflineForCargoCheck
+        useOffline = settings.useOffline
     }
 }

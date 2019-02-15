@@ -20,8 +20,9 @@ interface RustProjectSettingsService {
         val explicitPathToStdlib: String?,
         val useCargoCheckForBuild: Boolean,
         val useCargoCheckAnnotator: Boolean,
+        val cargoCheckArguments: String,
         val compileAllTargets: Boolean,
-        val useOfflineForCargoCheck: Boolean,
+        val useOffline: Boolean,
         val expandMacros: Boolean,
         val showTestToolWindow: Boolean,
         val useSkipChildren: Boolean
@@ -38,8 +39,9 @@ interface RustProjectSettingsService {
     val autoUpdateEnabled: Boolean get() = data.autoUpdateEnabled
     val useCargoCheckForBuild: Boolean get() = data.useCargoCheckForBuild
     val useCargoCheckAnnotator: Boolean get() = data.useCargoCheckAnnotator
+    val cargoCheckArguments: String get() = data.cargoCheckArguments
     val compileAllTargets: Boolean get() = data.compileAllTargets
-    val useOfflineForCargoCheck: Boolean get() = data.useOfflineForCargoCheck
+    val useOffline: Boolean get() = data.useOffline
     val expandMacros: Boolean get() = data.expandMacros
     val showTestToolWindow: Boolean get() = data.showTestToolWindow
     val useSkipChildren: Boolean get() = data.useSkipChildren

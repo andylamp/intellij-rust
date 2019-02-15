@@ -28,8 +28,9 @@ class RustProjectSettingsServiceImpl(
         var explicitPathToStdlib: String? = null,
         var useCargoCheckForBuild: Boolean = true,
         var useCargoCheckAnnotator: Boolean = false,
+        var cargoCheckArguments: String = "",
         var compileAllTargets: Boolean = true,
-        var useOfflineForCargoCheck: Boolean = false,
+        var useOffline: Boolean = false,
         var expandMacros: Boolean = true,
         var showTestToolWindow: Boolean = true,
         var useSkipChildren: Boolean = false
@@ -54,8 +55,9 @@ class RustProjectSettingsServiceImpl(
                 explicitPathToStdlib = state.explicitPathToStdlib,
                 useCargoCheckForBuild = state.useCargoCheckForBuild,
                 useCargoCheckAnnotator = state.useCargoCheckAnnotator,
+                cargoCheckArguments = state.cargoCheckArguments,
                 compileAllTargets = state.compileAllTargets,
-                useOfflineForCargoCheck = state.useOfflineForCargoCheck,
+                useOffline = state.useOffline,
                 expandMacros = state.expandMacros,
                 showTestToolWindow = state.showTestToolWindow,
                 useSkipChildren = state.useSkipChildren
@@ -68,8 +70,9 @@ class RustProjectSettingsServiceImpl(
                 explicitPathToStdlib = value.explicitPathToStdlib,
                 useCargoCheckForBuild = value.useCargoCheckForBuild,
                 useCargoCheckAnnotator = value.useCargoCheckAnnotator,
+                cargoCheckArguments = value.cargoCheckArguments,
                 compileAllTargets = value.compileAllTargets,
-                useOfflineForCargoCheck = value.useOfflineForCargoCheck,
+                useOffline = value.useOffline,
                 expandMacros = value.expandMacros,
                 showTestToolWindow = value.showTestToolWindow,
                 useSkipChildren = value.useSkipChildren
