@@ -23,6 +23,7 @@ import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
+import org.rust.ide.injected.isDoctestInjection
 import org.rust.lang.RsConstants
 import org.rust.lang.core.macros.MACRO_CRATE_IDENTIFIER_PREFIX
 import org.rust.lang.core.macros.RsExpandedElement
@@ -102,7 +103,7 @@ fun processDotExprResolveVariants(
     processor: (DotExprResolveVariant) -> Boolean
 ): Boolean {
     if (processFieldExprResolveVariants(lookup, receiverType, processor)) return true
-    if (processMethodDeclarationsWithDeref(lookup, receiverType) { processor(it) }) return true
+    if (processMethodDeclarationsWithDeref(lookup, receiverType, processor)) return true
 
     return false
 }
@@ -238,6 +239,7 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
 }
 
 fun processExternCrateResolveVariants(element: RsElement, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
+    val isDoctestInjection = element.isDoctestInjection
     val target = element.containingCargoTarget ?: return false
     val pkg = target.pkg
 
@@ -247,9 +249,10 @@ fun processExternCrateResolveVariants(element: RsElement, isCompletion: Boolean,
         val libTarget = pkg.libTarget ?: return false
         // When crate depends on another version of the same crate
         // we shouldn't add current package into resolve/completion results
-        if (otherVersionOfSameCrate.hitOnFalse(libTarget == target)) return false
+        if (otherVersionOfSameCrate.hitOnFalse(libTarget == target) && !isDoctestInjection) return false
 
         if (pkg.origin == PackageOrigin.STDLIB && pkg.name in visitedDeps) return false
+        if (isDoctestInjection && pkg.origin != PackageOrigin.STDLIB && libTarget != target) return false
         visitedDeps += pkg.name
         return processor.lazy(dependencyName ?: libTarget.normName) {
             libTarget.crateRoot?.toPsiFile(element.project)?.rustFile
@@ -703,10 +706,12 @@ private class MacroResolver private constructor() {
         // `foo` macro, both `parent` and `context` of `foo!` macro call are "main.rs" file.
         // But we want to process macro definition before `bar!` macro call, so we have to use
         // a macro call as a "parent"
-        val parent = (element as? RsExpandedElement)?.expandedFrom ?: element.context ?: return false
-        return when (parent) {
-            is RsFile -> processScopesInLexicalOrderUpward(parent.declaration ?: return false, processor)
-            else -> psiBasedProcessScopesInLexicalOrderUpward(parent, processor)
+        val context = (element as? RsExpandedElement)?.expandedFrom ?: element.context ?: return false
+        return when {
+            context is RsFile -> processScopesInLexicalOrderUpward(context.declaration ?: return false, processor)
+            // Optimization. Let this function be tailrec if go up by real parent (in the same file)
+            context != element.parent -> processScopesInLexicalOrderUpward(context, processor)
+            else -> psiBasedProcessScopesInLexicalOrderUpward(context, processor)
         }
     }
 
@@ -787,7 +792,7 @@ private class MacroResolver private constructor() {
         private fun visibleMacros(scope: RsItemsOwner): List<RsMacro> =
             CachedValuesManager.getCachedValue(scope) {
                 val macros = MacroResolver().collectMacrosInScopeDownward(scope)
-                CachedValueProvider.Result.create(macros, scope.project.rustStructureModificationTracker)
+                CachedValueProvider.Result.create(macros, scope.rustStructureOrAnyPsiModificationTracker)
             }
 
         private fun <T> processAll(elements: Collection<T>, processor: (T) -> Boolean): Boolean =
@@ -809,7 +814,7 @@ private fun exportedMacros(scope: RsFile): List<RsMacro> {
     }
     return CachedValuesManager.getCachedValue(scope) {
         val macros = exportedMacrosInternal(scope)
-        CachedValueProvider.Result.create(macros, scope.project.rustStructureModificationTracker)
+        CachedValueProvider.Result.create(macros, scope.rustStructureOrAnyPsiModificationTracker)
     }
 }
 
@@ -1023,11 +1028,23 @@ private fun processLexicalDeclarations(
         return processAll(boundNames, processor)
     }
 
-    fun processCondition(condition: RsCondition?, processor: RsResolveProcessor): Boolean {
-        if (condition == null || condition == cameFrom) return false
-        val pat = condition.pat
+    fun processOrPats(orPats: RsOrPats, processor: RsResolveProcessor): Boolean {
+        if (Namespace.Values !in ns) return false
+        if (cameFrom == orPats) return false
+        val patList = orPats.patList
+        if (cameFrom in patList) return false
+        // Rust allows to defined several patterns in the single match arm and in if/while expr condition,
+        // but they all must bind the same variables, hence we can inspect
+        // only the first one.
+        val pat = patList.firstOrNull()
         if (pat != null && processPattern(pat, processor)) return true
         return false
+    }
+
+    fun processCondition(condition: RsCondition?, processor: RsResolveProcessor): Boolean {
+        if (condition == null || condition == cameFrom) return false
+        val orPats = condition.orPats ?: return false
+        return processOrPats(orPats, processor)
     }
 
     when (scope) {
@@ -1100,13 +1117,11 @@ private fun processLexicalDeclarations(
         }
 
         is RsIfExpr -> {
-            if (Namespace.Values !in ns) return false
             // else branch of 'if let' expression shouldn't look into condition pattern
             if (scope.elseBranch == cameFrom) return false
             return processCondition(scope.condition, processor)
         }
         is RsWhileExpr -> {
-            if (Namespace.Values !in ns) return false
             return processCondition(scope.condition, processor)
         }
 
@@ -1119,14 +1134,7 @@ private fun processLexicalDeclarations(
         }
 
         is RsMatchArm -> {
-            // Rust allows to defined several patterns in the single match arm,
-            // but they all must bind the same variables, hence we can inspect
-            // only the first one.
-            if (cameFrom in scope.patList) return false
-            if (Namespace.Values !in ns) return false
-            val pat = scope.patList.firstOrNull()
-            if (pat != null && processPattern(pat, processor)) return true
-
+            return processOrPats(scope.orPats, processor)
         }
     }
     return false

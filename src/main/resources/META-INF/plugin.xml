@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/02/14/changelog-92.html">
-                 https://intellij-rust.github.io/2019/02/14/changelog-92.html
+        <a href="https://intellij-rust.github.io/2019/03/04/changelog-93.html">
+                 https://intellij-rust.github.io/2019/03/04/changelog-93.html
     ]]>
     </change-notes>
 
@@ -46,11 +46,13 @@
 
         <lang.parserDefinition language="Rust" implementationClass="org.rust.lang.core.parser.RustParserDefinition"/>
         <stubElementTypeHolder class="org.rust.lang.core.psi.RsElementTypes"/>
+        <lang.ast.factory language="Rust" implementationClass="org.rust.lang.core.RsASTFactory"/>
 
         <!-- Code insight settings -->
 
         <applicationService serviceInterface="org.rust.ide.settings.RsCodeInsightSettings"
                             serviceImplementation="org.rust.ide.settings.RsCodeInsightSettings"/>
+        <editorActionHandler action="EditorEnter" implementationClass="org.rust.ide.actions.RsEnterHandler"/>
 
         <!-- Selection Handler -->
 
@@ -162,6 +164,7 @@
 
         <!-- Annotator -->
 
+        <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsDoctestAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsSyntaxErrorsAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsEdition2018KeywordsAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsLiteralAnnotator"/>
@@ -170,7 +173,6 @@
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsExpressionAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsErrorAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsUnsafeExpressionAnnotator"/>
-        <externalAnnotator language="Rust" implementationClass="org.rust.ide.annotator.RsCargoCheckAnnotator"/>
         <highlightRangeExtension implementation="org.rust.ide.annotator.RsErrorAnnotator"/>
 
         <!-- Line Marker Providers -->
@@ -208,6 +210,8 @@
                                   implementation="org.rust.lang.core.resolve.ref.RsLitExprReferenceContributor"/>
 
         <!-- Completion -->
+
+        <codeCompletionConfigurable instance="org.rust.ide.settings.RsCodeCompletionConfigurable"/>
 
         <completion.contributor language="Rust"
                                 implementationClass="org.rust.lang.core.completion.RsCompletionContributor"/>
@@ -491,6 +495,11 @@
                          enabledByDefault="false" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsAnchoredPathsInspection"/>
 
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Trait implementation"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsTraitImplementationInspection"/>
+
         <!-- Surrounders -->
 
         <lang.surroundDescriptor language="Rust"
@@ -653,6 +662,10 @@
             <className>org.rust.ide.intentions.JoinArgumentListIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.InvertIfIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -751,6 +764,7 @@
         <lang.elementManipulator forClass="org.rust.lang.core.psi.RsLitExpr"
                                  implementationClass="org.rust.ide.injected.RsStringLiteralManipulator"/>
         <multiHostInjector implementation="org.rust.ide.injected.RsRegExpInjector"/>
+        <multiHostInjector implementation="org.rust.ide.injected.RsDoctestLanguageInjector"/>
 
 
         <projectService serviceImplementation="org.rust.lang.core.resolve.ref.RsResolveCache"/>
@@ -767,6 +781,9 @@
         <component>
             <interface-class>org.rust.lang.core.psi.RsPsiManager</interface-class>
             <implementation-class>org.rust.lang.core.psi.RsPsiManagerImpl</implementation-class>
+        </component>
+        <component>
+            <implementation-class>org.rust.ide.annotator.cargoCheck.RsCargoCheckAnnotatorPassFactory</implementation-class>
         </component>
     </project-components>
 
@@ -812,7 +829,8 @@
         <action id="Rust.CargoFmtFile"
                 class="org.rust.ide.actions.RustfmtFileAction"
                 text="Reformat File with Rustfmt"
-                description="Reformat current file with rustfmt">
+                description="Reformat current file with rustfmt"
+                icon="AllIcons.Actions.RealIntentionBulb">
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </action>
 
@@ -864,6 +882,7 @@
         <group id="Rust.Cargo">
             <reference id="Rust.RefreshCargoProject"/>
             <reference id="Rust.CargoCommand"/>
+            <reference id="Rust.CargoFmtFile"/>
             <reference id="Rust.RunClippy"/>
             <separator/>
             <reference id="Rust.AttachCargoProject"/>

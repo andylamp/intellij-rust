@@ -17,6 +17,7 @@ import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates
+import org.rust.ide.injected.isDoctestInjection
 import org.rust.ide.search.RsCargoProjectScope
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -55,10 +56,10 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         }
 
         if (candidates.size == 1) {
-            element.containingMod.importItem(candidates.first())
+            candidates.first().import(element)
         } else {
             DataManager.getInstance().dataContextFromFocusAsync.onSuccess {
-                chooseItemAndImport(project, it, candidates, element.containingMod)
+                chooseItemAndImport(project, it, candidates, element)
             }
         }
         isConsumed = true
@@ -68,11 +69,11 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         project: Project,
         dataContext: DataContext,
         items: List<ImportCandidate>,
-        mod: RsMod
+        context: RsElement
     ) {
         showItemsToImportChooser(project, dataContext, items) { selectedValue ->
             project.runWriteCommandAction {
-                mod.importItem(selectedValue)
+                selectedValue.import(context)
             }
         }
     }
@@ -111,19 +112,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         fun findApplicableContext(project: Project, methodCall: RsMethodCall): Context<Unit>? {
             val results = methodCall.inference?.getResolvedMethod(methodCall) ?: emptyList()
             if (results.isEmpty()) return Context(Unit, emptyList())
-
-            val traitsToImport = collectTraitsToImport(methodCall, results) ?: return null
-
-            val superMods = LinkedHashSet(methodCall.containingMod.superMods)
-            val attributes = methodCall.stdlibAttributes
-
-            val candidates = traitsToImport
-                .asSequence()
-                .flatMap { QualifiedNamedItem.ExplicitItem(it).withModuleReexports(project).asSequence() }
-                .mapNotNull { importItem -> importItem.toImportCandidate(superMods) }
-                .filterImportCandidates(attributes)
-                .toList()
-
+            val candidates = getImportCandidates(project, methodCall, results)?.toList() ?: return null
             return Context(Unit, candidates)
         }
 
@@ -168,11 +157,36 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 .filter { canBeResolvedToSuitableItem(importingPathText, importContext, it.info) }
         }
 
+        /**
+         * Returns a sequence of import trait candidates for given [resolvedMethods].
+         * After importing any of which it becomes possible to resolve the corresponding method call correctly.
+         *
+         * Returns null if there aren't traits to import at all. It can mean:
+         * * given [resolvedMethods] don't refer to any trait
+         * * if at least one trait related to [resolvedMethods] is already in scope
+         */
+        fun getImportCandidates(
+            project: Project,
+            scope: RsElement,
+            resolvedMethods: List<MethodResolveVariant>
+        ): Sequence<ImportCandidate>? {
+            val traitsToImport = collectTraitsToImport(scope, resolvedMethods) ?: return null
+
+            val superMods = LinkedHashSet(scope.containingMod.superMods)
+            val attributes = scope.stdlibAttributes
+
+            return traitsToImport
+                .asSequence()
+                .flatMap { QualifiedNamedItem.ExplicitItem(it).withModuleReexports(project).asSequence() }
+                .mapNotNull { importItem -> importItem.toImportCandidate(superMods) }
+                .filterImportCandidates(attributes)
+        }
+
         private fun QualifiedNamedItem.toImportCandidate(superMods: LinkedHashSet<RsMod>): ImportCandidate? =
             canBeImported(superMods)?.let { ImportCandidate(this, it) }
 
         private fun collectTraitsToImport(
-            methodCall: RsMethodCall,
+            scope: RsElement,
             resolveResults: List<MethodResolveVariant>
         ): List<RsTraitItem>? {
             val traits = resolveResults.mapNotNull { variant ->
@@ -193,7 +207,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
 
                 trait
             }
-            return if (traits.filterInScope(methodCall).isNotEmpty()) null else traits
+            return if (traits.filterInScope(scope).isNotEmpty()) null else traits
         }
 
         // Semantic signature of method is `ImportItem.canBeImported(mod: RsMod)`
@@ -351,6 +365,8 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         val pathInUseItem = Testmark("pathInUseItem")
         val externCrateItemInNotCrateRoot = Testmark("externCrateItemInNotCrateRoot")
         val nameInScope = Testmark("nameInScope")
+        val doctestInjectionImport = Testmark("doctestInjectionImport")
+        val insertNewLineBeforeUseItem = Testmark("insertNewLineBeforeUseItem")
     }
 }
 
@@ -434,23 +450,23 @@ private fun RsPath.namespaceFilter(isCompletion: Boolean): (RsQualifiedNamedElem
 }
 
 /**
- * Inserts an use declaration to the receiver mod for importing the selected `candidate`.
+ * Inserts a use declaration to the mod where [context] located for importing the selected candidate ([this]).
  * This action requires write access.
  */
-fun RsMod.importItem(candidate: ImportCandidate) {
+fun ImportCandidate.import(context: RsElement) {
     checkWriteAccessAllowed()
-    val psiFactory = RsPsiFactory(project)
+    val psiFactory = RsPsiFactory(context.project)
     // depth of `mod` relative to module with `extern crate` item
     // we uses this info to create correct relative use item path if needed
     var relativeDepth: Int? = null
 
-    val isEdition2018 = isEdition2018
-    val info = candidate.info
+    val isEdition2018 = context.isEdition2018
+    val info = info
     // if crate of importing element differs from current crate
     // we need to add new extern crate item
     if (info is ImportInfo.ExternCrateImportInfo) {
         val target = info.target
-        val crateRoot = crateRoot
+        val crateRoot = context.crateRoot
         val attributes = crateRoot?.stdlibAttributes ?: RsFile.Attributes.NONE
         when {
             // but if crate of imported element is `std` and there aren't `#![no_std]` and `#![no_core]`
@@ -477,7 +493,19 @@ fun RsMod.importItem(candidate: ImportCandidate) {
         0 -> "self::"
         else -> "super::".repeat(relativeDepth)
     }
-    insertUseItem(psiFactory, "$prefix${info.usePath}")
+
+    val insertionScope = if (context.isDoctestInjection) {
+        // In doctest injections all our code is located inside one invisible (main) function.
+        // If we try to change PSI outside of that function, we'll take a crash.
+        // So here we limit the module search with the last function (and never inert to an RsFile)
+        AutoImportFix.Testmarks.doctestInjectionImport.hit()
+        val scope = context.ancestors.find { it is RsMod && it !is RsFile }
+            ?: context.ancestors.findLast { it is RsFunction }
+        ((scope as? RsFunction)?.block ?: scope) as RsItemsOwner
+    } else {
+        context.containingMod
+    }
+    insertionScope.insertUseItem(psiFactory, "$prefix${info.usePath}")
 }
 
 private fun RsMod.insertExternCrateItem(psiFactory: RsPsiFactory, crateName: String) {
@@ -491,12 +519,15 @@ private fun RsMod.insertExternCrateItem(psiFactory: RsPsiFactory, crateName: Str
     }
 }
 
-private fun RsMod.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
+private fun RsItemsOwner.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
     val useItem = psiFactory.createUseItem(usePath)
+    if (tryGroupWithOtherUseItems(psiFactory, useItem)) return
     val anchor = childrenOfType<RsUseItem>().lastElement ?: childrenOfType<RsExternCrateItem>().lastElement
     if (anchor != null) {
         val insertedUseItem = addAfter(useItem, anchor)
-        if (anchor is RsExternCrateItem) {
+        if (anchor is RsExternCrateItem || isDoctestInjection) {
+            // Formatting is disabled in injections, so we have to add new line manually
+            AutoImportFix.Testmarks.insertNewLineBeforeUseItem.hit()
             addBefore(psiFactory.createNewline(), insertedUseItem)
         }
     } else {
@@ -504,6 +535,52 @@ private fun RsMod.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
         addAfter(psiFactory.createNewline(), firstItem)
     }
 }
+
+private fun RsItemsOwner.tryGroupWithOtherUseItems(psiFactory: RsPsiFactory, newUseItem: RsUseItem): Boolean {
+    val newParentPath = newUseItem.parentPath ?: return false
+    val newImportingName = newUseItem.importingNames?.singleOrNull() ?: return false
+    return childrenOfType<RsUseItem>().any { it.tryGroupWith(psiFactory, newParentPath, newImportingName) }
+}
+
+private fun RsUseItem.tryGroupWith(
+    psiFactory: RsPsiFactory,
+    newParentPath: List<String>,
+    newImportingName: String
+): Boolean {
+    if (vis != null || outerAttrList.isNotEmpty() || useSpeck?.isStarImport == true) return false
+    val parentPath = parentPath ?: return false
+    if (parentPath != newParentPath) return false
+    val importingNames = importingNames ?: return false
+    val newUsePath = parentPath.joinToString("::", postfix = "::") +
+        (importingNames + newImportingName).joinToString(", ", "{", "}")
+    val newUseSpeck = psiFactory.createUseSpeck(newUsePath)
+    useSpeck?.replace(newUseSpeck)
+    return true
+}
+
+private val RsUseItem.parentPath: List<String>?
+    get() {
+        val path = pathAsList ?: return null
+        return if (useSpeck?.useGroup != null) path else path.dropLast(1)
+    }
+
+private val RsUseItem.importingNames: List<String>?
+    get() {
+        if (useSpeck?.isStarImport == true) return null
+        val path = pathAsList ?: return null
+        val groupedNames = useSpeck?.useGroup?.useSpeckList?.map { it.text }
+        val lastName = path.lastOrNull()
+        val alias = useSpeck?.alias?.identifier?.text
+        return when {
+            groupedNames != null -> groupedNames
+            lastName != null && alias != null -> listOf("$lastName as $alias")
+            lastName != null -> listOf(lastName)
+            else -> null
+        }
+    }
+
+private val RsUseItem.pathAsList: List<String>?
+    get() = useSpeck?.path?.text?.split("::")
 
 @Suppress("DataClassPrivateConstructor")
 data class ImportContext private constructor(

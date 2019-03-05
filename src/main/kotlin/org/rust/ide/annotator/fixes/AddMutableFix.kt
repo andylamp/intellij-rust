@@ -10,14 +10,14 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import org.rust.ide.annotator.isMut
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psi.ext.RsBindingModeKind.BindByReference
 import org.rust.lang.core.psi.ext.RsBindingModeKind.BindByValue
-import org.rust.lang.core.psi.ext.RsNamedElement
-import org.rust.lang.core.psi.ext.ancestorStrict
-import org.rust.lang.core.psi.ext.kind
-import org.rust.lang.core.psi.ext.typeElement
 import org.rust.lang.core.types.declaration
+import org.rust.lang.core.types.ty.TyReference
+import org.rust.lang.core.types.type
 
 class AddMutableFix(binding: RsNamedElement) : LocalQuickFixAndIntentionActionOnPsiElement(binding) {
     private val _text = "Make `${binding.name}` mutable"
@@ -31,11 +31,19 @@ class AddMutableFix(binding: RsNamedElement) : LocalQuickFixAndIntentionActionOn
 
     companion object {
         fun createIfCompatible(expr: RsExpr): AddMutableFix? {
-            val declaration = expr.declaration
-            return if (declaration is RsSelfParameter || (declaration is RsPatBinding && declaration.kind is BindByValue)) {
-                AddMutableFix(declaration as RsNamedElement)
-            } else {
-                null
+            val declaration = expr.declaration as? RsNamedElement ?: return null
+
+            return when {
+                declaration is RsSelfParameter -> {
+                    AddMutableFix(declaration)
+                }
+
+                declaration is RsPatBinding && declaration.kind is BindByValue
+                    && (declaration.isArg || expr.type !is TyReference) -> {
+                    AddMutableFix(declaration)
+                }
+
+                else -> null
             }
         }
     }
@@ -44,13 +52,7 @@ class AddMutableFix(binding: RsNamedElement) : LocalQuickFixAndIntentionActionOn
 fun updateMutable(project: Project, binding: RsNamedElement, mutable: Boolean = true) {
     when (binding) {
         is RsPatBinding -> {
-            val tuple = binding.ancestorStrict<RsPatTup>()
             val parameter = binding.ancestorStrict<RsValueParameter>()
-
-            if (tuple != null && parameter != null) {
-                return
-            }
-
             val type = parameter?.typeReference?.typeElement
             if (type is RsRefLikeType) {
                 val newParameterExpr = RsPsiFactory(project)
@@ -58,7 +60,8 @@ fun updateMutable(project: Project, binding: RsNamedElement, mutable: Boolean = 
                 parameter.replace(newParameterExpr)
                 return
             }
-            val newPatBinding = RsPsiFactory(project).createPatBinding(binding.identifier.text, mutable = mutable, ref = binding.kind is BindByReference)
+            val isRef = binding.kind is BindByReference
+            val newPatBinding = RsPsiFactory(project).createPatBinding(binding.identifier.text, mutable, isRef)
             binding.replace(newPatBinding)
         }
         is RsSelfParameter -> {

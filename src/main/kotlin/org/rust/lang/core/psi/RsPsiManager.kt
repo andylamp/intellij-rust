@@ -6,6 +6,7 @@
 package org.rust.lang.core.psi
 
 import com.intellij.ProjectTopics
+import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.openapi.components.ProjectComponent
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootEvent
@@ -13,9 +14,12 @@ import com.intellij.openapi.roots.ModuleRootListener
 import com.intellij.openapi.util.ModificationTracker
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.*
+import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.messages.Topic
+import org.rust.cargo.project.model.cargoProjects
 import org.rust.lang.RsFileType
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
+import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.findModificationTrackerOwner
 
 val RUST_STRUCTURE_CHANGE_TOPIC: Topic<RustStructureChangeListener> = Topic.create(
@@ -69,22 +73,38 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
                 is ChildAddition.After -> event.child
                 is ChildMovement.After -> event.child
                 is ChildrenChange.After -> if (!event.isGenericChange) event.parent else return
+                is PropertyChange.After -> {
+                    if (event.propertyName == PsiTreeChangeEvent.PROP_WRITABLE) return
+                    event.element ?: return
+                }
                 else -> return
             }
 
-            // There are some cases when PsiFile stored in the event as a child
-            // e.g. file removal by external VFS change
-            val file = event.file ?: element as? PsiFile
-            if (file?.fileType != RsFileType) return
+            val file = event.file
 
-            if (element is PsiComment || element is PsiWhiteSpace) return
+            // if file is null, this is an event about VFS changes
+            if (file == null) {
+                if (element is RsFile ||
+                    element is PsiDirectory && project.cargoProjects.findPackageForFile(element.virtualFile) != null) {
+                    incRustStructureModificationCount()
+                }
+            } else {
+                if (file.fileType != RsFileType) return
 
-            updateModificationCount(element)
+                if (element is PsiComment || element is PsiWhiteSpace) return
+
+                // Most of events means that some element *itself* is changed, but ChildrenChange means
+                // that changed some of element's children, not the element itself. In this case
+                // we should look up for ModificationTrackerOwner a bit differently
+                val isChildrenChange = event is ChildrenChange
+
+                updateModificationCount(element, isChildrenChange)
+            }
         }
 
     }
 
-    private fun updateModificationCount(psi: PsiElement) {
+    private fun updateModificationCount(psi: PsiElement, isChildrenChange: Boolean) {
         // We find the nearest parent item or macro call (because macro call can produce items)
         // If found item implements RsModificationTrackerOwner, we increment its own
         // modification counter. Otherwise we increment global modification counter.
@@ -98,7 +118,7 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
         // about it because it is a rare case and implementing it differently
         // is much more difficult.
 
-        val owner = psi.findModificationTrackerOwner()
+        val owner = psi.findModificationTrackerOwner(!isChildrenChange)
         if (owner == null || !owner.incModificationCount(psi)) {
             incRustStructureModificationCount()
         }
@@ -117,3 +137,20 @@ private val Project.rustPsiManager: RsPsiManager
 /** @see RsPsiManager.rustStructureModificationTracker */
 val Project.rustStructureModificationTracker: ModificationTracker
     get() = rustPsiManager.rustStructureModificationTracker
+
+/**
+ * Returns [RsPsiManager.rustStructureModificationTracker] or [PsiModificationTracker.MODIFICATION_COUNT]
+ * if `this` element is inside language injection
+ */
+val RsElement.rustStructureOrAnyPsiModificationTracker: Any
+    get() {
+        val containingFile = containingFile
+        return when {
+            // The case of injected language. Injected PSI don't have it's own event system, so can only
+            // handle evens from outer PSI. For example, Rust language is injected to Kotlin's string
+            // literal. If a user change the literal, we can only be notified that the literal is changed.
+            // So we have to invalidate the cached value on any PSI change
+            containingFile.virtualFile is VirtualFileWindow -> PsiModificationTracker.MODIFICATION_COUNT
+            else -> containingFile.project.rustStructureModificationTracker
+        }
+    }

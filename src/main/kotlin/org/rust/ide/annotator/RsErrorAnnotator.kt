@@ -220,12 +220,23 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         presentableFeatureName: String,
         vararg fixes: LocalQuickFix
     ) {
-        val availability = feature.availability(element)
+        checkFeature(holder, element, null, feature, "$presentableFeatureName is experimental", *fixes)
+    }
+
+    private fun checkFeature(
+        holder: AnnotationHolder,
+        startElement: PsiElement,
+        endElement: PsiElement?,
+        feature: CompilerFeature,
+        message: String,
+        vararg fixes: LocalQuickFix
+    ) {
+        val availability = feature.availability(startElement)
         val diagnostic = when (availability) {
-            NOT_AVAILABLE -> RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, fixes.toList())
+            NOT_AVAILABLE -> RsDiagnostic.ExperimentalFeature(startElement, endElement, message, fixes.toList())
             CAN_BE_ADDED -> {
-                val fix = AddFeatureAttributeFix(feature.name, element)
-                RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, listOf(*fixes, fix))
+                val fix = AddFeatureAttributeFix(feature.name, startElement)
+                RsDiagnostic.ExperimentalFeature(startElement, endElement, message, listOf(*fixes, fix))
             }
             else -> return
         }
@@ -298,46 +309,10 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             !impl.isUnsafe && !trait.isUnsafe && impl.excl == null && attrRequiringUnsafeImpl != null ->
                 RsDiagnostic.TraitMissingUnsafeImplAttributeError(traitRef, attrRequiringUnsafeImpl).addToHolder(holder)
         }
-        val implInfo = TraitImplementationInfo.create(trait, impl) ?: return
-
-        if (implInfo.missingImplementations.isNotEmpty()) {
-            val missing = implInfo.missingImplementations.map { it.name }.namesList
-            RsDiagnostic.TraitItemsMissingImplError(impl.impl, impl.typeReference ?: impl.impl, missing, impl)
-                .addToHolder(holder)
-        }
-
-        for (member in implInfo.nonExistentInTrait) {
-            RsDiagnostic.UnknownMethodInTraitError(member.nameIdentifier!!, member, traitName)
-                .addToHolder(holder)
-        }
-
-        for ((imp, dec) in implInfo.implementationToDeclaration) {
-            if (imp is RsFunction && dec is RsFunction) {
-                checkTraitFnImplParams(holder, imp, dec, traitName)
-            }
-        }
     }
 
     private fun checkTypeAlias(holder: AnnotationHolder, ta: RsTypeAlias) {
         checkDuplicates(holder, ta)
-    }
-
-    private fun checkTraitFnImplParams(holder: AnnotationHolder, fn: RsFunction, superFn: RsFunction, traitName: String) {
-        val params = fn.valueParameterList ?: return
-        val selfArg = fn.selfParameter
-
-        if (selfArg != null && superFn.selfParameter == null) {
-            RsDiagnostic.DeclMissingFromTraitError(selfArg, fn, selfArg).addToHolder(holder)
-        } else if (selfArg == null && superFn.selfParameter != null) {
-            RsDiagnostic.DeclMissingFromImplError(params, fn, superFn.selfParameter).addToHolder(holder)
-        }
-
-        val paramsCount = fn.valueParameters.size
-        val superParamsCount = superFn.valueParameters.size
-        if (paramsCount != superParamsCount) {
-            RsDiagnostic.TraitParamCountMismatchError(params, fn, traitName, paramsCount, superParamsCount)
-                .addToHolder(holder)
-        }
     }
 
     private fun checkUnary(holder: AnnotationHolder, o: RsUnaryExpr) {
@@ -368,9 +343,14 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkCondition(holder: AnnotationHolder, element: RsCondition) {
-        val pat = element.pat ?: return
-        if (pat.isIrrefutable) {
+        val patList = element.patList
+        val pat = patList.singleOrNull()
+        if (pat != null && pat.isIrrefutable) {
             checkFeature(holder, pat, IRREFUTABLE_LET_PATTERNS, "irrefutable let pattern")
+        }
+        if (patList.size > 1) {
+            checkFeature(holder, patList.first(), patList.last(),
+                IF_WHILE_OR_PATTERNS, "multiple patterns in `if let` and `while let` are unstable")
         }
     }
 
@@ -421,9 +401,6 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             ?: return false
         return field.parent.parent is RsEnumVariant
     }
-
-    private val Collection<String?>.namesList: String
-        get() = mapNotNull { "`$it`" }.joinToString(", ")
 
     private fun hasResolve(el: RsReferenceElement): Boolean =
         !(el.reference.resolve() != null || el.reference.multiResolve().size > 1)

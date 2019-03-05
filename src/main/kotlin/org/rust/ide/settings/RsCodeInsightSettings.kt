@@ -15,6 +15,8 @@ import com.intellij.util.xmlb.XmlSerializerUtil
 class RsCodeInsightSettings : PersistentStateComponent<RsCodeInsightSettings> {
 
     var showImportPopup: Boolean = false
+    var importOutOfScopeItems: Boolean = true
+    var suggestOutOfScopeItems: Boolean = true
 
     override fun getState(): RsCodeInsightSettings = this
 

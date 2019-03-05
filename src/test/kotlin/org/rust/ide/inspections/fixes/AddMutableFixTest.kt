@@ -162,6 +162,17 @@ class AddMutableFixTest : RsMultipleInspectionsTestBase(
         }
     """)
 
+    /** Issue [3417](https://github.com/intellij-rust/intellij-rust/issues/3417) */
+    fun `test fix E0384 tuple function parameter`() = checkFixByText("Make `test` mutable", """
+        fn test((test, test2): (i32, i32)) {
+            <error>test/*caret*/ = 32</error>;
+        }
+    """, """
+        fn test((mut test, test2): (i32, i32)) {
+            test = 32;
+        }
+    """)
+
     fun `test fix E0594 assign to field`() = checkFixByText("Make `foo` mutable", """
         struct Foo { a: i32 }
         fn main() {
@@ -202,6 +213,26 @@ class AddMutableFixTest : RsMultipleInspectionsTestBase(
             let arr = [0; 3];
             let arr2 = &arr;
             <error>arr2[0]/*caret*/ = 1</error>;
+        }
+    """)
+
+    fun `test fix E0594 assign to immutable reference`() = checkFixByText("Make `s` mutable", """
+        struct S { a: i32 }
+        fn foo(s: &S) {
+            <error>s.a/*caret*/ = 42</error>;
+        }
+    """, """
+        struct S { a: i32 }
+        fn foo(s: &mut S) {
+            s.a = 42;
+        }
+    """)
+
+    fun `test fix E0594 assign to immutable reference with ref keyword`() = checkFixIsUnavailable("Make `s` mutable", """
+        struct S { a: i32 }
+
+        fn foo(ref s: &S) {
+            <error>s.a/*caret*/ = 42</error>;
         }
     """)
 
