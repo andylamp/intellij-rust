@@ -3,13 +3,14 @@
  * found in the LICENSE file.
  */
 
-package org.rust.ide.annotator.cargoCheck
+package org.rust.ide.annotator
 
 import com.intellij.codeHighlighting.DirtyScopeTrackingHighlightingPassFactory
 import com.intellij.codeHighlighting.TextEditorHighlightingPass
 import com.intellij.codeHighlighting.TextEditorHighlightingPassRegistrar
 import com.intellij.codeInsight.daemon.impl.*
 import com.intellij.lang.annotation.AnnotationSession
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.runReadAction
@@ -22,8 +23,11 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.BackgroundTaskUtil
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiFile
-import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.psi.impl.AnyPsiChangeListener
+import com.intellij.psi.impl.PsiManagerImpl
+import com.intellij.util.messages.MessageBus
 import com.intellij.util.ui.update.MergingUpdateQueue
 import com.intellij.util.ui.update.Update
 import org.rust.cargo.project.settings.rustSettings
@@ -32,14 +36,15 @@ import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.ext.containingCargoPackage
 
-class RsCargoCheckAnnotatorPass(
-    private val factory: RsCargoCheckAnnotatorPassFactory,
+class RsExternalLinterPass(
+    private val factory: RsExternalLinterPassFactory,
     private val file: PsiFile,
     private val editor: Editor
 ) : TextEditorHighlightingPass(file.project, editor.document), DumbAware {
     private val annotationHolder: AnnotationHolderImpl = AnnotationHolderImpl(AnnotationSession(file))
-    private var annotationInfo: Lazy<RsCargoCheckAnnotationResult?>? = null
-    private val annotationResult: RsCargoCheckAnnotationResult? get() = annotationInfo?.value
+    private var annotationInfo: Lazy<RsExternalLinterResult?>? = null
+    private val annotationResult: RsExternalLinterResult? get() = annotationInfo?.value
+    private lateinit var disposable: Disposable
 
     override fun doCollectInformation(progress: ProgressIndicator) {
         annotationHolder.clear()
@@ -49,46 +54,50 @@ class RsCargoCheckAnnotatorPass(
         if (cargoPackage?.origin != PackageOrigin.WORKSPACE) return
 
         val project = file.project
-        annotationInfo = RsCargoCheckUtils.checkLazily(
+        disposable = createDisposableOnAnyPsiChange(project.messageBus).also {
+            Disposer.register(ModuleUtil.findModuleForFile(file) ?: project, it)
+        }
+
+        annotationInfo = RsExternalLinterUtils.checkLazily(
             project.toolchain ?: return,
             project,
-            ModuleUtil.findModuleForFile(file) ?: project,
+            disposable,
             cargoPackage.workspace.contentRoot,
-            cargoPackage.name,
-            isOnFly = true
+            cargoPackage.name
         )
     }
 
     override fun doApplyInformationToEditor() {
-        if (!isAnnotationPassEnabled) return
-        val modificationStampBefore = getProjectModificationStamp()
+        if (annotationInfo == null || !isAnnotationPassEnabled) {
+            doFinish(emptyList())
+            return
+        }
 
         val update = object : Update(file) {
             override fun setRejected() {
                 super.setRejected()
-                doFinish(highlights, modificationStampBefore)
+                doFinish(highlights)
             }
 
             override fun run() {
-                if (!projectChanged(modificationStampBefore) && !myProject.isDisposed) {
-                    BackgroundTaskUtil.runUnderDisposeAwareIndicator(myProject, Runnable {
-                        val annotationResult = annotationResult ?: return@Runnable
-                        runReadAction {
-                            ProgressManager.checkCanceled()
-                            if (!projectChanged(modificationStampBefore)) {
-                                doApply(annotationResult)
-                                doFinish(highlights, modificationStampBefore)
-                            }
-                        }
-                    })
-                }
+                BackgroundTaskUtil.runUnderDisposeAwareIndicator(disposable, Runnable {
+                    val annotationResult = annotationResult ?: return@Runnable
+                    runReadAction {
+                        ProgressManager.checkCanceled()
+                        doApply(annotationResult)
+                        ProgressManager.checkCanceled()
+                        doFinish(highlights)
+                    }
+                })
             }
+
+            override fun canEat(update: Update?): Boolean = true
         }
 
         factory.scheduleExternalActivity(update)
     }
 
-    private fun doApply(annotationResult: RsCargoCheckAnnotationResult) {
+    private fun doApply(annotationResult: RsExternalLinterResult) {
         if (file !is RsFile || !file.isValid) return
         try {
             annotationHolder.createAnnotationsForFile(file, annotationResult)
@@ -98,42 +107,34 @@ class RsCargoCheckAnnotatorPass(
         }
     }
 
-    private fun doFinish(highlights: List<HighlightInfo>, modificationStampBefore: Long) {
+    private fun doFinish(highlights: List<HighlightInfo>) {
         val document = document ?: return
         ApplicationManager.getApplication().invokeLater({
-            if (!projectChanged(modificationStampBefore) && !myProject.isDisposed) {
-                UpdateHighlightersUtil.setHighlightersToEditor(
-                    myProject,
-                    document,
-                    0,
-                    file.textLength,
-                    highlights,
-                    colorsScheme,
-                    id
-                )
-                DaemonCodeAnalyzerEx.getInstanceEx(myProject).fileStatusMap.markFileUpToDate(document, id)
-            }
+            UpdateHighlightersUtil.setHighlightersToEditor(
+                myProject,
+                document,
+                0,
+                file.textLength,
+                highlights,
+                colorsScheme,
+                id
+            )
+            DaemonCodeAnalyzerEx.getInstanceEx(myProject).fileStatusMap.markFileUpToDate(document, id)
         }, ModalityState.stateForComponent(editor.component))
     }
 
     private val highlights: List<HighlightInfo>
         get() = annotationHolder.map(HighlightInfo::fromAnnotation)
 
-    private fun getProjectModificationStamp(): Long =
-        PsiModificationTracker.SERVICE.getInstance(myProject).modificationCount
-
-    private fun projectChanged(modificationStampBefore: Long): Boolean =
-        getProjectModificationStamp() != modificationStampBefore
-
     private val isAnnotationPassEnabled: Boolean
-        get() = file.project.rustSettings.useCargoCheckAnnotator
+        get() = file.project.rustSettings.runExternalLinterOnTheFly
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(RsCargoCheckAnnotatorPass::class.java)
+        private val LOG: Logger = Logger.getInstance(RsExternalLinterPass::class.java)
     }
 }
 
-class RsCargoCheckAnnotatorPassFactory(
+class RsExternalLinterPassFactory(
     project: Project,
     registrar: TextEditorHighlightingPassRegistrar
 ) : DirtyScopeTrackingHighlightingPassFactory {
@@ -145,8 +146,8 @@ class RsCargoCheckAnnotatorPassFactory(
         -1
     )
 
-    private val cargoCheckQueue = MergingUpdateQueue(
-        "CargoCheckQueue",
+    private val externalLinterQueue = MergingUpdateQueue(
+        "RsExternalLinterQueue",
         TIME_SPAN,
         true,
         MergingUpdateQueue.ANY_COMPONENT,
@@ -157,14 +158,27 @@ class RsCargoCheckAnnotatorPassFactory(
 
     override fun createHighlightingPass(file: PsiFile, editor: Editor): TextEditorHighlightingPass? {
         FileStatusMap.getDirtyTextRange(editor, passId) ?: return null
-        return RsCargoCheckAnnotatorPass(this, file, editor)
+        return RsExternalLinterPass(this, file, editor)
     }
 
     override fun getPassId(): Int = myPassId
 
-    fun scheduleExternalActivity(update: Update) = cargoCheckQueue.queue(update)
+    fun scheduleExternalActivity(update: Update) = externalLinterQueue.queue(update)
 
     companion object {
         private const val TIME_SPAN: Int = 300
     }
+}
+
+private fun createDisposableOnAnyPsiChange(messageBus: MessageBus): Disposable {
+    val child = Disposer.newDisposable("Dispose on PSI change")
+    messageBus.connect(child).subscribe(
+        PsiManagerImpl.ANY_PSI_CHANGE_TOPIC,
+        object : AnyPsiChangeListener.Adapter() {
+            override fun beforePsiChanged(isPhysical: Boolean) {
+                Disposer.dispose(child)
+            }
+        }
+    )
+    return child
 }

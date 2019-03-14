@@ -6,10 +6,14 @@
 package org.rust.cargo.project.configurable
 
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.ui.EnumComboBoxModel
 import com.intellij.ui.components.JBCheckBox
+import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.cargo.util.CargoCommandLineEditor
 import org.rust.ide.ui.layout
 import org.rust.openapiext.CheckboxDelegate
+import org.rust.openapiext.ComboBoxDelegate
 import javax.swing.JComponent
 
 class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
@@ -17,11 +21,11 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
     private val autoUpdateEnabledCheckbox: JBCheckBox = JBCheckBox()
     private var autoUpdateEnabled: Boolean by CheckboxDelegate(autoUpdateEnabledCheckbox)
 
-    private val useCargoCheckForBuildCheckbox: JBCheckBox = JBCheckBox()
-    private var useCargoCheckForBuild: Boolean by CheckboxDelegate(useCargoCheckForBuildCheckbox)
+    private val externalLinterComboBox: ComboBox<ExternalLinter> = ComboBox(EnumComboBoxModel(ExternalLinter::class.java))
+    private var externalLinter: ExternalLinter by ComboBoxDelegate(externalLinterComboBox)
 
-    private val useCargoCheckAnnotatorCheckbox: JBCheckBox = JBCheckBox()
-    private var useCargoCheckAnnotator: Boolean by CheckboxDelegate(useCargoCheckAnnotatorCheckbox)
+    private val runExternalLinterOnTheFlyCheckbox: JBCheckBox = JBCheckBox()
+    private var runExternalLinterOnTheFly: Boolean by CheckboxDelegate(runExternalLinterOnTheFlyCheckbox)
 
     private val useOfflineCheckbox: JBCheckBox = JBCheckBox()
     private var useOffline: Boolean by CheckboxDelegate(useOfflineCheckbox)
@@ -29,12 +33,12 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
     private val compileAllTargetsCheckBox = JBCheckBox()
     private var compileAllTargets: Boolean by CheckboxDelegate(compileAllTargetsCheckBox)
 
-    private lateinit var cargoCheckArguments: CargoCommandLineEditor
+    private lateinit var externalLinterArguments: CargoCommandLineEditor
 
     override fun getDisplayName(): String = "Cargo"
 
     override fun createComponent(): JComponent = layout {
-        cargoCheckArguments = CargoCommandLineEditor(project, "check ") { null }
+        externalLinterArguments = CargoCommandLineEditor(project, "check ") { null }
 
         row("Watch Cargo.toml:", autoUpdateEnabledCheckbox, """
             Update project automatically if `Cargo.toml` changes.
@@ -46,45 +50,44 @@ class CargoConfigurable(project: Project) : RsConfigurableBase(project) {
             Pass `-Z offline` option to cargo not to perform network requests.
             Used only for nightly toolchain.
         """)
-        block("Cargo Check") {
-            row("Use cargo check to analyze code:", useCargoCheckAnnotatorCheckbox, """
-                Enable external annotator to add code highlighting based on `cargo check` result.
+        block("External Linter") {
+            row("External linter:", externalLinterComboBox, """
+                External tool to use for code analysis.
+            """)
+            row("Additional arguments:", externalLinterArguments, """
+                Additional arguments to pass to `cargo check` or `cargo clippy` command.
+            """)
+            row("Run external linter to analyze code on the fly:", runExternalLinterOnTheFlyCheckbox, """
+                Enable external linter to add code highlighting based on the used linter result.
                 Can be CPU-consuming.
             """)
-            row("Use cargo check when build project:", useCargoCheckForBuildCheckbox, """
-                Use `cargo check` instead of `cargo build`.
-                It should decrease action time because it doesn't generate binaries.
-            """)
-            row("Additional cargo check arguments:", cargoCheckArguments)
         }
     }
 
-    override fun isModified(): Boolean {
-        return autoUpdateEnabled != settings.autoUpdateEnabled
-            || useCargoCheckForBuild != settings.useCargoCheckForBuild
-            || useCargoCheckAnnotator != settings.useCargoCheckAnnotator
+    override fun isModified(): Boolean =
+        autoUpdateEnabled != settings.autoUpdateEnabled
+            || externalLinter != settings.externalLinter
+            || runExternalLinterOnTheFly != settings.runExternalLinterOnTheFly
             || compileAllTargets != settings.compileAllTargets
             || useOffline != settings.useOffline
-            || cargoCheckArguments.text != settings.cargoCheckArguments
-    }
+            || externalLinterArguments.text != settings.externalLinterArguments
 
     override fun apply() {
-        val currentData = settings.data
-        settings.data = currentData.copy(
-            autoUpdateEnabled = autoUpdateEnabled,
-            useCargoCheckForBuild = useCargoCheckForBuild,
-            useCargoCheckAnnotator = useCargoCheckAnnotator,
-            cargoCheckArguments = cargoCheckArguments.text,
-            compileAllTargets = compileAllTargets,
-            useOffline = useOffline
-        )
+        settings.modify {
+            it.autoUpdateEnabled = autoUpdateEnabled
+            it.externalLinter = externalLinter
+            it.runExternalLinterOnTheFly = runExternalLinterOnTheFly
+            it.externalLinterArguments = externalLinterArguments.text
+            it.compileAllTargets = compileAllTargets
+            it.useOffline = useOffline
+        }
     }
 
     override fun reset() {
         autoUpdateEnabled = settings.autoUpdateEnabled
-        useCargoCheckForBuild = settings.useCargoCheckForBuild
-        useCargoCheckAnnotator = settings.useCargoCheckAnnotator
-        cargoCheckArguments.text = settings.cargoCheckArguments
+        externalLinter = settings.externalLinter
+        runExternalLinterOnTheFly = settings.runExternalLinterOnTheFly
+        externalLinterArguments.text = settings.externalLinterArguments
         compileAllTargets = settings.compileAllTargets
         useOffline = settings.useOffline
     }

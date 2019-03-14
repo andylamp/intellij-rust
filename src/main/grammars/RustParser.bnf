@@ -239,8 +239,16 @@ TraitRef ::= PathGenericArgsWithoutColonsNoTypeQual {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Items
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-Vis ::= crate | pub VisRestriction?
-VisRestriction ::= '(' in? PathWithoutTypes ')'
+Vis ::= crate | pub VisRestriction? {
+  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
+  stubClass = "org.rust.lang.core.stubs.RsVisStub"
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+}
+VisRestriction ::= '(' in? PathWithoutTypes ')' {
+  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
+  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+}
 
 //XXX: don't use contextual keywords in recover, because they remap tokens.
 private default_ ::= <<defaultKeyword>>
@@ -537,7 +545,7 @@ private UseSpeck_with_recover ::= !'}' UseSpeck (','|&'}') {
 }
 private UseSpeck_recover ::= !('}' | '{' | self | identifier | '::' | '*' )
 
-Alias ::= as identifier {
+Alias ::= as ('_' | identifier) {
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner" ]
   extends = "org.rust.lang.core.psi.ext.RsStubbedNamedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsAliasStub"
@@ -1150,7 +1158,8 @@ LitExpr ::= OuterAttr*
   | INTEGER_LITERAL | FLOAT_LITERAL
   | BOOL_LITERAL) {
  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
- implements = "com.intellij.psi.PsiLanguageInjectionHost"
+ implements = [ "com.intellij.psi.PsiLanguageInjectionHost"
+                "com.intellij.psi.ContributedReferenceHost" ]
  mixin = "org.rust.lang.core.psi.ext.RsLitExprMixin"
 }
 
@@ -1173,7 +1182,7 @@ Macro ::= AttrsAndVis "macro_rules" '!' identifier MacroBody <<macroSemicolon>>{
   stubClass = "org.rust.lang.core.stubs.RsMacroStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
   hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
-  pin = 2
+  pin = 3
 }
 
 MacroBody ::= <<any_braces (MacroCase ';'?)*>>

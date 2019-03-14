@@ -7,17 +7,19 @@ package org.rustSlowTests
 
 import com.intellij.lang.annotation.HighlightSeverity
 import org.intellij.lang.annotations.Language
+import org.rust.cargo.MinRustcVersion
 import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.rustSettings
+import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.fileTree
-import org.rust.ide.annotator.cargoCheck.RsCargoCheckUtils
+import org.rust.ide.annotator.RsExternalLinterUtils
 
-class RsCargoCheckAnnotatorPassTest : RsWithToolchainTestBase() {
+class RsExternalLinterPassTest : RsWithToolchainTestBase() {
 
     override fun setUp() {
         super.setUp()
-        project.rustSettings.data = project.rustSettings.data.copy(useCargoCheckAnnotator = true)
+        project.rustSettings.modify { it.runExternalLinterOnTheFly = true }
     }
 
     fun `test no errors if everything is ok`() = doTest("""
@@ -27,7 +29,7 @@ class RsCargoCheckAnnotatorPassTest : RsWithToolchainTestBase() {
     fun `test highlights type errors`() = doTest("""
         struct X; struct Y;
         fn main() {
-            let _: X = <error descr="${RsCargoCheckUtils.TEST_MESSAGE}">Y</error>;
+            let _: X = <error descr="${RsExternalLinterUtils.TEST_MESSAGE}">Y</error>;
         }
     """)
 
@@ -36,9 +38,16 @@ class RsCargoCheckAnnotatorPassTest : RsWithToolchainTestBase() {
 
         #[test]
         fn test() {
-            let x: i32 = <error descr="${RsCargoCheckUtils.TEST_MESSAGE}">0.0</error>;
+            let x: i32 = <error descr="${RsExternalLinterUtils.TEST_MESSAGE}">0.0</error>;
         }
     """)
+
+    @MinRustcVersion("1.29.0")
+    fun `test highlights clippy errors`() = doTest("""
+        fn main() {
+            <weak_warning descr="${RsExternalLinterUtils.TEST_MESSAGE}">if true { true } else { false }</weak_warning>;
+        }
+    """, externalLinter = ExternalLinter.CLIPPY)
 
     fun `test highlights from other files do not interfer`() {
         fileTree {
@@ -67,6 +76,11 @@ class RsCargoCheckAnnotatorPassTest : RsWithToolchainTestBase() {
     }
 
     // https://github.com/intellij-rust/intellij-rust/issues/1497
+    //
+    // We don't want to run this test with rust below 1.30.0
+    // because the corresponding cargo can fail to run `metadata` command
+    // due to `edition` property in `Cargo.toml` in some dependency of `rand` crate
+    @MinRustcVersion("1.30.0")
     fun `test don't try to highlight non project files`() {
         fileTree {
             toml("Cargo.toml", """
@@ -125,13 +139,17 @@ class RsCargoCheckAnnotatorPassTest : RsWithToolchainTestBase() {
         }.create()
         myFixture.openFileInEditor(cargoProjectDirectory.findFileByRelativePath("src/main.rs")!!)
         val highlights = myFixture.doHighlighting(HighlightSeverity.ERROR)
-            .filter { it.description == RsCargoCheckUtils.TEST_MESSAGE }
+            .filter { it.description == RsExternalLinterUtils.TEST_MESSAGE }
         check(highlights.size == 1) {
-            "Expected only one error highlights from `RsCargoCheckAnnotatorPass`, got:\n$highlights"
+            "Expected only one error highlights from `RsExternalLinterPass`, got:\n$highlights"
         }
     }
 
-    private fun doTest(@Language("Rust") mainRs: String) {
+    private fun doTest(
+        @Language("Rust") mainRs: String,
+        externalLinter: ExternalLinter = ExternalLinter.DEFAULT
+    ) {
+        project.rustSettings.modify { it.externalLinter = externalLinter }
         fileTree {
             toml("Cargo.toml", """
                 [package]

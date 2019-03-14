@@ -9,8 +9,8 @@ import com.intellij.configurationStore.deserialize
 import com.intellij.configurationStore.serialize
 import com.intellij.testFramework.LightPlatformTestCase
 import org.intellij.lang.annotations.Language
-import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.impl.RustProjectSettingsServiceImpl
+import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.openapiext.elementFromXmlString
 import org.rust.openapiext.toXmlString
@@ -28,33 +28,30 @@ class RustProjectSettingsServiceTest : LightPlatformTestCase() {
               <option name="doctestInjectionEnabled" value="false" />
               <option name="expandMacros" value="false" />
               <option name="explicitPathToStdlib" value="/stdlib" />
+              <option name="externalLinter" value="Clippy" />
+              <option name="externalLinterArguments" value="--no-default-features" />
+              <option name="runExternalLinterOnTheFly" value="true" />
               <option name="showTestToolWindow" value="false" />
               <option name="toolchainHomeDirectory" value="/" />
-              <option name="useCargoCheckAnnotator" value="true" />
-              <option name="useCargoCheckForBuild" value="false" />
               <option name="useOffline" value="true" />
               <option name="useSkipChildren" value="true" />
             </State>
         """.trimIndent()
         service.loadState(elementFromXmlString(text).deserialize())
         val actual = service.state.serialize()!!.toXmlString()
-        check(actual == text.trimIndent()) {
-            "Expected:\n$text\nActual:\n$actual"
-        }
+        assertEquals(text.trimIndent(), actual)
 
-        check(service.data == RustProjectSettingsService.Data(
-            toolchain = RustToolchain(Paths.get("/")),
-            autoUpdateEnabled = false,
-            explicitPathToStdlib = "/stdlib",
-            useCargoCheckForBuild = false,
-            useCargoCheckAnnotator = true,
-            cargoCheckArguments = "",
-            compileAllTargets = false,
-            useOffline = true,
-            expandMacros = false,
-            showTestToolWindow = false,
-            doctestInjectionEnabled = false,
-            useSkipChildren = true
-        ))
+        assertEquals(RustToolchain(Paths.get("/")), service.toolchain)
+        assertEquals(false, service.autoUpdateEnabled)
+        assertEquals(ExternalLinter.CLIPPY, service.externalLinter)
+        assertEquals("/stdlib", service.explicitPathToStdlib)
+        assertEquals(true, service.runExternalLinterOnTheFly)
+        assertEquals("--no-default-features", service.externalLinterArguments)
+        assertEquals(false, service.compileAllTargets)
+        assertEquals(true, service.useOffline)
+        assertEquals(false, service.expandMacros)
+        assertEquals(false, service.showTestToolWindow)
+        assertEquals(false, service.doctestInjectionEnabled)
+        assertEquals(true, service.useSkipChildren)
     }
 }
