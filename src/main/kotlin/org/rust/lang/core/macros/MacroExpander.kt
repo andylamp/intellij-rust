@@ -95,14 +95,12 @@ private data class WithParent(
         subst.variables[name] ?: parent?.getVar(name)
 }
 
-private val STD_MACRO_WHITELIST = setOf("write", "writeln")
-
 class MacroExpander(val project: Project) {
     private val psiFactory = RsPsiFactory(project, markGenerated = false)
 
     fun expandMacro(def: RsMacro, call: RsMacroCall): MacroExpansion? {
         // All std macros contain the only `impl`s which are not supported for now, so ignoring them
-        if (def.containingCargoTarget?.pkg?.origin == PackageOrigin.STDLIB && def.name !in STD_MACRO_WHITELIST) {
+        if (call.containingCargoTarget?.pkg?.origin == PackageOrigin.STDLIB) {
             return null
         }
 
@@ -369,6 +367,12 @@ private class MacroPattern private constructor(
                 break
             }
 
+            if (group.q != null) {
+                // `$(...)?` means "0 or 1 occurrences"
+                MacroExpansionMarks.questionMarkGroupEnd.hit()
+                break
+            }
+
             if (separator != null) {
                 mark?.drop()
                 mark = macroCallBody.mark()
@@ -506,6 +510,7 @@ object MacroExpansionMarks {
     val failMatchPatternByBindingType = Testmark("failMatchPatternByBindingType")
     val failMatchGroupBySeparator = Testmark("failMatchGroupBySeparator")
     val failMatchGroupTooFewElements = Testmark("failMatchGroupTooFewElements")
+    val questionMarkGroupEnd = Testmark("questionMarkGroupEnd")
     val groupInputEnd1 = Testmark("groupInputEnd1")
     val groupInputEnd2 = Testmark("groupInputEnd2")
     val groupInputEnd3 = Testmark("groupInputEnd3")
