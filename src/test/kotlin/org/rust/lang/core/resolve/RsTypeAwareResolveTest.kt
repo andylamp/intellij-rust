@@ -5,6 +5,8 @@
 
 package org.rust.lang.core.resolve
 
+import org.rust.lang.core.psi.RsTupleFieldDecl
+
 class RsTypeAwareResolveTest : RsResolveTestBase() {
     fun `test self method call expr`() = checkByCode("""
         struct S;
@@ -268,6 +270,50 @@ class RsTypeAwareResolveTest : RsResolveTestBase() {
         }
     """)
 
+    fun `test let struct literal field`() = checkByCode("""
+        struct S { x: f32 }
+                 //X
+        impl S {
+            fn foo(&self) {
+                let S { x: x } = S { x: 0. };
+                                   //^
+                x;
+            }
+        }
+    """)
+
+    fun `test let decl pat struct field`() = checkByCode("""
+        struct S { x: f32 }
+                 //X
+        impl S {
+            fn foo(&self) {
+                let S { x: x } = S { x: 0. };
+                      //^
+                x;
+            }
+        }
+    """)
+
+    fun `test let tuple literal field`() = checkByCodeGeneric<RsTupleFieldDecl>("""
+        struct S (f32);
+                 //X
+        fn foo() {
+            let S { 0: x } = S { 0: 0. };
+                               //^
+            x;
+        }
+    """)
+
+    fun `test let decl pat tuple field`() = checkByCodeGeneric<RsTupleFieldDecl>("""
+        struct S (f32);
+                //X
+        fn foo() {
+            let S { 0: x } = S { 0: 0. };
+                  //^
+            x;
+        }
+    """)
+
     fun `test let decl pat struct expr complex`() = checkByCode("""
         struct S { x: f32 }
                  //X
@@ -451,8 +497,7 @@ class RsTypeAwareResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test slice resolve UFCS`() = expect<IllegalStateException> {
-        checkByCode("""
+    fun `test slice resolve UFCS`() = checkByCode("""
         impl<T> [T] {
             fn foo(&self) {}
               //X
@@ -464,7 +509,6 @@ class RsTypeAwareResolveTest : RsResolveTestBase() {
                     //^
         }
     """)
-    }
 
     fun `test array coercing to slice resolve`() = checkByCode("""
         impl<T> [T] {
@@ -766,4 +810,14 @@ class RsTypeAwareResolveTest : RsResolveTestBase() {
             fn foo() -> Self::Item { unreachable!() }
         }                   //^
     """, NameResolutionTestmarks.selfRelatedTypeSpecialCase)
+
+    fun `test explicit UFCS-like type-qualified path`() = checkByCode("""
+        struct S;
+        impl S {
+            fn foo() {}
+        }    //X
+        fn main () {
+            <S>::foo;
+        }      //^
+    """)
 }

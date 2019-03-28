@@ -12,7 +12,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAwareAction
 import org.rust.cargo.project.settings.toolchain
-import org.rust.cargo.toolchain.Rustup
+import org.rust.cargo.util.DownloadResult
 import org.rust.ide.notifications.showBalloon
 import java.nio.file.Path
 
@@ -27,7 +27,7 @@ class InstallComponentAction(
         object : Task.Backgroundable(project, "Installing $componentName...") {
             override fun shouldStartInBackground(): Boolean = false
             override fun run(indicator: ProgressIndicator) {
-                val result = rustup.downloadComponent(myProject, componentName) as? Rustup.DownloadResult.Err ?: return
+                val result = rustup.downloadComponent(myProject, componentName) as? DownloadResult.Err ?: return
                 myProject.showBalloon(result.error, NotificationType.ERROR)
             }
         }.queue()

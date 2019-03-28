@@ -49,17 +49,32 @@ class RsResolveCacheTest : RsTestBase() {
     fun `test resolve correctly without global cache invalidation 3`() = checkResolvedToXY("""
         struct S;
         trait Trait1 { type Item; }
-                            //X
         trait Trait2 { type Item; }
-                            //Y
         impl Trait1 for S { type Item = (); }
+                               //X
         impl Trait2 for S { type Item = (); }
+                               //Y
         fn main() {
             let _: <S as Trait1/*caret*/>
                 ::Item;
                 //^
         }
     """, "\b2", Testmarks.removeChangedElement)
+
+    fun `test resolve correctly without global cache invalidation 4`() = checkResolvedToXY("""
+        mod foo { pub struct S; }
+           //Y
+        mod bar {
+            mod foo { pub struct S; }
+               //X
+            fn baz() {
+                /*caret*/
+                foo
+                //^
+                ::S;
+            }
+        }
+    """, "::")
 
     fun `test edit local pat binding`() = checkResolvedAndThenUnresolved("""
         fn main() {

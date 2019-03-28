@@ -757,7 +757,7 @@ class RsFnInferenceContext(
             is RsArrayExpr -> inferArrayType(this, expected)
             is RsRangeExpr -> inferRangeType(this)
             is RsIndexExpr -> inferIndexExprType(this)
-            is RsMacroExpr -> inferMacroExprType(this)
+            is RsMacroExpr -> inferMacroExprType(this, expected)
             is RsLambdaExpr -> inferLambdaExprType(this, expected)
             is RsYieldExpr -> inferYieldExprType(this)
             is RsRetExpr -> inferRetExprType(this)
@@ -1107,7 +1107,7 @@ class RsFnInferenceContext(
         // `struct S; S();`
         if (callee is RsPathExpr) {
             ctx.getResolvedPaths(callee).singleOrNull()?.let {
-                if (it is RsFieldsOwner && it.namedFields.isEmpty() && it.positionalFields.isEmpty()) {
+                if (it is RsFieldsOwner && it.fields.isEmpty()) {
                     return ty
                 }
             }
@@ -1299,8 +1299,10 @@ class RsFnInferenceContext(
                 selectObligationsWherePossible()
             }
 
-            // extending argument definitions to be sure that type inference launched for each arg expr
-            val argDefsExt = argDefs.asSequence().infiniteWithTyUnknown()
+            val argDefsExt = argDefs.asSequence()
+                .map(ctx::resolveTypeVarsIfPossible)
+                // extending argument definitions to be sure that type inference launched for each arg expr
+                .infiniteWithTyUnknown()
             for ((type, expr) in argDefsExt.zip(argExprs.asSequence().map(::unwrapParenExprs))) {
                 val isLambda = expr is RsLambdaExpr
                 if (isLambda != checkLambdas) continue
@@ -1629,7 +1631,7 @@ class RsFnInferenceContext(
         return result
     }
 
-    private fun inferMacroExprType(macroExpr: RsMacroExpr): Ty {
+    private fun inferMacroExprType(macroExpr: RsMacroExpr, expected: Ty?): Ty {
         val name = macroExpr.macroCall.macroName
         val exprArg = macroExpr.macroCall.exprMacroArgument
         if (exprArg != null) {
@@ -1645,20 +1647,32 @@ class RsFnInferenceContext(
             }
         }
 
-        inferChildExprsRecursively(macroExpr.macroCall)
         val vecArg = macroExpr.macroCall.vecMacroArgument
         if (vecArg != null) {
+            val expectedElemTy = (expected as? TyAdt)?.takeIf { it.item == items.Vec }?.typeArguments?.getOrNull(0)
             val elementType = if (vecArg.semicolon != null) {
                 // vec![value; repeat]
-                vecArg.exprList.firstOrNull()?.let { ctx.getExprType(it) } ?: TyUnknown
+                run {
+                    val exprList = vecArg.exprList
+                    val valueExpr = exprList.firstOrNull() ?: return@run TyUnknown
+                    exprList.getOrNull(1)?.let { inferTypeCoercableTo(it, TyInteger.USize) }
+                    expectedElemTy?.let { valueExpr.inferTypeCoercableTo(it) } ?: valueExpr.inferType()
+                }
             } else {
                 // vec![value1, value2, value3]
-                val elementTypes = vecArg.exprList.map { ctx.getExprType(it) }
-                if (elementTypes.isNotEmpty()) getMoreCompleteType(elementTypes) else TyInfer.TyVar()
+                val elementTypes = vecArg.exprList.map { it.inferType(expectedElemTy) }
+                val elementType = if (elementTypes.isNotEmpty()) getMoreCompleteType(elementTypes) else TyInfer.TyVar()
+
+                if (expectedElemTy != null && tryCoerce(elementType, expectedElemTy)) {
+                    expectedElemTy
+                } else {
+                    elementType
+                }
             }
             return items.findVecForElementTy(elementType)
         }
 
+        inferChildExprsRecursively(macroExpr.macroCall)
         return when {
             "print" in name || "assert" in name -> TyUnit
             name == "format" -> items.String.asTy()

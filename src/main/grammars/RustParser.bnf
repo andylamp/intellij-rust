@@ -489,7 +489,12 @@ PatBinding ::= BindingMode? identifier !'...' !'::' {
   mixin = "org.rust.lang.core.psi.ext.RsPatBindingImplMixin"
 }
 
-PatField ::= identifier ':' Pat | box? PatBinding
+PatFieldFull ::= (identifier | INTEGER_LITERAL ) ':' Pat {
+  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement" ]
+  mixin = "org.rust.lang.core.psi.ext.RsPatFieldFullImplMixin"
+}
+
+PatField ::= PatFieldFull | box? PatBinding
 
 BindingMode ::= ref mut? | mut
 
@@ -1029,7 +1034,8 @@ private StructLiteralField_with_recover ::= StructLiteralField (',' | &'}') {
 private StructLiteralField_recover ::= !(identifier | INTEGER_LITERAL | ',' | '}' | '..' | '#')
 
 PathExpr ::= OuterAttr* PathGenericArgsWithColons {
- elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 WhileExpr ::= OuterAttr* LabelDecl? while Condition SimpleBlock {

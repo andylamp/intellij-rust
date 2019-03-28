@@ -30,7 +30,7 @@ class RustfmtTest : RsWithToolchainTestBase() {
             dir("src") {
                 rust("main.rs", """
                     fn main() {
-                    println!("Hello, world!");
+                    println!("Hello, ΣΠ∫!");
                     }
                 """)
             }
@@ -52,7 +52,7 @@ class RustfmtTest : RsWithToolchainTestBase() {
             dir("src") {
                 rust("main.rs", """
                     fn main() {/*caret*/
-                        println!("Hello, world!");
+                        println!("Hello, ΣΠ∫!");
                     }
                 """)
             }
@@ -81,7 +81,7 @@ class RustfmtTest : RsWithToolchainTestBase() {
             dir("src") {
                 rust("main.rs", """
                     fn main() {/*caret*/
-                        println!("Hello, world!");
+                        println!("Hello, ΣΠ∫!");
                     }
                 """)
             }
@@ -93,6 +93,196 @@ class RustfmtTest : RsWithToolchainTestBase() {
         myFixture.type("\n\n\n")
 
         saveAllDocuments()
+        assertEquals(prevText.trim(), document.text.trim())
+    }
+
+    fun `test use config from project root`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [package]
+                name = "hello"
+                version = "0.1.0"
+                authors = []
+            """)
+
+            toml("rustfmt.toml", """
+                remove_nested_parens = false # default: true
+            """)
+
+            dir("src") {
+                rust("main.rs", """
+                    fn main() {
+                        ((((foo()))));
+                    }
+                """)
+            }
+        }.create()
+
+        val file = cargoProjectDirectory.findFileByRelativePath("src/main.rs")!!
+        val document = file.document!!
+        val prevText = document.text
+
+        reformat(file)
+        assertEquals(prevText.trim(), document.text.trim())
+    }
+
+    fun `test use config from workspace root (rustfmt dot toml)`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [workspace]
+                members = [
+                    "hello"
+                ]
+            """)
+
+            dir("hello") {
+                toml("Cargo.toml", """
+                    [package]
+                    name = "hello"
+                    version = "0.1.0"
+                    authors = []
+                """)
+
+                toml("rustfmt.toml", """
+                    remove_nested_parens = false
+                """)
+
+                dir("src") {
+                    rust("main.rs", """
+                        fn main() {
+                            ((((foo()))));
+                        }
+                    """)
+                }
+            }
+        }.create()
+
+        val file = cargoProjectDirectory.findFileByRelativePath("hello/src/main.rs")!!
+        val document = file.document!!
+        val prevText = document.text
+
+        reformat(file)
+        assertEquals(prevText.trim(), document.text.trim())
+    }
+
+    fun `test use config from workspace root (dot rustfmt dot toml)`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [workspace]
+                members = [
+                    "hello"
+                ]
+            """)
+
+            dir("hello") {
+                toml("Cargo.toml", """
+                    [package]
+                    name = "hello"
+                    version = "0.1.0"
+                    authors = []
+                """)
+
+                toml(".rustfmt.toml", """
+                    remove_nested_parens = false
+                """)
+
+                dir("src") {
+                    rust("main.rs", """
+                        fn main() {
+                            ((((foo()))));
+                        }
+                    """)
+                }
+            }
+        }.create()
+
+        val file = cargoProjectDirectory.findFileByRelativePath("hello/src/main.rs")!!
+        val document = file.document!!
+        val prevText = document.text
+
+        reformat(file)
+        assertEquals(prevText.trim(), document.text.trim())
+    }
+
+    fun `test use config from workspace root overrides config from project root`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [workspace]
+                members = [
+                    "hello"
+                ]
+            """)
+
+            toml("rustfmt.toml", """
+                control_brace_style = true
+            """)
+
+            dir("hello") {
+                toml("Cargo.toml", """
+                    [package]
+                    name = "hello"
+                    version = "0.1.0"
+                    authors = []
+                """)
+
+                toml("rustfmt.toml", """
+                    remove_nested_parens = false
+                """)
+
+                dir("src") {
+                    rust("main.rs", """
+                        fn main() {
+                            ((((foo()))));
+                        }
+                    """)
+                }
+            }
+        }.create()
+
+        val file = cargoProjectDirectory.findFileByRelativePath("hello/src/main.rs")!!
+        val document = file.document!!
+        val prevText = document.text
+
+        reformat(file)
+        assertEquals(prevText.trim(), document.text.trim())
+    }
+
+    fun `test use config from project root if config from workspace root is not presented`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [workspace]
+                members = [
+                    "hello"
+                ]
+            """)
+
+            toml("rustfmt.toml", """
+                remove_nested_parens = false
+            """)
+
+            dir("hello") {
+                toml("Cargo.toml", """
+                    [package]
+                    name = "hello"
+                    version = "0.1.0"
+                    authors = []
+                """)
+
+                dir("src") {
+                    rust("main.rs", """
+                        fn main() {
+                            ((((foo()))));
+                        }
+                    """)
+                }
+            }
+        }.create()
+
+        val file = cargoProjectDirectory.findFileByRelativePath("hello/src/main.rs")!!
+        val document = file.document!!
+        val prevText = document.text
+
+        reformat(file)
         assertEquals(prevText.trim(), document.text.trim())
     }
 
