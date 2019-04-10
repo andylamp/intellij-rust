@@ -60,7 +60,12 @@ class RsDocumentationProvider : AbstractDocumentationProvider() {
             element.header(it)
             element.signature(it)
         }
-        val text = element.documentationAsHtml()
+        var text = element.documentationAsHtml()
+        if (text.isNullOrEmpty() && element is RsAbstractable && element.owner.isTraitImpl) {
+            // Show documentation of the corresponding trait item if own documentation is empty
+            val superElement = element.superItem as? RsDocAndAttributeOwner ?: return
+            text = superElement.documentationAsHtml()
+        }
         if (text.isNullOrEmpty()) return
         buffer += "\n" // Just for more pretty html text representation
         content(buffer) { it += text }
@@ -341,7 +346,7 @@ private fun PsiElement.generateDocumentation(buffer: StringBuilder, prefix: Stri
             .joinToWithBuffer(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
         is RsTypeParameterList -> (lifetimeParameterList + typeParameterList)
             .joinToWithBuffer(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
-        is RsValueParameterList -> (listOfNotNull(selfParameter) + valueParameterList + listOfNotNull(dotdotdot))
+        is RsValueParameterList -> (listOfNotNull(selfParameter) + valueParameterList + listOfNotNull(variadic))
             .joinToWithBuffer(buffer, ", ", "(", ")") { generateDocumentation(it) }
         is RsLifetimeParameter -> {
             buffer += quoteIdentifier.text.escaped
@@ -355,6 +360,10 @@ private fun PsiElement.generateDocumentation(buffer: StringBuilder, prefix: Stri
         is RsValueParameter -> {
             pat?.generateDocumentation(buffer, suffix = ": ")
             typeReference?.generateDocumentation(buffer)
+        }
+        is RsVariadic -> {
+            pat?.generateDocumentation(buffer, suffix = ": ")
+            buffer += dotdotdot.text
         }
         is RsTypeReference -> generateTypeReferenceDocumentation(this, buffer)
         is RsRetType -> typeReference?.generateDocumentation(buffer, " -&gt; ")

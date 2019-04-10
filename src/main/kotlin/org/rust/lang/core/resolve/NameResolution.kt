@@ -26,10 +26,7 @@ import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.ide.injected.isDoctestInjection
 import org.rust.lang.RsConstants
-import org.rust.lang.core.macros.MACRO_CRATE_IDENTIFIER_PREFIX
-import org.rust.lang.core.macros.RsExpandedElement
-import org.rust.lang.core.macros.expandedFrom
-import org.rust.lang.core.macros.findMacroCallExpandedFrom
+import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsFile.Attributes.*
 import org.rust.lang.core.psi.ext.*
@@ -259,13 +256,16 @@ fun processExternCrateResolveVariants(element: RsElement, isCompletion: Boolean,
         if (otherVersionOfSameCrate.hitOnFalse(libTarget == target) && !isDoctestInjection) return false
 
         if (pkg.origin == PackageOrigin.STDLIB && pkg.name in visitedDeps) return false
-        if (isDoctestInjection && pkg.origin != PackageOrigin.STDLIB && libTarget != target) return false
         visitedDeps += pkg.name
         return processor.lazy(dependencyName ?: libTarget.normName) {
             libTarget.crateRoot?.toPsiFile(element.project)?.rustFile
         }
     }
 
+    val crateRoot = element.crateRoot
+    if (crateRoot != null && !isCompletion) {
+        if (processor("self", crateRoot)) return true
+    }
     if (processPackage(pkg)) return true
     val explicitDepsFirst = pkg.dependencies.sortedBy {
         when (it.pkg.origin) {
@@ -690,7 +690,10 @@ fun processMacrosExportedByCrateName(context: RsElement, crateName: String, proc
 }
 
 fun processMacroCallVariantsInScope(context: PsiElement, processor: RsResolveProcessor): Boolean {
-    if (MacroResolver.processMacrosInLexicalOrderUpward(context) { processor(it) }) return true
+    val result = context.project.macroExpansionManager.withResolvingMacro {
+        MacroResolver.processMacrosInLexicalOrderUpward(context) { processor(it) }
+    }
+    if (result) return true
 
     val prelude = context.contextOrSelf<RsElement>()?.findDependencyCrateRoot(STD) ?: return false
     return processAll(exportedMacros(prelude), processor)
@@ -978,8 +981,10 @@ private fun collect2segmentPaths(rootSpeck: RsUseSpeck): List<TwoSegmentPath> {
         if (path != null && qualifier != null && qualifier.qualifier != null) return
         val firstSegment = qualifier ?: path
         val lastSegment = path ?: qualifier
+        if (firstSegment != null && firstSegment.kind != PathKind.IDENTIFIER) return
         when {
             group == null && firstSegment != null && (path != null || starImport) -> {
+                if (firstSegment != lastSegment && starImport) return
                 result += TwoSegmentPath(firstSegment.referenceName, if (starImport) null else path?.referenceName)
             }
             group != null && firstSegment == lastSegment -> {

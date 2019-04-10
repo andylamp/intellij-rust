@@ -6,7 +6,6 @@
 package org.rust.ide.annotator
 
 import com.intellij.codeInsight.daemon.impl.HighlightRangeExtension
-import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.AnnotationSession
 import com.intellij.openapi.util.Key
@@ -14,7 +13,6 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.ide.annotator.fixes.AddFeatureAttributeFix
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
 import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
@@ -25,6 +23,7 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
+import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyUnit
@@ -53,7 +52,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitLifetime(o: RsLifetime) = checkLifetime(holder, o)
             override fun visitModDeclItem(o: RsModDeclItem) = checkModDecl(holder, o)
             override fun visitModItem(o: RsModItem) = checkDuplicates(holder, o)
-            override fun visitPatBox(o: RsPatBox)  = checkPatBox(holder, o)
+            override fun visitPatBox(o: RsPatBox) = checkPatBox(holder, o)
             override fun visitPatField(o: RsPatField) = checkPatField(holder, o)
             override fun visitPatBinding(o: RsPatBinding) = checkPatBinding(holder, o)
             override fun visitPath(o: RsPath) = checkPath(holder, o)
@@ -74,9 +73,19 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitVariantDiscriminant(o: RsVariantDiscriminant) = collectDiagnostics(holder, o)
             override fun visitPolybound(o: RsPolybound) = checkPolybound(holder, o)
             override fun visitTraitRef(o: RsTraitRef) = checkTraitRef(holder, o)
+            override fun visitCallExpr(o: RsCallExpr) = checkCallExpr(holder, o)
         }
 
         element.accept(visitor)
+    }
+
+    private fun checkCallExpr(holder: AnnotationHolder, o: RsCallExpr) {
+        val path = (o.expr as? RsPathExpr)?.path ?: return
+        val deepResolve = path.reference.deepResolve()
+        val owner = deepResolve as? RsFieldsOwner ?: return
+        if (owner.tupleFields == null) {
+            RsDiagnostic.ExpectedFunction(o).addToHolder(holder)
+        }
     }
 
     private fun checkTraitRef(holder: AnnotationHolder, o: RsTraitRef) {
@@ -92,7 +101,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkYieldExpr(holder: AnnotationHolder, o: RsYieldExpr) {
-        checkFeature(holder, o.yield, GENERATORS, "`yield` syntax")
+        GENERATORS.check(holder, o.yield, "`yield` syntax")
     }
 
     private fun checkReferenceIsPublic(ref: RsReferenceElement, o: PsiElement, holder: AnnotationHolder) {
@@ -133,12 +142,12 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkPatBox(holder: AnnotationHolder, box: RsPatBox) {
-        checkFeature(holder, box.box, BOX_PATTERNS, "`box` pattern syntax")
+        BOX_PATTERNS.check(holder, box.box, "`box` pattern syntax")
     }
 
     private fun checkPatField(holder: AnnotationHolder, field: RsPatField) {
         val box = field.box ?: return
-        checkFeature(holder, box, BOX_PATTERNS, "`box` pattern syntax")
+        BOX_PATTERNS.check(holder, box, "`box` pattern syntax")
     }
 
     private fun checkPatBinding(holder: AnnotationHolder, binding: RsPatBinding) {
@@ -174,7 +183,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             if (qualifier != null || useSpeck != null && useSpeck.qualifier != null) {
                 RsDiagnostic.UndeclaredTypeOrModule(crate).addToHolder(holder)
             } else if (edition == Edition.EDITION_2015) {
-                checkFeature(holder, crate, CRATE_IN_PATHS, "`crate` in paths")
+                CRATE_IN_PATHS.check(holder, crate, "`crate` in paths")
             }
         }
 
@@ -202,7 +211,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
     private fun checkCrateVisibilityModifier(holder: AnnotationHolder, vis: RsVis) {
         val crateModifier = vis.crate ?: return
-        checkFeature(holder, crateModifier, CRATE_VISIBILITY_MODIFIER, "`crate` visibility modifier")
+        CRATE_VISIBILITY_MODIFIER.check(holder, crateModifier, "`crate` visibility modifier")
     }
 
     private fun checkVisRestriction(holder: AnnotationHolder, visRestriction: RsVisRestriction) {
@@ -211,37 +220,6 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         if (visRestriction.`in` == null && (path.path != null || path.kind == PathKind.IDENTIFIER)) {
             RsDiagnostic.IncorrectVisibilityRestriction(visRestriction).addToHolder(holder)
         }
-    }
-
-    private fun checkFeature(
-        holder: AnnotationHolder,
-        element: PsiElement,
-        feature: CompilerFeature,
-        presentableFeatureName: String,
-        vararg fixes: LocalQuickFix
-    ) {
-        checkFeature(holder, element, null, feature, "$presentableFeatureName is experimental", *fixes)
-    }
-
-    private fun checkFeature(
-        holder: AnnotationHolder,
-        startElement: PsiElement,
-        endElement: PsiElement?,
-        feature: CompilerFeature,
-        message: String,
-        vararg fixes: LocalQuickFix
-    ) {
-        val availability = feature.availability(startElement)
-        val diagnostic = when (availability) {
-            NOT_AVAILABLE -> RsDiagnostic.ExperimentalFeature(startElement, endElement, message, fixes.toList())
-            CAN_BE_ADDED -> {
-                val fix = AddFeatureAttributeFix(feature.name, startElement)
-                RsDiagnostic.ExperimentalFeature(startElement, endElement, message, listOf(*fixes, fix))
-            }
-            else -> return
-        }
-
-        diagnostic.addToHolder(holder)
     }
 
     private fun checkLabel(holder: AnnotationHolder, label: RsLabel) {
@@ -274,7 +252,12 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
                 // sure that a mod is not a directory owner.
                 if (modDecl.cargoWorkspace != null) {
                     val addModule = AddModuleFileFix(modDecl, expandModuleFirst = true)
-                    checkFeature(holder, modDecl, NON_MODRS_MODS, "mod statements in non-mod.rs files", addModule)
+                    NON_MODRS_MODS.check(
+                        holder,
+                        modDecl,
+                        "mod statements in non-mod.rs files",
+                        addModule
+                    )
                 }
                 return
             }
@@ -317,7 +300,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
     private fun checkUnary(holder: AnnotationHolder, o: RsUnaryExpr) {
         val box = o.box ?: return
-        checkFeature(holder, box, BOX_SYNTAX, "`box` expression syntax")
+        BOX_SYNTAX.check(holder, box, "`box` expression syntax")
     }
 
     private fun checkBinary(holder: AnnotationHolder, o: RsBinaryExpr) {
@@ -345,11 +328,15 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         val patList = element.patList
         val pat = patList.singleOrNull()
         if (pat != null && pat.isIrrefutable) {
-            checkFeature(holder, pat, IRREFUTABLE_LET_PATTERNS, "irrefutable let pattern")
+            IRREFUTABLE_LET_PATTERNS.check(holder, pat, "irrefutable let pattern")
         }
         if (patList.size > 1) {
-            checkFeature(holder, patList.first(), patList.last(),
-                IF_WHILE_OR_PATTERNS, "multiple patterns in `if let` and `while let` are unstable")
+            IF_WHILE_OR_PATTERNS.check(
+                holder,
+                patList.first(),
+                patList.last(),
+                "multiple patterns in `if let` and `while let` are unstable"
+            )
         }
     }
 
@@ -379,8 +366,18 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkExternCrate(holder: AnnotationHolder, el: RsExternCrateItem) {
-        if (el.reference.multiResolve().isNotEmpty() || el.containingCargoPackage?.origin != PackageOrigin.WORKSPACE) return
-        RsDiagnostic.CrateNotFoundError(el, el.identifier.text).addToHolder(holder)
+        if (el.reference.multiResolve().isEmpty() && el.containingCargoPackage?.origin == PackageOrigin.WORKSPACE) {
+            RsDiagnostic.CrateNotFoundError(el, el.referenceName).addToHolder(holder)
+        }
+        if (el.self != null) {
+            EXTERN_CRATE_SELF.check(holder, el, "`extern crate self`")
+            if (el.alias == null) {
+                // The current version of rustc (1.33.0) prints
+                // "`extern crate self;` requires renaming" error message
+                // but it looks like quite unclear
+                holder.createErrorAnnotation(el, "`extern crate self` requires `as name`")
+            }
+        }
     }
 
     private fun checkPolybound(holder: AnnotationHolder, o: RsPolybound) {
@@ -438,11 +435,13 @@ private fun checkDuplicates(holder: AnnotationHolder, element: RsNameIdentifierO
 }
 
 private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursively: Boolean): Map<Namespace, Set<PsiElement>> {
+    if (owner.parent is RsFnPointerType) return emptyMap()
+
     val fileMap = fileDuplicatesMap()
     fileMap[owner]?.let { return it }
 
     val duplicates: Map<Namespace, Set<PsiElement>> =
-        owner.namedChildren(recursively)
+        owner.namedChildren(recursively, stopAt = RsFnPointerType::class.java)
             .filter { it !is RsExternCrateItem } // extern crates can have aliases.
             .filter { it.name != null }
             .flatMap { it.namespaced }
@@ -466,12 +465,18 @@ private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursive
     return duplicates
 }
 
-private fun PsiElement.namedChildren(recursively: Boolean): Sequence<RsNamedElement> =
-    if (recursively) {
-        descendantsOfType<RsNamedElement>().asSequence()
-    } else {
-        children.asSequence().filterIsInstance<RsNamedElement>()
+private fun PsiElement.namedChildren(recursively: Boolean, stopAt: Class<*>? = null): Sequence<RsNamedElement> {
+    val result = mutableListOf<RsNamedElement>()
+    fun go(element: PsiElement) {
+        if (stopAt?.isInstance(element) == true) return
+        for (child in element.children) {
+            if (child is RsNamedElement) result.add(child)
+            if (recursively) go(child)
+        }
     }
+    go(this)
+    return result.asSequence()
+}
 
 private val DUPLICATES_BY_SCOPE = Key<MutableMap<
     PsiElement,

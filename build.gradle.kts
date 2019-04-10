@@ -6,6 +6,7 @@ import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.gradle.jvm.tasks.Jar
 import org.jetbrains.grammarkit.tasks.GenerateLexer
 import org.jetbrains.grammarkit.tasks.GenerateParser
+import org.jetbrains.intellij.IntelliJPlugin
 import org.jetbrains.intellij.tasks.PatchPluginXmlTask
 import org.jetbrains.intellij.tasks.PrepareSandboxTask
 import org.jetbrains.intellij.tasks.PublishTask
@@ -171,8 +172,6 @@ project(":") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
-        // FIXME: hack to correctly run tests with CLion
-        testCompile(project(":debugger"))
         testOutput(sourceSets.getByName("test").output)
     }
 
@@ -233,31 +232,22 @@ project(":") {
             into("${intellij.pluginName}/prettyPrinters")
             include("*.py")
         }
-        for (rustProject in rustProjects) {
-            val jar: Jar by rustProject.tasks
-            from(jar.outputs.files) {
-                into("${intellij.pluginName}/lib")
-                include("*.jar")
+        // We need to copy all jar files to add them into final plugin archive
+        if (name == IntelliJPlugin.PREPARE_SANDBOX_TASK_NAME) {
+            for (rustProject in rustProjects) {
+                val jar: Jar by rustProject.tasks
+                from(jar.outputs.files) {
+                    into("${intellij.pluginName}/lib")
+                    include("*.jar")
+                }
+                dependsOn(jar)
             }
-            dependsOn(jar)
         }
-    }
-
-    val copyXmls = task<Copy>("copyXmls") {
-        val mainMetaInf = "${project.sourceSets.getByName("main").output.resourcesDir}/META-INF"
-        for (rustProject in rustProjects) {
-            from("${rustProject.projectDir}/src/main/resources/META-INF")
-        }
-        into(mainMetaInf)
-        include("*.xml")
-    }
-
-    tasks.withType<Jar> {
-        dependsOn(copyXmls)
     }
 
     tasks.withType<RunIdeTask> {
-        jvmArgs("-Xmx768m") // Default value for IDEA installation
+        // Default args for IDEA installation
+        jvmArgs("-Xmx768m", "-XX:+UseConcMarkSweepGC", "-XX:SoftRefLRUPolicyMSPerMB=50")
         // uncomment if `unexpected exception ProcessCanceledException` prevents you from debugging a running IDE
 //        jvmArgs("-Didea.ProcessCanceledException=disabled")
     }
@@ -295,7 +285,6 @@ project(":debugger") {
 
 project(":toml") {
     intellij {
-        version = ideaVersion
         setPlugins(project(":intellij-toml"))
     }
     dependencies {

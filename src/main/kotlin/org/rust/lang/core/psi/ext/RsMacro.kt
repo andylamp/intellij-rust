@@ -17,6 +17,7 @@ import org.rust.lang.core.psi.RsMacro
 import org.rust.lang.core.psi.RsMacroBody
 import org.rust.lang.core.psi.RsPsiFactory
 import org.rust.lang.core.stubs.RsMacroStub
+import org.rust.stdext.HashCode
 import javax.swing.Icon
 
 abstract class RsMacroImplMixin : RsStubbedNamedElementImpl<RsMacroStub>,
@@ -46,6 +47,8 @@ abstract class RsMacroImplMixin : RsStubbedNamedElementImpl<RsMacroStub>,
 val RsMacro.hasMacroExport: Boolean
     get() = queryAttributes.hasAttribute("macro_export")
 
+val RsMacro.isRustcDocOnlyMacro: Boolean
+    get() = queryAttributes.hasAttribute("rustc_doc_only_macro")
 
 val RsMacro.macroBodyStubbed: RsMacroBody?
     get() {
@@ -57,4 +60,11 @@ val RsMacro.macroBodyStubbed: RsMacroBody?
                 modificationTracker
             )
         }
+    }
+
+val RsMacro.bodyHash: HashCode?
+    get() = CachedValuesManager.getCachedValue(this) {
+        val body = stub?.macroBody ?: macroBody?.text
+        val hash = body?.let { HashCode.compute(it) }
+        CachedValueProvider.Result.create(hash, modificationTracker)
     }

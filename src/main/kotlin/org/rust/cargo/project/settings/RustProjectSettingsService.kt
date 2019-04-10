@@ -17,6 +17,7 @@ import java.nio.file.Paths
 interface RustProjectSettingsService {
 
     data class State(
+        var version: Int? = null,
         var toolchainHomeDirectory: String? = null,
         var autoUpdateEnabled: Boolean = true,
         // Usually, we use `rustup` to find stdlib automatically,
@@ -28,16 +29,11 @@ interface RustProjectSettingsService {
         var externalLinterArguments: String = "",
         var compileAllTargets: Boolean = true,
         var useOffline: Boolean = false,
-        var expandMacros: Boolean = true,
+        var macroExpansionEngine: MacroExpansionEngine = MacroExpansionEngine.OLD,
         var showTestToolWindow: Boolean = true,
         var doctestInjectionEnabled: Boolean = true,
         var runRustfmtOnSave: Boolean = false,
-        var useSkipChildren: Boolean = false,
-
-        // Legacy properties needed for migration
-        // TODO do migration via XML modification
-        var useCargoCheckAnnotator: Boolean = false,
-        var cargoCheckArguments: String = ""
+        var useSkipChildren: Boolean = false
     ) {
         @get:Transient
         @set:Transient
@@ -48,12 +44,17 @@ interface RustProjectSettingsService {
             }
     }
 
+    enum class MacroExpansionEngine {
+        DISABLED, OLD, NEW
+    }
+
     /**
      * Allows to modify settings.
      * After setting change,
      */
     fun modify(action: (State) -> Unit)
 
+    val version: Int?
     val toolchain: RustToolchain?
     val explicitPathToStdlib: String?
     val autoUpdateEnabled: Boolean
@@ -62,7 +63,7 @@ interface RustProjectSettingsService {
     val externalLinterArguments: String
     val compileAllTargets: Boolean
     val useOffline: Boolean
-    val expandMacros: Boolean
+    val macroExpansionEngine: MacroExpansionEngine
     val showTestToolWindow: Boolean
     val doctestInjectionEnabled: Boolean
     val runRustfmtOnSave: Boolean

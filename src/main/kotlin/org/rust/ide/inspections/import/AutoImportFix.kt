@@ -19,6 +19,7 @@ import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates
 import org.rust.ide.injected.isDoctestInjection
 import org.rust.ide.search.RsCargoProjectScope
+import org.rust.ide.search.RsWithMacrosScope
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.TYPES_N_VALUES
@@ -551,6 +552,7 @@ private fun RsUseItem.tryGroupWith(
     val parentPath = parentPath ?: return false
     if (parentPath != newParentPath) return false
     val importingNames = importingNames ?: return false
+    if (importingNames.contains(newImportingName)) return true
     val newUsePath = parentPath.joinToString("::", postfix = "::") +
         (importingNames + newImportingName).joinToString(", ", "{", "}")
     val newUseSpeck = psiFactory.createUseSpeck(newUsePath)
@@ -564,17 +566,17 @@ private val RsUseItem.parentPath: List<String>?
         return if (useSpeck?.useGroup != null) path else path.dropLast(1)
     }
 
-private val RsUseItem.importingNames: List<String>?
+private val RsUseItem.importingNames: Set<String>?
     get() {
         if (useSpeck?.isStarImport == true) return null
         val path = pathAsList ?: return null
-        val groupedNames = useSpeck?.useGroup?.useSpeckList?.map { it.text }
+        val groupedNames = useSpeck?.useGroup?.useSpeckList?.asSequence()?.map { it.text }?.toSet()
         val lastName = path.lastOrNull()
         val alias = useSpeck?.alias?.identifier?.text
         return when {
             groupedNames != null -> groupedNames
-            lastName != null && alias != null -> listOf("$lastName as $alias")
-            lastName != null -> listOf(lastName)
+            lastName != null && alias != null -> setOf("$lastName as $alias")
+            lastName != null -> setOf(lastName)
             else -> null
         }
     }
@@ -597,7 +599,7 @@ data class ImportContext private constructor(
             project = project,
             mod = path.containingMod,
             superMods = LinkedHashSet(path.containingMod.superMods),
-            scope = RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project)),
+            scope = RsWithMacrosScope(project, RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project))),
             ns = path.pathNamespace,
             attributes = path.stdlibAttributes,
             namespaceFilter = path.namespaceFilter(isCompletion)

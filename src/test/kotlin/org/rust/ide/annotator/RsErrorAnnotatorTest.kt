@@ -493,6 +493,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
                   b: bool,
                   <error>a</error>: f64) {}
         fn tuples(<error>a</error>: u8, (b, (<error>a</error>, c)): (u16, (u32, u64))) {}
+        fn fn_ptrs(x: i32, y: fn (x: i32, y: i32), z: fn (x: i32, x: i32)) {}
     """)
 
     fun `test undeclared label E0426`() = checkErrors("""
@@ -870,18 +871,6 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
             type Item = T::Item;
         }
         fn main() {}
-    """)
-
-    fun `test should annotate lazy statics E0603`() = checkErrors("""
-        mod m {
-            lazy_static! { pub static ref BLA: () = {}; }
-            lazy_static! { static ref BLOP: () = {}; }
-        }
-
-        use m::BLA;
-        use <error>m::BLOP</error>;
-
-        fn main() { }
     """)
 
     fun `test should not annotate public methods E0624`() = checkErrors("""
@@ -1457,6 +1446,38 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         enum V { V1(i32), V2(i32) }
         fn foo(y: V) {
             while let V::V1(x) | V::V2(x) = y {}
+        }
+    """)
+
+    @MockRustcVersion("1.33.0")
+    fun `test extern_crate_self 1`() = checkErrors("""
+        <error descr="`extern crate self` is experimental [E0658]">extern crate self as foo;</error>
+    """)
+
+    @MockRustcVersion("1.33.0-nightly")
+    fun `test extern_crate_self 2`() = checkErrors("""
+        #![feature(extern_crate_self)]
+
+        extern crate self as foo;
+    """)
+
+    @MockRustcVersion("1.33.0-nightly")
+    fun `test extern_crate_self without alias`() = checkErrors("""
+        #![feature(extern_crate_self)]
+        
+        <error descr="`extern crate self` requires `as name`">extern crate self;</error>
+    """)
+
+    fun `test expected function E0618`() = checkErrors("""
+        struct S1;
+        struct S2();
+        enum E { V1, V2(), V3 {} }
+        fn main() {
+            <error descr="Expected function, found `S1` [E0618]">S1</error>();
+            S2();
+            <error>E::V1</error>();
+            E::V2();
+            <error>E::V3</error>();
         }
     """)
 }

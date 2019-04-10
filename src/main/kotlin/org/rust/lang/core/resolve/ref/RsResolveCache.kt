@@ -14,6 +14,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.RecursionManager
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.ResolveResult
 import com.intellij.psi.impl.AnyPsiChangeListener
 import com.intellij.psi.impl.PsiManagerImpl.ANY_PSI_CHANGE_TOPIC
@@ -32,6 +33,7 @@ import org.rust.lang.core.psi.ext.findModificationTrackerOwner
 import org.rust.openapiext.Testmark
 import java.lang.ref.ReferenceQueue
 import java.util.concurrent.ConcurrentMap
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The implementation is inspired by Intellij platform's [com.intellij.psi.impl.source.resolve.ResolveCache].
@@ -42,18 +44,33 @@ import java.util.concurrent.ConcurrentMap
  */
 class RsResolveCache(messageBus: MessageBus) {
     /** The cache is cleared on [RsPsiManager.rustStructureModificationTracker] increment */
-    private val rustStructureDependentCache: ConcurrentMap<PsiElement, Any?> = createWeakMap()
+    private val _rustStructureDependentCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
     /** The cache is cleared on [ANY_PSI_CHANGE_TOPIC] event */
-    private val anyPsiChangeDependentCache: ConcurrentMap<PsiElement, Any?> = createWeakMap()
+    private val _anyPsiChangeDependentCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
     private val guard = RecursionManager.createGuard("RsResolveCache")
+
+    private val rustStructureDependentCache: ConcurrentMap<PsiElement, Any?>
+        get() = _rustStructureDependentCache.get()
+            ?: createWeakMap<PsiElement, Any?>()
+                .takeIf { _rustStructureDependentCache.compareAndSet(null, it) }
+            ?: _rustStructureDependentCache.get()!! // can be set to null in write action only
+
+    private val anyPsiChangeDependentCache: ConcurrentMap<PsiElement, Any?>
+        get() = _anyPsiChangeDependentCache.get()
+            ?: createWeakMap<PsiElement, Any?>()
+                .takeIf { _anyPsiChangeDependentCache.compareAndSet(null, it) }
+            ?: _anyPsiChangeDependentCache.get()!! // can be set to null in write action only
 
     init {
         val connection = messageBus.connect()
         connection.subscribe(RUST_STRUCTURE_CHANGE_TOPIC, object : RustStructureChangeListener {
-            override fun rustStructureChanged() = onRustStructureChanged()
+            override fun rustStructureChanged(file: PsiFile?, changedElement: PsiElement?) = onRustStructureChanged()
         })
         connection.subscribe(ANY_PSI_CHANGE_TOPIC, object : AnyPsiChangeListener {
-            override fun afterPsiChanged(isPhysical: Boolean) = anyPsiChangeDependentCache.clear()
+            override fun afterPsiChanged(isPhysical: Boolean) {
+                _anyPsiChangeDependentCache.set(null)
+            }
+
             override fun beforePsiChanged(isPhysical: Boolean) {}
         })
         connection.subscribe(RUST_PSI_CHANGE_TOPIC, object : RustPsiChangeListener {
@@ -138,7 +155,7 @@ class RsResolveCache(messageBus: MessageBus) {
 
     private fun onRustStructureChanged() {
         Testmarks.rustStructureDependentCacheCleared.hit()
-        rustStructureDependentCache.clear()
+        _rustStructureDependentCache.set(null)
     }
 
     private fun onRustPsiChanged(element: PsiElement) {

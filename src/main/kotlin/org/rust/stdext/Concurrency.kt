@@ -6,9 +6,10 @@
 package org.rust.stdext
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressManager
 import java.util.*
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.*
+import kotlin.reflect.KProperty
 
 
 /**
@@ -74,7 +75,55 @@ class AsyncValue<T>(initial: T) {
     }
 }
 
-// :-(
-// https://hackage.haskell.org/package/base-4.10.0.0/docs/Data-Traversable.html
-fun <T> List<CompletableFuture<T>>.joinAll(): CompletableFuture<List<T>> =
-    CompletableFuture.allOf(*this.toTypedArray()).thenApply { map { it.join() } }
+class ThreadLocalDelegate<T>(initializer: () -> T) {
+    private val tl: ThreadLocal<T> = ThreadLocal.withInitial(initializer)
+
+    operator fun getValue(thisRef: Any?, property: KProperty<*>): T {
+        return tl.get()
+    }
+
+    operator fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+        tl.set(value)
+    }
+}
+
+fun <V> Future<V>.waitForWithCheckCanceled(): V {
+    while (true) {
+        try {
+            return get(10, TimeUnit.MILLISECONDS)
+        } catch (ignored: TimeoutException) {
+            ProgressManager.checkCanceled()
+        }
+    }
+}
+
+/**
+ * Asynchronously applies [action] to each element of [elements] list on [executor].
+ * This function submits next tasks to the [executor] only when previous tasks is finished, so
+ * it is usable when we need to execute a LARGE task on a low-latency executor (e.g. EDT)
+ */
+fun <R, T> executeSequentially(
+    executor: Executor,
+    elements: List<T>,
+    action: (T) -> R
+): CompletableFuture<List<R>> {
+    if (elements.isEmpty()) return CompletableFuture.completedFuture(emptyList())
+    val src = elements.asReversed().toMutableList()
+    val dst = mutableListOf<R>()
+    val future = CompletableFuture<List<R>>()
+    fun go() {
+        try {
+            dst.add(action(src.last()))
+            src.removeLast()
+            if (src.isNotEmpty()) {
+                executor.execute(::go)
+            } else {
+                future.complete(dst)
+            }
+        } catch (t: Throwable) {
+            future.completeExceptionally(t)
+        }
+    }
+    executor.execute(::go)
+    return future
+}

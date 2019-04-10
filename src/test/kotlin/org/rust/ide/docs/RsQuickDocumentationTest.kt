@@ -641,20 +641,22 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
         <div class='content'><p>Inner doc.</p></div>
     """)
 
-    // TODO: fix quick doc for files
-//    fun `test file inner docstring`() = doTest("""
-////^
-//        //! Module level docs.
-//
-//        fn foo() { }
-//
-//        fn main() {
-//            self::foo();
-//        }
-//    """, """
-//        <pre>test_package</pre>
-//        <p>Module level docs.</p>
-//    """)
+    fun `test file inner docstring`() = doTest("""
+        //! Module level docs
+        //! Module level docs
+
+        fn foo() { }
+
+        fn main() {
+            self::foo();
+            //^
+        }
+    """, """
+        <div class='definition'><pre>test_package
+        </pre></div>
+        <div class='content'><p>Module level docs
+        Module level docs</p></div>
+    """)
 
     //
     fun `test macro outer docstring`() = doTest("""
@@ -976,6 +978,41 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
         <div class='definition'><pre>test_package<br>impl <a href="psi_element://Foo">Foo</a>
         fn <b>foo</b>(&amp;self)</pre></div>
         <div class='content'><p><a href="psi_element://test_package/struct.Foo.html#method.bar"><code>Foo::bar</code></a></p></div>
+    """)
+
+    fun `test trait item doc 1`() = doTest("""
+        trait Foo {
+            /// Trait doc
+            fn foo();
+        }
+        struct Bar;
+
+        impl Foo for Bar {
+            /// Impl doc
+            fn foo() {}
+              //^
+        }
+    """, """
+        <div class='definition'><pre>test_package<br>impl <a href="psi_element://Foo">Foo</a> for <a href="psi_element://Bar">Bar</a>
+        fn <b>foo</b>()</pre></div>
+        <div class='content'><p>Impl doc</p></div>
+    """)
+
+    fun `test trait item doc 2`() = doTest("""
+        trait Foo {
+            /// Trait doc
+            type Baz;
+        }
+        struct Bar;
+
+        impl Foo for Bar {
+            type Baz = ();
+               //^
+        }
+    """, """
+        <div class='definition'><pre>test_package<br>impl <a href="psi_element://Foo">Foo</a> for <a href="psi_element://Bar">Bar</a>
+        type <b>Baz</b> = ()</pre></div>
+        <div class='content'><p>Trait doc</p></div>
     """)
 
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
