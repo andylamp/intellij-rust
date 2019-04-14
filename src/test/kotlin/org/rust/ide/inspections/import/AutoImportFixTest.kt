@@ -1485,6 +1485,38 @@ class AutoImportFixTest : AutoImportFixTestBase() {
         }
     """)
 
+    fun `test do not try to import underscore aliased trait`() = checkAutoImportFixIsUnavailable("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self) {}
+            }
+
+            impl<T> Foo for T {}
+        }
+
+        use foo::Foo as _;
+
+        fn main() {
+            123.foo/*caret*/();
+        }
+    """)
+
+    fun `test do not try to import trait for method call inside impl of that trait`() = checkAutoImportFixIsUnavailable("""
+        mod foo {
+            pub trait Foo { fn foo(&self) {} }
+        }
+
+        struct S2;
+        impl foo::Foo for S2 { fn foo(&self) {} }
+
+        struct S1(S2);
+        impl foo::Foo for S1 {
+            fn foo(&self) {
+                self.0.foo/*caret*/()
+            }
+        }
+    """)
+
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
     fun `test import item in root module (edition 2018)`() = checkAutoImportFixByText("""
         mod foo {
