@@ -9,9 +9,7 @@ import com.intellij.AppTopics
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.*
 import com.intellij.openapi.application.impl.LaterInvocator
-import com.intellij.openapi.components.PersistentStateComponent
-import com.intellij.openapi.components.ProjectComponent
-import com.intellij.openapi.components.State
+import com.intellij.openapi.components.*
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -47,10 +45,7 @@ import org.rust.ide.search.RsWithMacrosScope
 import org.rust.lang.RsFileType
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.containingCargoTarget
-import org.rust.lang.core.psi.ext.resolveToMacro
-import org.rust.lang.core.psi.ext.stubDescendantOfTypeOrSelf
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.indexes.RsMacroCallIndex
 import org.rust.openapiext.*
 import org.rust.stdext.ThreadLocalDelegate
@@ -97,7 +92,10 @@ private const val RUST_EXPANDED_MACROS = "rust_expanded_macros"
 fun getBaseMacroExpansionDir(): Path =
     Paths.get(PathManager.getSystemPath()).resolve(RUST_EXPANDED_MACROS)
 
-@State(name = "MacroExpansionManager")
+@State(name = "MacroExpansionManager", storages = [
+    Storage(StoragePathMacros.WORKSPACE_FILE),
+    Storage("misc.xml", deprecated = true)
+])
 class MacroExpansionManagerImpl(
     val project: Project
 ) : MacroExpansionManager,
@@ -311,7 +309,7 @@ private class MacroExpansionServiceImplInner(
                 val toRemove = mutableListOf<ExpandedMacroInfo>()
                 runReadAction {
                     storage.processExpandedMacroInfos { info ->
-                        if (info.expansionFileUrl != null && info.expansionFile?.isValid != true) {
+                        if (info.expansionFile != null && !info.expansionFile.isValid) {
                             toRemove.add(info)
                         }
                     }
@@ -585,13 +583,14 @@ private class MacroExpansionServiceImplInner(
 
     fun getExpandedFrom(element: RsExpandedElement): RsMacroCall? {
         checkReadAccessAllowed()
-        if (!element.isValid) return null
-        val file = element.containingFile.virtualFile ?: return null
-        return if (isExpansionFile(file) && element.parent is RsFile /*TODO*/) {
-            storage.getInfoForExpandedFile(file)?.getMacroCall()
-        } else {
-            null
+        if (element.stubParent is RsFile /*TODO*/) {
+            val file = element.containingFile.virtualFile ?: return null
+            if (isExpansionFile(file)) {
+                return storage.getInfoForExpandedFile(file)?.getMacroCall()
+            }
         }
+
+        return null
     }
 
     @TestOnly

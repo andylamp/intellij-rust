@@ -17,6 +17,7 @@ import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.runconfig.command.workingDirectory
 import org.rust.cargo.runconfig.createCargoCommandRunConfiguration
+import org.rust.stdext.buildList
 import java.nio.file.Path
 
 data class CargoCommandLine(
@@ -50,14 +51,15 @@ data class CargoCommandLine(
         fun forTargets(
             targets: List<CargoWorkspace.Target>,
             command: String,
-            additionalArguments: List<String> = emptyList()
+            additionalArguments: List<String> = emptyList(),
+            usePackageOption: Boolean = true
         ): CargoCommandLine {
             val pkgs = targets.map { it.pkg }
             // Make sure the selection does not span more than one package.
             assert(pkgs.map { it.rootDirectory }.distinct().size == 1)
             val pkg = pkgs.first()
 
-            val targetArgs = targets.flatMap { target ->
+            val targetArgs = targets.distinctBy { it.name }.flatMap { target ->
                 when (target.kind) {
                     CargoWorkspace.TargetKind.BIN -> listOf("--bin", target.name)
                     CargoWorkspace.TargetKind.TEST -> listOf("--test", target.name)
@@ -68,32 +70,52 @@ data class CargoCommandLine(
                 }
             }
 
-            return CargoCommandLine(
-                command,
-                workingDirectory = pkg.workspace.manifestPath.parent,
-                additionalArguments = listOf("--package", pkg.name) + targetArgs + additionalArguments
-            )
+            val workingDirectory = if (usePackageOption) {
+                pkg.workspace.contentRoot
+            } else {
+                pkg.rootDirectory
+            }
+
+            val commandLineArguments = buildList<String> {
+                if (usePackageOption) {
+                    add("--package")
+                    add(pkg.name)
+                }
+                addAll(targetArgs)
+                addAll(additionalArguments)
+            }
+
+            return CargoCommandLine(command, workingDirectory, commandLineArguments)
         }
 
         fun forTarget(
             target: CargoWorkspace.Target,
             command: String,
-            additionalArguments: List<String> = emptyList()
-        ): CargoCommandLine = forTargets(listOf(target), command, additionalArguments)
+            additionalArguments: List<String> = emptyList(),
+            usePackageOption: Boolean = true
+        ): CargoCommandLine = forTargets(listOf(target), command, additionalArguments, usePackageOption)
 
         fun forProject(
             cargoProject: CargoProject,
             command: String,
             additionalArguments: List<String> = emptyList(),
             channel: RustChannel = RustChannel.DEFAULT
-        ): CargoCommandLine {
-            return CargoCommandLine(
-                command,
-                cargoProject.workingDirectory,
-                additionalArguments,
-                channel = channel
-            )
-        }
+        ): CargoCommandLine = CargoCommandLine(
+            command,
+            workingDirectory = cargoProject.workingDirectory,
+            additionalArguments = additionalArguments,
+            channel = channel
+        )
+
+        fun forPackage(
+            cargoPackage: CargoWorkspace.Package,
+            command: String,
+            additionalArguments: List<String> = emptyList()
+        ): CargoCommandLine = CargoCommandLine(
+            command,
+            workingDirectory = cargoPackage.workspace.manifestPath.parent,
+            additionalArguments = listOf("--package", cargoPackage.name) + additionalArguments
+        )
     }
 }
 
@@ -109,13 +131,13 @@ fun CargoWorkspace.Target.launchCommand(): String? {
     }
 }
 
-fun CargoCommandLine.run(cargoProject: CargoProject) {
+fun CargoCommandLine.run(cargoProject: CargoProject, presentableName: String = command) {
     val project = cargoProject.project
     val runConfiguration =
         if (project.cargoProjects.allProjects.size > 1)
-            createRunConfiguration(project, this, name = command + " [" + cargoProject.presentableName + "]")
+            createRunConfiguration(project, this, name = presentableName + " [" + cargoProject.presentableName + "]")
         else
-            createRunConfiguration(project, this)
+            createRunConfiguration(project, this, name = presentableName)
     val executor = ExecutorRegistry.getInstance().getExecutorById(DefaultRunExecutor.EXECUTOR_ID)
     ProgramRunnerUtil.executeConfiguration(runConfiguration, executor)
 }

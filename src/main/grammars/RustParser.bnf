@@ -937,7 +937,9 @@ AnyExpr ::= <<structLiterals 'ON' <<stmtMode 'OFF' Expr>> >> { elementType = Exp
 StmtModeExpr ::= <<structLiterals 'ON' <<stmtMode 'ON' Expr>> >> { elementType = Expr }
 StmtModeExprOff ::= <<stmtMode 'OFF' Expr>> { elementType = Expr }
 
-BlockExpr ::= OuterAttr* [ (unsafe | asyncBlock move? | try) &'{' ] SimpleBlock {
+BlockExpr ::= OuterAttr* [ (unsafe | asyncBlock move? | try) &'{' ] LabelDecl? SimpleBlock {
+  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression"
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1010,14 +1012,17 @@ TryExpr ::= Expr '?' {
 }
 
 UnaryExpr ::= OuterAttr* (box | '-' | '*' | '!' | '&' mut?) Expr {
- elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 LambdaExpr ::= OuterAttr* asyncBlock? move? LambdaParameters RetType? AnyExpr {
- elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 StructLiteral ::= <<checkStructAllowed>> OuterAttr* PathGenericArgsWithColonsNoTypeQual StructLiteralBody {
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1025,7 +1030,8 @@ StructLiteralBody ::= '{' StructLiteralField_with_recover* ('..'  AnyExpr)? '}' 
 
 StructLiteralField ::= OuterAttr* (identifier | INTEGER_LITERAL) [ ':' AnyExpr ] {
   pin = 2
-  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsReferenceElement"
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   mixin = "org.rust.lang.core.psi.ext.RsStructLiteralFieldImplMixin"
 }
 
@@ -1043,28 +1049,35 @@ PathExpr ::= OuterAttr* PathGenericArgsWithColons {
 
 WhileExpr ::= OuterAttr* LabelDecl? while Condition SimpleBlock {
   pin = 'while'
-  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" 
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 Condition ::= [ let OrPats '=' ] NoStructLitExpr
 
 LoopExpr ::= OuterAttr* LabelDecl? loop SimpleBlock {
   pin = 'loop'
-  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" 
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 ContExpr ::= OuterAttr* continue Label? {
- elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+  implements = [ "org.rust.lang.core.psi.ext.RsLabelReferenceOwner"
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 BreakExpr ::= OuterAttr* break Label? AnyExpr? {
- elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+  implements = [ "org.rust.lang.core.psi.ext.RsLabelReferenceOwner"
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 ForExpr ::= OuterAttr* LabelDecl? for Pat in NoStructLitExpr SimpleBlock {
   pin = 'for'
-  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsLabeledExpression" 
+                 "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1079,11 +1092,13 @@ Label ::= QUOTE_IDENTIFIER {
 
 MatchExpr ::= OuterAttr* match NoStructLitExpr MatchBody {
   pin = 'match'
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 MatchBody ::= '{' MatchArm* '}' { pin = 1 }
 MatchArm ::= OuterAttr* OrPats MatchArmGuard? '=>' StmtModeExpr (',' | (&'}' | <<isBlock>>)) {
   pin = 2
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   recoverWhile = MatchArm_recover
 }
 private MatchArm_recover ::= !(Pat_first | OuterAttr_first | '}' | '|')
@@ -1091,15 +1106,18 @@ MatchArmGuard ::= if AnyExpr
 
 IfExpr ::= OuterAttr* if Condition SimpleBlock ElseBranch? {
   pin = 'if'
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 ElseBranch ::= else ( IfExpr | SimpleBlock )
 
 RetExpr ::= OuterAttr* return Expr? {
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 UnitExpr ::= OuterAttr* '(' ')' {
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1115,6 +1133,7 @@ fake ParenExpr ::= '(' AnyExpr ')' {
 // https://github.com/JetBrains/Grammar-Kit/blob/d716ade658c1f8e1f84bd0d61764c9949a7df5f2/src/org/intellij/grammar/parser/GeneratedParserUtilBase.java#L656
 TupleOrParenExpr ::= OuterAttr* '(' AnyExpr (TupleExprUpper | ParenExprUpper) {
   pin = 2
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 upper TupleExprUpper ::= ',' [ AnyExpr (',' AnyExpr)* ','? ] ')' { elementType = TupleExpr }
@@ -1122,6 +1141,7 @@ upper ParenExprUpper ::= ')' { elementType = ParenExpr }
 
 ArrayExpr ::= OuterAttr* '[' ArrayInitializer ']' {
   pin = 2
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 private ArrayInitializer ::= [ AnyExpr ( ';' AnyExpr | (',' AnyExpr)* ','? ) ]
@@ -1168,11 +1188,13 @@ LitExpr ::= OuterAttr*
   | BOOL_LITERAL) {
  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
  implements = [ "com.intellij.psi.PsiLanguageInjectionHost"
-                "com.intellij.psi.ContributedReferenceHost" ]
+                "com.intellij.psi.ContributedReferenceHost"
+                "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
  mixin = "org.rust.lang.core.psi.ext.RsLitExprMixin"
 }
 
 YieldExpr ::= OuterAttr* yield Expr? {
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1335,6 +1357,7 @@ InnerAttrsAndBlock ::= '{' InnerAttr* BlockElement* '}' {
   pin = 1
   elementType = Block
 }
+
 private BlockElement ::= !'}' (Macro | ExprStmtOrLastExpr | Stmt | Item) {
   pin = 1
   recoverWhile = BlockElement_recover
@@ -1356,6 +1379,7 @@ fake ExprStmt ::= AnyExpr ';'? { extends = Stmt }
 
 LetDecl ::= OuterAttr* let Pat TypeAscription? [ '=' AnyExpr ] ';' {
   extends = Stmt
+  implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   pin = "let"
 }
 

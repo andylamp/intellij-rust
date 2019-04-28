@@ -27,6 +27,8 @@ import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
 import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.utils.RsDiagnostic
+import org.rust.lang.utils.evaluation.ExprValue
+import org.rust.lang.utils.evaluation.RsConstExprEvaluator
 import org.rust.lang.utils.snapshot.CombinedSnapshot
 import org.rust.lang.utils.snapshot.Snapshot
 import org.rust.openapiext.Testmark
@@ -183,6 +185,8 @@ class RsInferenceContext(
 
         exprTypes.replaceAll { _, ty -> fullyResolve(ty) }
         bindings.replaceAll { _, ty -> fullyResolve(ty) }
+        // replace types in diagnostics for better quick fixes
+        diagnostics.replaceAll { if (it is RsDiagnostic.TypeError) fullyResolve(it) else it}
 
         performPathsRefinement(lookup)
 
@@ -427,7 +431,7 @@ class RsInferenceContext(
         return ty.foldTyInferWith(this::shallowResolve)
     }
 
-    private fun fullyResolve(ty: Ty): Ty {
+    private fun <T : TypeFoldable<T>> fullyResolve(ty: T): T {
         fun go(ty: Ty): Ty {
             if (ty !is TyInfer) return ty
 
@@ -647,7 +651,10 @@ class RsFnInferenceContext(
         when {
             blockExpr.isTry -> inferTryBlockExprType(blockExpr, expected)
             blockExpr.isAsync -> inferAsyncBlockExprType(blockExpr)
-            else -> blockExpr.block.inferType(expected)
+            else -> {
+                val type = blockExpr.block.inferType(expected)
+                inferLabeledExprType(blockExpr, type, true)
+            }
         }
 
     private fun inferTryBlockExprType(blockExpr: RsBlockExpr, expected: Ty? = null): Ty {
@@ -1347,7 +1354,11 @@ class RsFnInferenceContext(
 
     private fun inferLoopExprType(expr: RsLoopExpr): Ty {
         expr.block?.inferType()
-        val returningTypes = mutableListOf<Ty>()
+        return inferLabeledExprType(expr, TyNever, false)
+    }
+
+    private fun inferLabeledExprType(expr: RsLabeledExpression, baseType: Ty, matchOnlyByLabel: Boolean): Ty {
+        val returningTypes = mutableListOf(baseType)
         val label = expr.labelDecl?.name
 
         fun collectReturningTypes(element: PsiElement, matchOnlyByLabel: Boolean) {
@@ -1369,8 +1380,10 @@ class RsFnInferenceContext(
             }
         }
 
-        collectReturningTypes(expr, false)
-        return if (returningTypes.isEmpty()) TyNever else getMoreCompleteType(returningTypes)
+        if (label != null || !matchOnlyByLabel) {
+            collectReturningTypes(expr, matchOnlyByLabel)
+        }
+        return getMoreCompleteType(returningTypes)
     }
 
     private fun inferForExprType(expr: RsForExpr): Ty {
@@ -1759,8 +1772,16 @@ class RsFnInferenceContext(
                 ?.let { expr.initializer?.inferTypeCoercableTo(expectedElemTy) }
                 ?: expr.initializer?.inferType()
                 ?: return TySlice(TyUnknown)
-            expr.sizeExpr?.inferType(TyInteger.USize)
-            val size = calculateArraySize(expr.sizeExpr) { ctx.getResolvedPaths(it).singleOrNull() }
+            val sizeExpr = expr.sizeExpr
+            sizeExpr?.inferType(TyInteger.USize)
+            val size = if (sizeExpr != null) {
+                val exprValue = RsConstExprEvaluator.evaluate(sizeExpr, TyInteger.USize) {
+                    ctx.getResolvedPaths(it).singleOrNull()
+                }
+                (exprValue as? ExprValue.Integer)?.value
+            } else {
+                null
+            }
             elementType to size
         } else {
             val elementTypes = expr.arrayElements?.map { it.inferType(expectedElemTy) }

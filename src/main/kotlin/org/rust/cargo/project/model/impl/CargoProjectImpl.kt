@@ -13,15 +13,19 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
+import com.intellij.openapi.components.Storage
+import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.progress.BackgroundTaskQueue
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ContentEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.util.EmptyRunnable
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.UserDataHolderBase
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -31,6 +35,7 @@ import com.intellij.util.io.exists
 import com.intellij.util.io.systemIndependentPath
 import org.jdom.Element
 import org.jetbrains.annotations.TestOnly
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProject.UpdateStatus
 import org.rust.cargo.project.model.CargoProjectsService
@@ -57,7 +62,10 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 
-@State(name = "CargoProjects")
+@State(name = "CargoProjects", storages = [
+    Storage(StoragePathMacros.WORKSPACE_FILE),
+    Storage("misc.xml", deprecated = true)
+])
 class CargoProjectsServiceImpl(
     val project: Project
 ) : CargoProjectsService, PersistentStateComponent<Element> {
@@ -368,6 +376,12 @@ data class CargoProjectImpl(
         "CargoProject(manifest = $manifest)"
 }
 
+val CargoProjectsService.allPackages: Sequence<CargoWorkspace.Package>
+    get() = allProjects.asSequence().mapNotNull { it.workspace }.flatMap { it.packages.asSequence() }
+
+val CargoProjectsService.allTargets: Sequence<CargoWorkspace.Target>
+    get() = allPackages.flatMap { it.targets.asSequence() }
+
 private fun hasAtLeastOneValidProject(projects: Collection<CargoProject>) =
     projects.any { it.manifest.exists() }
 
@@ -404,21 +418,27 @@ private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject
             if (project.isDisposed) return@runWriteAction
             ProjectRootManagerEx.getInstanceEx(project).mergeRootsChangesDuring {
                 for (cargoProject in cargoProjects) {
+                    cargoProject.workspaceRootDir?.setupContentRoots(project) { contentRoot ->
+                        addExcludeFolder(FileUtil.join(contentRoot.url, CargoConstants.ProjectLayout.target))
+                    }
+
                     val workspacePackages = cargoProject.workspace?.packages
                         .orEmpty()
                         .filter { it.origin == PackageOrigin.WORKSPACE }
 
                     for (pkg in workspacePackages) {
-                        val packageContentRoot = pkg.contentRoot ?: continue
-                        val packageModule = ModuleUtilCore.findModuleForFile(packageContentRoot, project) ?: continue
-                        ModuleRootModificationUtil.updateModel(packageModule) { rootModel ->
-                            val contentEntry = rootModel.contentEntries.singleOrNull() ?: return@updateModel
-                            contentEntry.setup(packageContentRoot)
-                        }
+                        pkg.contentRoot?.setupContentRoots(project, ContentEntry::setup)
                     }
                 }
             }
         }
+    }
+}
+
+private fun VirtualFile.setupContentRoots(project: Project, setup: ContentEntry.(VirtualFile) -> Unit) {
+    val packageModule = ModuleUtilCore.findModuleForFile(this, project) ?: return
+    ModuleRootModificationUtil.updateModel(packageModule) { rootModel ->
+        rootModel.contentEntries.singleOrNull()?.setup(this)
     }
 }
 

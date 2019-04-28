@@ -7,6 +7,7 @@ package org.rust.ide.annotator.fixes
 
 import org.intellij.lang.annotations.Language
 import org.rust.ProjectDescriptor
+import org.rust.WithStdlibAndDependencyRustProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.ide.annotator.RsAnnotatorTestBase
 import org.rust.ide.annotator.RsExpressionAnnotator
@@ -22,7 +23,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { foo: i32, bar: f64 }
 
         fn main() {
-            let _ = S { foo: /*caret*/0, bar: 0.0 };
+            let _ = S { foo: 0/*caret*/, bar: 0.0 };
         }
     """)
 
@@ -36,7 +37,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S(i32, f64);
 
         fn main() {
-            let _ = S { 0: /*caret*/0, 1: 0.0 };
+            let _ = S { 0: 0/*caret*/, 1: 0.0 };
         }
     """)
 
@@ -52,7 +53,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         type T = S;
 
         fn main() {
-            let _ = T { foo: /*caret*/0, bar: 0.0 };
+            let _ = T { foo: 0/*caret*/, bar: 0.0 };
         }
     """)
 
@@ -67,7 +68,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92, b: /*caret*/"".to_string() };
+            S { a: 92, b: "".to_string()/*caret*/ };
         }
     """)
 
@@ -82,7 +83,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92, b: /*caret*/"".to_string() };
+            S { a: 92, b: "".to_string()/*caret*/ };
         }
     """)
 
@@ -101,7 +102,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         fn main() {
             let _ = S {
                 0: 92,
-                1: /*caret*/0,
+                1: 0/*caret*/,
                 2: 92,
                 3: 0
             };
@@ -118,7 +119,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { a: i32, b: i32 }
 
         fn main() {
-            let _ = S { a: /*caret*/0, b: 0, };
+            let _ = S { a: 0/*caret*/, b: 0, };
         }
     """)
 
@@ -132,7 +133,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { a: i32, b: i32 }
 
         fn main() {
-            let _ = S { a: 0, b: /*caret*/0 };
+            let _ = S { a: 0, b: 0/*caret*/ };
         }
     """)
 
@@ -146,7 +147,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
         struct S { a: i32, b: i32, c: i32, d: i32, e: i32}
 
         fn main() {
-            let _ = S { a: 0, b: /*caret*/0, c: 1, d: 0, e: 2 };
+            let _ = S { a: 0, b: 0/*caret*/, c: 1, d: 0, e: 2 };
         }
     """)
 
@@ -286,6 +287,196 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase(RsExpressionAnnotator::class.
                 empty_struct: EmptyStruct {},
                 unsupported_type_field: ()
             };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test smart pointers`() = checkBothQuickFix("""
+        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
+        use std::cell::{Cell, RefCell, UnsafeCell};
+
+        struct S<'a> {
+            a: Box<Box<u32>>,
+            b: Rc<&'a u64>,
+            c: Arc<String>,
+            d: Cell<f32>,
+            e: RefCell<u32>,
+            f: UnsafeCell<u64>,
+            g: Mutex<String>
+        }
+
+        fn main() {
+            <error>S</error>{/*caret*/};
+        }
+    """, """
+        use std::rc::Rc;
+        use std::sync::{Arc, Mutex};
+        use std::cell::{Cell, RefCell, UnsafeCell};
+
+        struct S<'a> {
+            a: Box<Box<u32>>,
+            b: Rc<&'a u64>,
+            c: Arc<String>,
+            d: Cell<f32>,
+            e: RefCell<u32>,
+            f: UnsafeCell<u64>,
+            g: Mutex<String>
+        }
+
+        fn main() {
+            S{
+                a: Box::new(Box::new(0)),
+                b: Rc::new(&0),
+                c: Arc::new("".to_string()),
+                d: Cell::new(0.0),
+                e: RefCell::new(0),
+                f: UnsafeCell::new(0),
+                g: Mutex::new("".to_string())
+            };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test default`() = checkBothQuickFix("""
+        #[derive(Default)]
+        struct A {
+            a: u64
+        }
+
+        struct B {
+            b: u64
+        }
+
+        impl Default for B {
+            fn default() -> Self {
+                Self { b: 1 }
+            }
+        }
+
+        struct S {
+            a: A,
+            b: B
+        }
+
+        fn main() {
+            <error>S</error>{/*caret*/};
+        }
+    """, """
+        #[derive(Default)]
+        struct A {
+            a: u64
+        }
+
+        struct B {
+            b: u64
+        }
+
+        impl Default for B {
+            fn default() -> Self {
+                Self { b: 1 }
+            }
+        }
+
+        struct S {
+            a: A,
+            b: B
+        }
+
+        fn main() {
+            S{ a: Default::default(), b: Default::default() };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test local variable`() = checkBothQuickFix("""
+        struct A {
+            x: u64
+        }
+        struct S<'a> {
+            a: u64,
+            b: &'a u64,
+            c: &'a &'a mut u64,
+            d: u32,
+            e: u64,
+            f: String,
+            obj: A
+        }
+
+        fn test(a: u64) {
+            let b = 3 as u64;
+            let mut c: u64 = 1;
+            let d: u64 = 5;
+            {
+                let e: u64 = 5;
+            }
+            let f = "".to_string();
+            let obj = A { x: 5 };
+
+            <error>S</error>{/*caret*/};
+        }
+    """, """
+        struct A {
+            x: u64
+        }
+        struct S<'a> {
+            a: u64,
+            b: &'a u64,
+            c: &'a &'a mut u64,
+            d: u32,
+            e: u64,
+            f: String,
+            obj: A
+        }
+
+        fn test(a: u64) {
+            let b = 3 as u64;
+            let mut c: u64 = 1;
+            let d: u64 = 5;
+            {
+                let e: u64 = 5;
+            }
+            let f = "".to_string();
+            let obj = A { x: 5 };
+
+            S{
+                a,
+                b: &b,
+                c: &&mut c,
+                d: 0,
+                e: 0,
+                f,
+                obj
+            };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test local variable recursive`() = checkRecursiveQuickFix("""
+        struct A {
+            a: u64
+        }
+
+        struct B {
+            a: A
+        }
+
+        fn main() {
+            let a: u64 = 5;
+            <error>B</error>{/*caret*/};
+        }
+    """, """
+        struct A {
+            a: u64
+        }
+
+        struct B {
+            a: A
+        }
+
+        fn main() {
+            let a: u64 = 5;
+            B{ a: A { a } };
         }
     """)
 

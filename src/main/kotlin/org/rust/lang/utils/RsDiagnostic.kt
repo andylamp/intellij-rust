@@ -31,6 +31,10 @@ import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.types.BoundElement
 import org.rust.lang.core.types.TraitRef
 import org.rust.lang.core.types.asTy
+import org.rust.lang.core.types.infer.TypeFoldable
+import org.rust.lang.core.types.infer.TypeFolder
+import org.rust.lang.core.types.infer.TypeVisitor
+import org.rust.lang.core.types.infer.hasTyInfer
 import org.rust.lang.core.types.isMutable
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.utils.RsErrorCode.*
@@ -52,13 +56,21 @@ sealed class RsDiagnostic(
         element: PsiElement,
         private val expectedTy: Ty,
         private val actualTy: Ty
-    ) : RsDiagnostic(element, inspectionClass = RsTypeCheckInspection::class.java) {
+    ) : RsDiagnostic(element, inspectionClass = RsTypeCheckInspection::class.java), TypeFoldable<TypeError> {
+        private val description: String? = if (expectedTy.hasTyInfer || actualTy.hasTyInfer) {
+            // if types contain infer types, they will be replaced with more specific (e.g. `{integer}` with `i32`)
+            // so we capture string representation of types right here
+            expectedFound(expectedTy, actualTy)
+        } else {
+            null
+        }
+
         override fun prepare(): PreparedAnnotation {
             return PreparedAnnotation(
                 ERROR,
                 E0308,
                 "mismatched types",
-                expectedFound(expectedTy, actualTy),
+                description ?: expectedFound(expectedTy, actualTy),
                 fixes = buildList {
                     if (expectedTy is TyNumeric && isActualTyNumeric()) {
                         add(AddAsTyFix(element, expectedTy))
@@ -213,6 +225,12 @@ sealed class RsDiagnostic(
             if (!isSuitableMutability) return null
             return DerefRefPath(derefs, refs)
         }
+
+        override fun superFoldWith(folder: TypeFolder): TypeError =
+            TypeError(element, expectedTy.foldWith(folder), actualTy.foldWith(folder))
+
+        override fun superVisitWith(visitor: TypeVisitor): Boolean =
+            expectedTy.visitWith(visitor) || actualTy.visitWith(visitor)
     }
 
     class DerefError(
@@ -867,6 +885,16 @@ sealed class RsDiagnostic(
             escapeString("Expected function, found `${element.text}`")
         )
     }
+
+    class UnlabeledControlFlowExpr(element: PsiElement) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation {
+            return PreparedAnnotation(
+                ERROR,
+                E0695,
+                "Unlabeled `${element.text}` inside of a labeled block"
+            )
+        }
+    }
 }
 
 enum class RsErrorCode {
@@ -876,7 +904,7 @@ enum class RsErrorCode {
     E0308, E0379, E0384,
     E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0449, E0463,
     E0569, E0583, E0594,
-    E0603, E0614, E0616, E0618, E0624, E0658,
+    E0603, E0614, E0616, E0618, E0624, E0658, E0695,
     E0704;
 
     val code: String

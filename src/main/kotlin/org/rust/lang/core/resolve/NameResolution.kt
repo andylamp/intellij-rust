@@ -374,13 +374,14 @@ private fun processQualifiedPathResolveVariants(
     parent: PsiElement?,
     processor: RsResolveProcessor
 ): Boolean {
-    val primitiveType = TyPrimitive.fromPath(qualifier)
-    if (primitiveType != null) {
-        val selfSubst = mapOf(TyTypeParameter.self() to primitiveType).toTypeSubst()
-        if (processAssociatedItemsWithSelfSubst(lookup, primitiveType, ns, selfSubst, processor)) return true
+    val (base, subst) = qualifier.reference.advancedResolve() ?: run {
+        val primitiveType = TyPrimitive.fromPath(qualifier)
+        if (primitiveType != null) {
+            val selfSubst = mapOf(TyTypeParameter.self() to primitiveType).toTypeSubst()
+            if (processAssociatedItemsWithSelfSubst(lookup, primitiveType, ns, selfSubst, processor)) return true
+        }
+        return false
     }
-
-    val (base, subst) = qualifier.reference.advancedResolve() ?: return false
     val isSuperChain = isSuperChain(qualifier)
     if (base is RsMod) {
         val s = base.`super`
@@ -593,7 +594,7 @@ fun processLocalVariables(place: RsElement, processor: (RsPatBinding) -> Unit) {
         processLexicalDeclarations(scope, cameFrom, VALUES) { v ->
             val el = v.element
             if (el is RsPatBinding) processor(el)
-            true
+            false
         }
     }
 }
@@ -1119,7 +1120,7 @@ private fun processLexicalDeclarations(
 
     when (scope) {
         is RsMod -> {
-            if (processItemDeclarations(scope, ns, processor, withPrivateImports = true)) return true
+            if (processItemDeclarationsWithCache(scope, ns, processor, withPrivateImports = true)) return true
         }
 
         is RsTypeAlias -> {
@@ -1144,7 +1145,10 @@ private fun processLexicalDeclarations(
             if (Namespace.Types in ns) {
                 if (processAll(scope.typeParameters, processor)) return true
             }
-            if (Namespace.Values in ns) {
+            // XXX: `cameFrom !is RsValueParameterList` prevents switches to AST in cases like
+            // `fn foo(a: usize, b: [u8; SIZE])`. Note that rustc really process them and show
+            // [E0435] on this: `fn foo(a: usize, b: [u8; a])`.
+            if (Namespace.Values in ns && cameFrom !is RsValueParameterList) {
                 val selfParam = scope.selfParameter
                 if (selfParam != null && processor("self", selfParam)) return true
 
@@ -1237,9 +1241,14 @@ fun processNestedScopesUpwards(
         return true
     }
 
+    // Prelude is injected via implicit star import `use std::prelude::v1::*;`
+    if (processor(ScopeEvent.STAR_IMPORTS)) return false
+
     val prelude = findPrelude(scopeStart)
-    val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
-    if (prelude != null && processItemDeclarations(prelude, ns, preludeProcessor, withPrivateImports = false)) return true
+    if (prelude != null) {
+        val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
+        return processItemDeclarationsWithCache(prelude, ns, preludeProcessor, withPrivateImports = false)
+    }
 
     return false
 }

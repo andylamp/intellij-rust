@@ -13,8 +13,6 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.StringUtil.unescapeStringCharacters
 import com.intellij.openapi.util.text.StringUtil.unquoteString
 import jetbrains.buildServer.messages.serviceMessages.ServiceMessageVisitor
-import org.rust.cargo.runconfig.test.CargoTestLocator.getTestFnUrl
-import org.rust.cargo.runconfig.test.CargoTestLocator.getTestModUrl
 import org.rust.stdext.removeLast
 import java.io.File
 
@@ -55,9 +53,9 @@ class CargoTestEventsConverter(
     private fun handleExecutableName(text: String): Boolean {
         if (suitesStack.isNotEmpty() || !TARGET_PATH_PART_REGEX.containsMatchIn(text)) return false
         val targetName = text
+            .trim()
             .substringAfterLast(File.separatorChar)
-            .substringBefore(' ')
-            .substringBeforeLast('-')
+            .substringBeforeLast('.')
         suitesStack.add(targetName)
         return true
     }
@@ -209,7 +207,11 @@ class CargoTestEventsConverter(
             Regex("""thread '.*' panicked at 'assertion failed: `\(left == right\)`\s*left: `(.*)`,\s*right: `(.*?)`(:.*)?'""")
 
         private val NodeId.name: String
-            get() = substringAfterLast(NAME_SEPARATOR)
+            get() {
+                val name = substringAfterLast(NAME_SEPARATOR)
+                // Remove suffix from target name
+                return if (contains(NAME_SEPARATOR)) name else name.substringBeforeLast("-")
+            }
 
         private val NodeId.parent: NodeId
             get() {
@@ -221,7 +223,7 @@ class CargoTestEventsConverter(
             ServiceMessageBuilder.testSuiteStarted(suite.name)
                 .addAttribute("nodeId", suite)
                 .addAttribute("parentNodeId", suite.parent)
-                .addAttribute("locationHint", getTestModUrl(suite))
+                .addAttribute("locationHint", CargoTestLocator.getTestUrl(suite))
 
         private fun createTestSuiteFinishedMessage(suite: NodeId): ServiceMessageBuilder =
             ServiceMessageBuilder.testSuiteFinished(suite.name)
@@ -231,7 +233,7 @@ class CargoTestEventsConverter(
             ServiceMessageBuilder.testStarted(test.name)
                 .addAttribute("nodeId", test)
                 .addAttribute("parentNodeId", test.parent)
-                .addAttribute("locationHint", getTestFnUrl(test))
+                .addAttribute("locationHint", CargoTestLocator.getTestUrl(test))
 
         private fun createTestFailedMessage(test: NodeId, failedMessage: String): ServiceMessageBuilder {
             val builder = ServiceMessageBuilder.testFailed(test.name)

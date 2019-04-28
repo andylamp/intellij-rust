@@ -8,12 +8,14 @@ package org.rust.lang.core.macros
 import com.intellij.openapi.application.AccessToken
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runWriteAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.util.io.storage.HeavyProcessLatch
 import org.rust.lang.core.psi.RsMacro
 import org.rust.lang.core.psi.RsMacroCall
@@ -264,7 +266,10 @@ object InvalidationPipeline {
 
     class Stage2(val info: ExpandedMacroInfo) : Pipeline.Stage2WriteToFs {
         override fun writeExpansionToFs(fs: MacroExpansionVfsBatch): Pipeline.Stage3SaveToStorage {
-            info.expansionFile?.let { fs.deleteFile(fs.resolve(it)) }
+            val expansionFile = info.expansionFile
+            if (expansionFile != null && expansionFile.isValid) {
+                fs.deleteFile(fs.resolve(expansionFile))
+            }
             return Stage3(info)
         }
     }
@@ -342,7 +347,9 @@ object ExpansionPipeline {
     ) : Pipeline.Stage2WriteToFs {
         override fun writeExpansionToFs(fs: MacroExpansionVfsBatch): Pipeline.Stage3SaveToStorage {
             val oldExpansionFile = info.expansionFile
-            oldExpansionFile?.let { fs.deleteFile(fs.resolve(it)) }
+            if (oldExpansionFile != null && oldExpansionFile.isValid) {
+                fs.deleteFile(fs.resolve(oldExpansionFile))
+            }
             return Stage3(call, info, def, null)
         }
     }
@@ -357,6 +364,15 @@ object ExpansionPipeline {
             checkWriteAccessAllowed()
             val virtualFile = expansionFile?.toVirtualFile()
             storage.addExpandedMacro(call, info, def, virtualFile)
+            // If a document exists for expansion file (e.g. when AST tree is loaded), the changes in
+            // a virtual file will not be committed to the PSI immediately. We have to commit it manually
+            // to see the changes (or somehow wait for DocumentCommitThread, but it isn't possible for now)
+            if (virtualFile != null) {
+                val doc = FileDocumentManager.getInstance().getCachedDocument(virtualFile)
+                if (doc != null) {
+                    PsiDocumentManager.getInstance(storage.project).commitDocument(doc)
+                }
+            }
         }
     }
 }

@@ -98,7 +98,7 @@ abstract class VfsBatch {
         val data = content.toByteArray() // UTF-8
         Files.write(child, data)
 
-        fileEvents.add(Event.Create(parent, name, child.lastModified().toMillis(), data.size))
+        fileEvents.add(Event.Create(parent, name))
         return child
     }
 
@@ -142,7 +142,7 @@ abstract class VfsBatch {
     protected class DirCreateEvent(val parent: Path, val name: String)
 
     protected sealed class Event {
-        class Create(val parent: Path, val name: String, val lastModified: Long, val length: Int): Event()
+        class Create(val parent: Path, val name: String): Event()
         class Write(val file: Path): Event()
         class Delete(val file: Path): Event()
     }
@@ -158,7 +158,7 @@ abstract class EventBasedVfsBatch : VfsBatch() {
         manager.fireBeforeRefreshStart(/*asynchronous = */ false)
         try {
             val events = mutableListOf<VFileEvent>()
-            while (!dirEvents.isEmpty()) {
+            while (dirEvents.isNotEmpty()) {
                 val iter = dirEvents.iterator()
                 while (iter.hasNext()) {
                     val event = iter.next().toVFileEvent()
@@ -173,7 +173,7 @@ abstract class EventBasedVfsBatch : VfsBatch() {
             }
 
             if (fileEvents.isNotEmpty()) {
-                PersistentFS.getInstance().processEvents(fileEvents.map { it.toVFileEvent()!! })
+                PersistentFS.getInstance().processEvents(fileEvents.mapNotNull { it.toVFileEvent() })
                 fileEvents.clear()
             }
         } finally {

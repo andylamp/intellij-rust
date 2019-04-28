@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/04/10/changelog-96.html">
-                 https://intellij-rust.github.io/2019/04/10/changelog-96.html
+        <a href="https://intellij-rust.github.io/2019/04/24/changelog-97.html">
+                 https://intellij-rust.github.io/2019/04/24/changelog-97.html
     ]]>
     </change-notes>
 
@@ -500,11 +500,6 @@
                          enabledByDefault="true" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsAssignToImmutableInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Edition 2018"
-                         displayName="Anchored paths"
-                         enabledByDefault="false" level="ERROR"
-                         implementationClass="org.rust.ide.inspections.RsAnchoredPathsInspection"/>
-
         <localInspection language="Rust" groupName="Rust"
                          displayName="Trait implementation"
                          enabledByDefault="true" level="ERROR"
@@ -664,6 +659,10 @@
         </intentionAction>
         <intentionAction>
             <className>org.rust.ide.intentions.RsShowSingleStepMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.RunCargoExpandIntention</className>
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
@@ -839,6 +838,11 @@
                 class="org.rust.ide.actions.RsCreateFileAction"
                 text="Rust File"
                 description="Create new Rust file">
+            <add-to-group group-id="NewGroup" anchor="before" relative-to-action="NewFile"/>
+        </action>
+
+        <action id="Rust.NewCargoCrate" class="org.rust.ide.actions.RsCreateCrateAction"
+                text="Cargo Crate" description="Create new Cargo crate">
             <add-to-group group-id="NewGroup" anchor="before" relative-to-action="NewFile"/>
         </action>
 

@@ -33,8 +33,8 @@ val baseVersion = when (baseIDE) {
 
 plugins {
     idea
-    kotlin("jvm") version "1.3.21"
-    id("org.jetbrains.intellij") version "0.4.5"
+    kotlin("jvm") version "1.3.30"
+    id("org.jetbrains.intellij") version "0.4.8"
     id("org.jetbrains.grammarkit") version "2018.2.2"
     id("de.undercouch.download") version "3.4.3"
     id("net.saliman.properties") version "1.4.6"
@@ -57,7 +57,7 @@ allprojects {
 
     repositories {
         mavenCentral()
-        maven { setUrl("https://dl.bintray.com/jetbrains/markdown") }
+        maven("https://dl.bintray.com/jetbrains/markdown")
     }
 
     idea {
@@ -73,9 +73,15 @@ allprojects {
         instrumentCode = false
         ideaDependencyCachePath = dependencyCachePath
 
-        tasks.withType<PatchPluginXmlTask> {
-            sinceBuild(prop("sinceBuild"))
-            untilBuild(prop("untilBuild"))
+        tasks {
+            withType<PatchPluginXmlTask> {
+                sinceBuild(prop("sinceBuild"))
+                untilBuild(prop("untilBuild"))
+            }
+
+            "buildSearchableOptions" {
+                enabled = prop("enableBuildSearchableOptions").toBoolean()
+            }
         }
     }
 
@@ -100,12 +106,12 @@ allprojects {
     }
 
     sourceSets {
-        getByName("main").apply {
+        main {
             java.srcDirs("src/gen")
             kotlin.srcDirs("src/$platformVersion/main/kotlin")
             resources.srcDirs("src/$platformVersion/main/resources")
         }
-        getByName("test").apply {
+        test {
             kotlin.srcDirs("src/$platformVersion/test/kotlin")
             resources.srcDirs("src/$platformVersion/test/resources")
         }
@@ -223,7 +229,7 @@ project(":") {
             rootProject.allprojects
                 .map { it.configurations }
                 .flatMap { listOf(it.compile, it.testCompile) }
-                .forEach { it.resolve() }
+                .forEach { it.get().resolve() }
         }
     }
 

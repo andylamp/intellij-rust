@@ -1161,6 +1161,12 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         use <error descr="Function `foo::bar::eggs` is private [E0603]">foo::bar::eggs</error>;
     """)
 
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3558
+    fun `test no E0603 for 'pub(in self)' restricted module`() = checkErrors("""
+        pub(self) mod foo {}
+        use self::foo as bar;
+    """)
+
     fun `test function args should implement Sized trait E0277`() = checkErrors("""
         fn foo1(bar: <error descr="the trait bound `[u8]: std::marker::Sized` is not satisfied [E0277]">[u8]</error>) {}
         fn foo2(bar: i32) {}
@@ -1478,6 +1484,52 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
             <error>E::V1</error>();
             E::V2();
             <error>E::V3</error>();
+        }
+    """)
+
+    @MockRustcVersion("1.34.0")
+    fun `test label_break_value 1`() = checkErrors("""
+        fn main() {
+            <error descr="label on block is experimental [E0658]">'a:</error> {
+                if true { break 'a 1; }
+                2
+            }
+        }
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
+    fun `test label_break_value 2`() = checkErrors("""
+        #![feature(label_break_value)]
+
+        fn main() {
+            'a: {
+                if true { break 'a 1; }
+                2
+            }
+        }
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
+    fun `test break without label in labeled block E0695`() = checkErrors("""
+        #![feature(label_break_value)]
+
+        fn main() {
+            'a: {
+                if true { <error descr="Unlabeled `break` inside of a labeled block [E0695]">break</error> 1; }
+                2
+            }
+        }
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
+    fun `test continue without label in labeled block E0695`() = checkErrors("""
+        #![feature(label_break_value)]
+
+        fn main() {
+            'a: {
+                if true { <error descr="Unlabeled `continue` inside of a labeled block [E0695]">continue</error>; }
+                2
+            }
         }
     """)
 }
