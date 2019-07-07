@@ -10,7 +10,10 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.StubBuilder
 import com.intellij.psi.stubs.*
 import com.intellij.psi.tree.IStubFileElementType
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.BitUtil
+import com.intellij.util.io.DataInputOutputUtil.readNullable
+import com.intellij.util.io.DataInputOutputUtil.writeNullable
 import org.rust.lang.RsLanguage
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -33,7 +36,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 161
+        override fun getStubVersion(): Int = 172
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -119,6 +122,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "SELF_PARAMETER" -> RsSelfParameterStub.Type
     "TYPE_PARAMETER_LIST" -> RsPlaceholderStub.Type("TYPE_PARAMETER_LIST", ::RsTypeParameterListImpl)
     "TYPE_PARAMETER" -> RsTypeParameterStub.Type
+    "CONST_PARAMETER" -> RsConstParameterStub.Type
     "LIFETIME" -> RsLifetimeStub.Type
     "LIFETIME_PARAMETER" -> RsLifetimeParameterStub.Type
     "FOR_LIFETIMES" -> RsPlaceholderStub.Type("FOR_LIFETIMES", ::RsForLifetimesImpl)
@@ -137,45 +141,47 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "MACRO_2" -> RsMacro2Stub.Type
     "MACRO_CALL" -> RsMacroCallStub.Type
 
+    "INCLUDE_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("INCLUDE_MACRO_ARGUMENT", ::RsIncludeMacroArgumentImpl)
+
     "INNER_ATTR" -> RsInnerAttrStub.Type
     "OUTER_ATTR" -> RsPlaceholderStub.Type("OUTER_ATTR", ::RsOuterAttrImpl)
 
     "META_ITEM" -> RsMetaItemStub.Type
     "META_ITEM_ARGS" -> RsPlaceholderStub.Type("META_ITEM_ARGS", ::RsMetaItemArgsImpl)
 
-    "BLOCK" -> RsPlaceholderStub.Type("BLOCK", ::RsBlockImpl)
+    "BLOCK" -> RsBlockStubType
 
     "BINARY_OP" -> RsBinaryOpStub.Type
 
-    "ARRAY_EXPR" -> RsExprStub.Type("ARRAY_EXPR", ::RsArrayExprImpl)
-    "BINARY_EXPR" -> RsExprStub.Type("BINARY_EXPR", ::RsBinaryExprImpl)
-    "BLOCK_EXPR" -> RsExprStub.Type("BLOCK_EXPR", ::RsBlockExprImpl)
-    "BREAK_EXPR" -> RsExprStub.Type("BREAK_EXPR", ::RsBreakExprImpl)
-    "CALL_EXPR" -> RsExprStub.Type("CALL_EXPR", ::RsCallExprImpl)
-    "CAST_EXPR" -> RsExprStub.Type("CAST_EXPR", ::RsCastExprImpl)
-    "CONT_EXPR" -> RsExprStub.Type("CONT_EXPR", ::RsContExprImpl)
-    "DOT_EXPR" -> RsExprStub.Type("DOT_EXPR", ::RsDotExprImpl)
-    "EXPR_STMT_OR_LAST_EXPR" -> RsExprStub.Type("EXPR_STMT_OR_LAST_EXPR", ::RsExprStmtOrLastExprImpl)
-    "FOR_EXPR" -> RsExprStub.Type("FOR_EXPR", ::RsForExprImpl)
-    "IF_EXPR" -> RsExprStub.Type("IF_EXPR", ::RsIfExprImpl)
-    "INDEX_EXPR" -> RsExprStub.Type("INDEX_EXPR", ::RsIndexExprImpl)
-    "LAMBDA_EXPR" -> RsExprStub.Type("LAMBDA_EXPR", ::RsLambdaExprImpl)
+    "ARRAY_EXPR" -> RsExprStubType("ARRAY_EXPR", ::RsArrayExprImpl)
+    "BINARY_EXPR" -> RsExprStubType("BINARY_EXPR", ::RsBinaryExprImpl)
+    "BLOCK_EXPR" -> RsExprStubType("BLOCK_EXPR", ::RsBlockExprImpl)
+    "BREAK_EXPR" -> RsExprStubType("BREAK_EXPR", ::RsBreakExprImpl)
+    "CALL_EXPR" -> RsExprStubType("CALL_EXPR", ::RsCallExprImpl)
+    "CAST_EXPR" -> RsExprStubType("CAST_EXPR", ::RsCastExprImpl)
+    "CONT_EXPR" -> RsExprStubType("CONT_EXPR", ::RsContExprImpl)
+    "DOT_EXPR" -> RsExprStubType("DOT_EXPR", ::RsDotExprImpl)
+    "EXPR_STMT_OR_LAST_EXPR" -> RsExprStubType("EXPR_STMT_OR_LAST_EXPR", ::RsExprStmtOrLastExprImpl)
+    "FOR_EXPR" -> RsExprStubType("FOR_EXPR", ::RsForExprImpl)
+    "IF_EXPR" -> RsExprStubType("IF_EXPR", ::RsIfExprImpl)
+    "INDEX_EXPR" -> RsExprStubType("INDEX_EXPR", ::RsIndexExprImpl)
+    "LAMBDA_EXPR" -> RsExprStubType("LAMBDA_EXPR", ::RsLambdaExprImpl)
     "LIT_EXPR" -> RsLitExprStub.Type
-    "LOOP_EXPR" -> RsExprStub.Type("LOOP_EXPR", ::RsLoopExprImpl)
-    "MACRO_EXPR" -> RsExprStub.Type("MACRO_EXPR", ::RsMacroExprImpl)
-    "MATCH_EXPR" -> RsExprStub.Type("MATCH_EXPR", ::RsMatchExprImpl)
-    "PAREN_EXPR" -> RsExprStub.Type("PAREN_EXPR", ::RsParenExprImpl)
-    "PATH_EXPR" -> RsExprStub.Type("PATH_EXPR", ::RsPathExprImpl)
-    "RANGE_EXPR" -> RsExprStub.Type("RANGE_EXPR", ::RsRangeExprImpl)
-    "RET_EXPR" -> RsExprStub.Type("RET_EXPR", ::RsRetExprImpl)
-    "YIELD_EXPR" -> RsExprStub.Type("YIELD_EXPR", ::RsYieldExprImpl)
-    "STRUCT_LITERAL" -> RsExprStub.Type("STRUCT_LITERAL", ::RsStructLiteralImpl)
-    "TRY_EXPR" -> RsExprStub.Type("TRY_EXPR", ::RsTryExprImpl)
-    "TUPLE_EXPR" -> RsExprStub.Type("TUPLE_EXPR", ::RsTupleExprImpl)
-    "TUPLE_OR_PAREN_EXPR" -> RsExprStub.Type("TUPLE_OR_PAREN_EXPR", ::RsTupleOrParenExprImpl)
+    "LOOP_EXPR" -> RsExprStubType("LOOP_EXPR", ::RsLoopExprImpl)
+    "MACRO_EXPR" -> RsExprStubType("MACRO_EXPR", ::RsMacroExprImpl)
+    "MATCH_EXPR" -> RsExprStubType("MATCH_EXPR", ::RsMatchExprImpl)
+    "PAREN_EXPR" -> RsExprStubType("PAREN_EXPR", ::RsParenExprImpl)
+    "PATH_EXPR" -> RsExprStubType("PATH_EXPR", ::RsPathExprImpl)
+    "RANGE_EXPR" -> RsExprStubType("RANGE_EXPR", ::RsRangeExprImpl)
+    "RET_EXPR" -> RsExprStubType("RET_EXPR", ::RsRetExprImpl)
+    "YIELD_EXPR" -> RsExprStubType("YIELD_EXPR", ::RsYieldExprImpl)
+    "STRUCT_LITERAL" -> RsExprStubType("STRUCT_LITERAL", ::RsStructLiteralImpl)
+    "TRY_EXPR" -> RsExprStubType("TRY_EXPR", ::RsTryExprImpl)
+    "TUPLE_EXPR" -> RsExprStubType("TUPLE_EXPR", ::RsTupleExprImpl)
+    "TUPLE_OR_PAREN_EXPR" -> RsExprStubType("TUPLE_OR_PAREN_EXPR", ::RsTupleOrParenExprImpl)
     "UNARY_EXPR" -> RsUnaryExprStub.Type
-    "UNIT_EXPR" -> RsExprStub.Type("UNIT_EXPR", ::RsUnitExprImpl)
-    "WHILE_EXPR" -> RsExprStub.Type("WHILE_EXPR", ::RsWhileExprImpl)
+    "UNIT_EXPR" -> RsExprStubType("UNIT_EXPR", ::RsUnitExprImpl)
+    "WHILE_EXPR" -> RsExprStubType("WHILE_EXPR", ::RsWhileExprImpl)
 
     "VIS" -> RsVisStub.Type
     "VIS_RESTRICTION" -> RsPlaceholderStub.Type("VIS_RESTRICTION", ::RsVisRestrictionImpl)
@@ -354,7 +360,9 @@ class RsEnumVariantStub(
 class RsModDeclItemStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val name: String?,
-    val isLocal: Boolean    //TODO: get rid of it
+    val isLocal: Boolean,    //TODO: get rid of it
+    // Macro resolve optimization: stub field access is much faster than PSI traversing
+    val hasMacroUse: Boolean
 ) : StubBase<RsModDeclItem>(parent, elementType),
     RsNamedStub {
 
@@ -362,6 +370,7 @@ class RsModDeclItemStub(
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsModDeclItemStub(parentStub, this,
                 dataStream.readNameAsString(),
+                dataStream.readBoolean(),
                 dataStream.readBoolean()
             )
 
@@ -369,13 +378,14 @@ class RsModDeclItemStub(
             with(dataStream) {
                 writeName(stub.name)
                 writeBoolean(stub.isLocal)
+                writeBoolean(stub.hasMacroUse)
             }
 
         override fun createPsi(stub: RsModDeclItemStub) =
             RsModDeclItemImpl(stub, this)
 
         override fun createStub(psi: RsModDeclItem, parentStub: StubElement<*>?) =
-            RsModDeclItemStub(parentStub, this, psi.name, psi.isLocal)
+            RsModDeclItemStub(parentStub, this, psi.name, psi.isLocal, psi.hasMacroUse)
 
         override fun indexStub(stub: RsModDeclItemStub, sink: IndexSink) = sink.indexModDeclItem(stub)
     }
@@ -731,6 +741,30 @@ class RsTypeParameterStub(
     }
 }
 
+class RsConstParameterStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    override val name: String?
+) : StubBase<RsTypeParameter>(parent, elementType),
+    RsNamedStub {
+
+    object Type : RsStubElementType<RsConstParameterStub, RsConstParameter>("CONST_PARAMETER") {
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
+            RsConstParameterStub(parentStub, this,
+                dataStream.readNameAsString()
+            )
+
+        override fun serialize(stub: RsConstParameterStub, dataStream: StubOutputStream) =
+            with(dataStream) {
+                writeName(stub.name)
+            }
+
+        override fun createPsi(stub: RsConstParameterStub): RsConstParameter =
+            RsConstParameterImpl(stub, this)
+
+        override fun createStub(psi: RsConstParameter, parentStub: StubElement<*>?) =
+            RsConstParameterStub(parentStub, this, psi.name)
+    }
+}
 
 class RsValueParameterStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
@@ -1063,12 +1097,11 @@ class RsInnerAttrStub(
 class RsMetaItemStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     val name: String?,
-    val hasEq: Boolean,
-    val value: String?
+    val hasEq: Boolean
 ) : StubBase<RsMetaItem>(parent, elementType) {
     object Type : RsStubElementType<RsMetaItemStub, RsMetaItem>("META_ITEM") {
         override fun createStub(psi: RsMetaItem, parentStub: StubElement<*>?): RsMetaItemStub =
-            RsMetaItemStub(parentStub, this, psi.name, psi.eq != null, psi.litExpr?.stringLiteralValue)
+            RsMetaItemStub(parentStub, this, psi.name, psi.eq != null)
 
         override fun createPsi(stub: RsMetaItemStub): RsMetaItem = RsMetaItemImpl(stub, this)
 
@@ -1076,17 +1109,12 @@ class RsMetaItemStub(
             with(dataStream) {
                 writeName(stub.name)
                 writeBoolean(stub.hasEq)
-                writeUTFFastAsNullable(stub.value)
             }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsMetaItemStub =
             RsMetaItemStub(parentStub, this,
                 dataStream.readNameAsString(),
-                dataStream.readBoolean(),
-                dataStream.readUTFFastAsNullable())
-
-        override fun indexStub(stub: RsMetaItemStub, sink: IndexSink) {
-        }
+                dataStream.readBoolean())
     }
 }
 
@@ -1112,52 +1140,44 @@ class RsBinaryOpStub(
     }
 }
 
-class RsExprStub(
-    parent: StubElement<*>?, elementType: IStubElementType<*, *>
-) : RsPlaceholderStub(parent, elementType) {
-    class Type<PsiT : RsElement>(
-        debugName: String,
-        private val psiCtor: (RsPlaceholderStub, IStubElementType<*, *>) -> PsiT
-    ) : RsStubElementType<RsPlaceholderStub, PsiT>(debugName) {
+object RsBlockStubType : RsPlaceholderStub.Type<RsBlock>("BLOCK", ::RsBlockImpl) {
+    override fun shouldCreateStub(node: ASTNode): Boolean =
+        createStubIfParentIsStub(node) || PsiTreeUtil.getChildOfType(node.psi, RsItemElement::class.java) != null
+}
 
-        override fun shouldCreateStub(node: ASTNode): Boolean =
-            createStubIfParentIsStub(node) && node.psi.parent?.parent !is RsFunction
-
-        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?)
-            = RsPlaceholderStub(parentStub, this)
-
-        override fun serialize(stub: RsPlaceholderStub, dataStream: StubOutputStream) {}
-
-        override fun createPsi(stub: RsPlaceholderStub) = psiCtor(stub, this)
-
-        override fun createStub(psi: PsiT, parentStub: StubElement<*>?) = RsPlaceholderStub(parentStub, this)
-    }
+class RsExprStubType<PsiT : RsElement>(
+    debugName: String,
+    psiCtor: (RsPlaceholderStub, IStubElementType<*, *>) -> PsiT
+) : RsPlaceholderStub.Type<PsiT>(debugName, psiCtor) {
+    override fun shouldCreateStub(node: ASTNode): Boolean =
+        shouldCreateExprStub(node)
 }
 
 class RsLitExprStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val type: RsStubLiteralType?,
-    val integerLiteralValue: String?
+    val kind: RsStubLiteralKind?
 ) : RsPlaceholderStub(parent, elementType) {
     object Type : RsStubElementType<RsLitExprStub, RsLitExpr>("LIT_EXPR") {
 
         override fun shouldCreateStub(node: ASTNode): Boolean =
-            createStubIfParentIsStub(node) && node.psi.parent?.parent !is RsFunction
+            shouldCreateExprStub(node)
 
         override fun serialize(stub: RsLitExprStub, dataStream: StubOutputStream) {
-            stub.type.serialize(dataStream)
-            dataStream.writeUTFFastAsNullable(stub.integerLiteralValue)
+            stub.kind.serialize(dataStream)
         }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsLitExprStub =
-            RsLitExprStub(parentStub, this, RsStubLiteralType.deserialize(dataStream), dataStream.readUTFFastAsNullable())
+            RsLitExprStub(parentStub, this, RsStubLiteralKind.deserialize(dataStream))
 
         override fun createStub(psi: RsLitExpr, parentStub: StubElement<*>?): RsLitExprStub =
-            RsLitExprStub(parentStub, this, psi.stubType, psi.integerLiteralValue)
+            RsLitExprStub(parentStub, this, psi.stubKind)
 
         override fun createPsi(stub: RsLitExprStub): RsLitExpr = RsLitExprImpl(stub, this)
     }
 }
+
+private fun shouldCreateExprStub(node: ASTNode): Boolean =
+    createStubIfParentIsStub(node) && node.psi.ancestors.none { it is RsBlock && it.parent is RsFunction }
 
 class RsUnaryExprStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
@@ -1183,23 +1203,22 @@ class RsUnaryExprStub(
 
 }
 
-sealed class RsStubLiteralType(val typeOrdinal: Int) {
-    object Boolean : RsStubLiteralType(0)
-    class Char(val isByte: kotlin.Boolean) : RsStubLiteralType(1)
-    class String(val length: Long?, val isByte: kotlin.Boolean) : RsStubLiteralType(2)
-    class Integer(val kind: TyInteger?) : RsStubLiteralType(3)
-    class Float(val kind: TyFloat?) : RsStubLiteralType(4)
+sealed class RsStubLiteralKind(val kindOrdinal: Int) {
+    class Boolean(val value: kotlin.Boolean) : RsStubLiteralKind(0)
+    class Char(val value: kotlin.String?, val isByte: kotlin.Boolean) : RsStubLiteralKind(1)
+    class String(val value: kotlin.String?, val isByte: kotlin.Boolean) : RsStubLiteralKind(2)
+    class Integer(val value: Long?, val ty: TyInteger?) : RsStubLiteralKind(3)
+    class Float(val value: Double?, val ty: TyFloat?) : RsStubLiteralKind(4)
 
     companion object {
-        fun deserialize(dataStream: StubInputStream): RsStubLiteralType? {
-            with (dataStream) {
-                val ordinal = readByte().toInt()
-                return when (ordinal) {
-                    0 -> RsStubLiteralType.Boolean
-                    1 -> RsStubLiteralType.Char(readBoolean())
-                    2 -> RsStubLiteralType.String(readLong(), readBoolean())
-                    3 -> RsStubLiteralType.Integer(TyInteger.VALUES.getOrNull(readByte().toInt()))
-                    4 -> RsStubLiteralType.Float(TyFloat.VALUES.getOrNull(readByte().toInt()))
+        fun deserialize(dataStream: StubInputStream): RsStubLiteralKind? {
+            with(dataStream) {
+                return when (readByte().toInt()) {
+                    0 -> Boolean(readBoolean())
+                    1 -> Char(readUTFFastAsNullable(), readBoolean())
+                    2 -> String(readUTFFastAsNullable(), readBoolean())
+                    3 -> Integer(readLongAsNullable(), TyInteger.VALUES.getOrNull(readByte().toInt()))
+                    4 -> Float(readDoubleAsNullable(), TyFloat.VALUES.getOrNull(readByte().toInt()))
                     else -> null
                 }
             }
@@ -1207,21 +1226,30 @@ sealed class RsStubLiteralType(val typeOrdinal: Int) {
     }
 }
 
-private fun RsStubLiteralType?.serialize(dataStream: StubOutputStream) {
+private fun RsStubLiteralKind?.serialize(dataStream: StubOutputStream) {
     if (this == null) {
         dataStream.writeByte(-1)
         return
     }
-    dataStream.writeByte(typeOrdinal)
+    dataStream.writeByte(kindOrdinal)
     when (this) {
-        is RsStubLiteralType.Char -> dataStream.writeBoolean(isByte)
-        is RsStubLiteralType.String -> {
-            dataStream.writeLong(length ?: 0)
+        is RsStubLiteralKind.Boolean -> dataStream.writeBoolean(value)
+        is RsStubLiteralKind.Char -> {
+            dataStream.writeUTFFastAsNullable(value)
             dataStream.writeBoolean(isByte)
         }
-        is RsStubLiteralType.Integer -> dataStream.writeByte(kind?.ordinal ?: -1)
-        is RsStubLiteralType.Float -> dataStream.writeByte(kind?.ordinal ?: -1)
-        RsStubLiteralType.Boolean -> Unit
+        is RsStubLiteralKind.String -> {
+            dataStream.writeUTFFastAsNullable(value)
+            dataStream.writeBoolean(isByte)
+        }
+        is RsStubLiteralKind.Integer -> {
+            dataStream.writeLongAsNullable(value)
+            dataStream.writeByte(ty?.ordinal ?: -1)
+        }
+        is RsStubLiteralKind.Float -> {
+            dataStream.writeDoubleAsNullable(value)
+            dataStream.writeByte(ty?.ordinal ?: -1)
+        }
     }
 }
 
@@ -1299,18 +1327,14 @@ class RsVisStub(
 }
 
 private fun StubInputStream.readNameAsString(): String? = readName()?.string
-private fun StubInputStream.readUTFFastAsNullable(): String? {
-    val hasValue = readBoolean()
-    return if (hasValue) readUTFFast() else null
-}
-private fun StubOutputStream.writeUTFFastAsNullable(value: String?) {
-    if (value == null) {
-        writeBoolean(false)
-    } else {
-        writeBoolean(true)
-        writeUTFFast(value)
-    }
-}
+private fun StubInputStream.readUTFFastAsNullable(): String? = readNullable(this, this::readUTFFast)
+private fun StubOutputStream.writeUTFFastAsNullable(value: String?) = writeNullable(this, value, this::writeUTFFast)
 
 private fun <E : Enum<E>> StubOutputStream.writeEnum(e: E) = writeByte(e.ordinal)
 private inline fun <reified E : Enum<E>> StubInputStream.readEnum(): E = enumValues<E>()[readUnsignedByte()]
+
+private fun StubOutputStream.writeLongAsNullable(value: Long?) = writeNullable(this, value, this::writeLong)
+private fun StubInputStream.readLongAsNullable(): Long? = readNullable(this, this::readLong)
+
+private fun StubOutputStream.writeDoubleAsNullable(value: Double?) = writeNullable(this, value, this::writeDouble)
+private fun StubInputStream.readDoubleAsNullable(): Double? = readNullable(this, this::readDouble)

@@ -6,29 +6,29 @@ branches:
 
 language: java
 
-jdk: oraclejdk8
+jdk: openjdk8
 
 env:
   global:
     - OLD_RUST_VERSION=1.28.0
-    - CURRENT_RUST_VERSION=1.34.0
-    - NIGHLY_RUST_VERSION=nightly-2019-03-08
+    - CURRENT_RUST_VERSION=1.36.0
+    - NIGHLY_RUST_VERSION=nightly-2019-06-18
     - RUST_SRC_WITH_SYMLINK=$HOME/.rust-src
 
 matrix:
   include:
-    # 183 platform
-    - name: idea-183/old-rust
-      env: RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183 ORG_GRADLE_PROJECT_ideaVersion=2018.3.2
-    - name: idea-183/stable-rust
-      env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183
-    - name: clion-183/stable-rust
-      env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183 ORG_GRADLE_PROJECT_baseIDE=clion
     # 191 platform
-    - name: idea-191/nightly-rust
-      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191
-    - name: clion-191/nightly-rust
-      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191 ORG_GRADLE_PROJECT_baseIDE=clion
+    - name: idea-191/old-rust
+      env: RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191 ORG_GRADLE_PROJECT_ideaVersion=2019.1.2
+    - name: idea-191/stable-rust
+      env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191
+    - name: clion-191/stable-rust
+      env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191 ORG_GRADLE_PROJECT_baseIDE=clion
+    # 192 platform
+    - name: idea-192/nightly-rust
+      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192
+    - name: clion-192/nightly-rust
+      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192 ORG_GRADLE_PROJECT_baseIDE=clion
 
 install: true
 
@@ -44,8 +44,8 @@ before_script:
   - ./gradlew assemble testClasses -Pkotlin.incremental=false --no-daemon
 
 script:
-  - travis_wait ./gradlew check -Pkotlin.incremental=false --no-daemon
-  - if [ $RUST_VERSION != $OLD_RUST_VERSION ]; then ./gradlew runPrettyPrintersTests --no-daemon; fi
+  - travis_wait 30 ./gradlew check -Pkotlin.incremental=false --no-daemon
+  - ./gradlew runPrettyPrintersTests --no-daemon
 
 # https://docs.travis-ci.com/user/languages/java/#Caching
 before_cache:

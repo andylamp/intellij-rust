@@ -9,6 +9,7 @@ package org.rust.lang.core.psi.ext
 import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.macros.RsExpandedElement
@@ -23,11 +24,11 @@ import javax.swing.Icon
 fun RsModDeclItem.getOrCreateModuleFile(): PsiFile? {
     val existing = reference.resolve()?.containingFile
     if (existing != null) return existing
-    return suggestChildFileName?.let { containingMod.ownedDirectory?.createFile(it) }
+    return suggestChildFileName?.let { containingMod.getOwnedDirectory(createIfNotExists = true)?.createFile(it) }
 }
 
 val RsModDeclItem.isLocal: Boolean
-    get() = stub?.isLocal ?: (ancestorStrict<RsBlock>() != null)
+    get() = greenStub?.isLocal ?: (ancestorStrict<RsBlock>() != null)
 
 
 //TODO: use explicit path if present.
@@ -60,7 +61,9 @@ abstract class RsModDeclItemImplMixin : RsStubbedNamedElementImpl<RsModDeclItemS
     override val crateRelativePath: String? get() = RsPsiImplUtil.crateRelativePath(this)
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
+
+    override fun getUseScope(): SearchScope = RsPsiImplUtil.getDeclarationUseScope(this) ?: super.getUseScope()
 }
 
 val RsModDeclItem.hasMacroUse: Boolean get() =
-    queryAttributes.hasAttribute("macro_use")
+    stub?.hasMacroUse ?: queryAttributes.hasAttribute("macro_use")

@@ -9,6 +9,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.usages.UsageTarget
 import com.intellij.usages.impl.rules.UsageType
 import com.intellij.usages.impl.rules.UsageTypeProviderEx
+import org.rust.lang.core.macros.findExpansionElements
 import org.rust.lang.core.psi.*
 
 object RsUsageTypeProvider : UsageTypeProviderEx {
@@ -41,7 +42,8 @@ object RsUsageTypeProvider : UsageTypeProviderEx {
     override fun getUsageType(element: PsiElement?): UsageType? = getUsageType(element, UsageTarget.EMPTY_ARRAY)
 
     override fun getUsageType(element: PsiElement?, targets: Array<out UsageTarget>): UsageType? {
-        val parent = element?.goUp<RsPath>() ?: return null
+        val refinedElement = element?.findExpansionElements()?.firstOrNull()?.parent ?: element
+        val parent = refinedElement?.goUp<RsPath>() ?: return null
         if (parent is RsBaseType) {
             return when (val context = parent.goUp<RsBaseType>()) {
                 is RsTypeReference -> {
@@ -54,8 +56,7 @@ object RsUsageTypeProvider : UsageTypeProviderEx {
             }
         }
         if (parent is RsPathExpr) {
-            val context = parent.goUp<RsPathExpr>()
-            return when (context) {
+            return when (parent.goUp<RsPathExpr>()) {
                 is RsDotExpr -> DOT_EXPR
                 is RsCallExpr -> FUNCTION_CALL
                 is RsValueArgumentList -> ARGUMENT

@@ -15,10 +15,7 @@ import org.intellij.lang.annotations.Language
 import org.rust.FileTree
 import org.rust.RsTestBase
 import org.rust.fileTreeFromText
-import org.rust.lang.core.psi.ext.RsNamedElement
-import org.rust.lang.core.psi.ext.RsWeakReferenceElement
-import org.rust.lang.core.psi.ext.contextualFile
-import org.rust.lang.core.psi.ext.startOffset
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.openapiext.Testmark
 
@@ -35,7 +32,7 @@ abstract class RsResolveTestBase : RsTestBase() {
     ) {
         InlineFile(code, fileName)
 
-        val (refElement, data, offset) = findElementWithDataAndOffsetInEditor<RsWeakReferenceElement>("^")
+        val (refElement, data, offset) = findElementWithDataAndOffsetInEditor<RsReferenceElementBase>("^")
 
         if (data == "unresolved") {
             val resolved = refElement.reference?.resolve()
@@ -56,14 +53,22 @@ abstract class RsResolveTestBase : RsTestBase() {
     protected fun checkByCode(@Language("Rust") code: String, mark: Testmark) =
         mark.checkHit { checkByCode(code) }
 
-    protected fun stubOnlyResolve(@Language("Rust") code: String) {
-        stubOnlyResolve<RsWeakReferenceElement>(fileTreeFromText(code))
-    }
+    protected fun stubOnlyResolve(
+        @Language("Rust") code: String,
+        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile
+    ) = stubOnlyResolve<RsWeakReferenceElement>(fileTreeFromText(code), resolveFileProducer)
 
-    protected fun stubOnlyResolve(@Language("Rust") code: String, mark: Testmark) =
-        mark.checkHit { stubOnlyResolve(code) }
+    protected fun stubOnlyResolve(
+        @Language("Rust") code: String,
+        mark: Testmark,
+        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile
+    ) = mark.checkHit { stubOnlyResolve(code, resolveFileProducer) }
 
-    protected inline fun <reified T : PsiElement> stubOnlyResolve(fileTree: FileTree, customCheck: (PsiElement) -> Unit = {}) {
+    protected inline fun <reified T : PsiElement> stubOnlyResolve(
+        fileTree: FileTree,
+        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile,
+        customCheck: (PsiElement) -> Unit = {}
+    ) {
         val testProject = fileTree.createAndOpenFileWithCaretMarker()
 
         checkAstNotLoaded(VirtualFileFilter { file ->
@@ -85,11 +90,7 @@ abstract class RsResolveTestBase : RsTestBase() {
 
         val element = referenceElement.checkedResolve(offset)
         customCheck(element)
-        val actualResolveFile = if (element is PsiDirectory) {
-            element.virtualFile
-        } else {
-            element.contextualFile.virtualFile
-        }
+        val actualResolveFile = resolveFileProducer(element)
 
         val resolveFiles = resolveVariants.split("|")
         if (resolveFiles.size == 1) {
@@ -102,6 +103,10 @@ abstract class RsResolveTestBase : RsTestBase() {
                 error("Should resolve to any of $resolveFiles, was ${actualResolveFile.path} instead")
             }
         }
+    }
+
+    protected fun getActualResolveFile(element: PsiElement): VirtualFile {
+        return if (element is PsiDirectory) element.virtualFile else element.contextualFile.virtualFile
     }
 
     protected fun check(actualResolveFile: VirtualFile, expectedFilePath: String): ResolveResult {
@@ -131,7 +136,7 @@ fun PsiElement.findReference(offset: Int): PsiReference? = findReferenceAt(offse
 
 fun PsiElement.checkedResolve(offset: Int): PsiElement {
     val reference = findReference(offset) ?: error("element doesn't have reference")
-    return reference.resolve() ?: run {
+    val resolved = reference.resolve() ?: run {
         val multiResolve = (reference as? RsReference)?.multiResolve().orEmpty()
         check(multiResolve.size != 1)
         if (multiResolve.isEmpty()) {
@@ -140,4 +145,10 @@ fun PsiElement.checkedResolve(offset: Int): PsiElement {
             error("Failed to resolve $text, multiple variants:\n${multiResolve.joinToString()}")
         }
     }
+
+    check(reference.isReferenceTo(resolved)) {
+        "Incorrect `isReferenceTo` implementation in `${reference.javaClass.name}`"
+    }
+
+    return resolved
 }

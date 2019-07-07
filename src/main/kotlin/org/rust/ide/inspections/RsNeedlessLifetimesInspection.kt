@@ -130,13 +130,12 @@ private class LifetimesCollector(val isForInputParams: Boolean = false) : RsVisi
     }
 
     private fun record(lifetime: RsLifetime?) {
-        lifetimes.add(lifetime.name.toReferenceLifetime())
+        lifetimes.add(lifetime.typedName.toReferenceLifetime())
     }
 
     private fun collectAnonymousLifetimes(path: RsPath) {
         if (path.typeArgumentList?.lifetimeList.orEmpty().isNotEmpty()) return
-        val resolved = path.reference.resolve()
-        when (resolved) {
+        when (val resolved = path.reference.resolve()) {
             is RsStructItem, is RsTraitItem, is RsTypeAlias -> {
                 val declaration = resolved as RsGenericDeclaration
                 repeat(declaration.lifetimeParameters.size) {
@@ -152,7 +151,7 @@ private class BodyLifetimeChecker : RsVisitor() {
         private set
 
     override fun visitLifetime(lifetime: RsLifetime) {
-        if (lifetime.name is LifetimeName.Parameter) {
+        if (lifetime.typedName is LifetimeName.Parameter) {
             lifetimesUsedInBody = true
         }
     }

@@ -12,6 +12,7 @@ import org.rust.cargo.project.toolwindow.CargoProjectStructure.Node.*
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.CargoWorkspace.TargetKind.*
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.runconfig.command.workingDirectory
 import javax.swing.Icon
 import javax.swing.tree.DefaultMutableTreeNode
 
@@ -25,8 +26,7 @@ class CargoProjectStructure(private var cargoProjects: List<CargoProject> = empt
     }
 
     override fun getChildren(parent: Any): List<DefaultMutableTreeNode>? {
-        val userObject = (parent as? DefaultMutableTreeNode)?.userObject
-        val childrenObjects = when (userObject) {
+        val childrenObjects = when (val userObject = (parent as? DefaultMutableTreeNode)?.userObject) {
             is Root -> cargoProjects.map(::Project)
             is Project -> {
                 val cargoProject = userObject.cargoProject
@@ -34,7 +34,7 @@ class CargoProjectStructure(private var cargoProjects: List<CargoProject> = empt
                     ?.packages
                     ?.filter { it.origin == PackageOrigin.WORKSPACE }
                     .orEmpty()
-                    .partition { it.rootDirectory == cargoProject.manifest.parent }
+                    .partition { it.rootDirectory == cargoProject.workingDirectory }
                 val childrenNodes = mutableListOf<Node>()
                 ourPackage.mapTo(childrenNodes) { Targets(it.targets) }
                 workspaceMembers.mapTo(childrenNodes, ::WorkspaceMember)
@@ -86,12 +86,12 @@ class CargoProjectStructure(private var cargoProjects: List<CargoProject> = empt
         }
 
         private val CargoWorkspace.Target.icon: Icon? get() = when (kind) {
-            LIB -> CargoIcons.LIB_TARGET
-            BIN -> CargoIcons.BIN_TARGET
-            TEST -> CargoIcons.TEST_TARGET
-            BENCH -> CargoIcons.BENCH_TARGET
-            EXAMPLE -> CargoIcons.EXAMPLE_TARGET
-            UNKNOWN -> null
+            is Lib -> CargoIcons.LIB_TARGET
+            Bin -> CargoIcons.BIN_TARGET
+            Test -> CargoIcons.TEST_TARGET
+            Bench -> CargoIcons.BENCH_TARGET
+            ExampleBin, is ExampleLib -> CargoIcons.EXAMPLE_TARGET
+            Unknown -> null
         }
     }
 }

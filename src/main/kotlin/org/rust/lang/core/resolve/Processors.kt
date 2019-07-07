@@ -6,6 +6,7 @@
 package org.rust.lang.core.resolve
 
 import com.intellij.codeInsight.completion.CompletionResultSet
+import com.intellij.util.SmartList
 import org.rust.lang.core.completion.createLookupElement
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.ext.*
@@ -13,6 +14,7 @@ import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.types.BoundElement
 import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.emptySubstitution
+import org.rust.lang.core.types.ty.Ty
 
 /**
  * ScopeEntry is some PsiElement visible in some code scope.
@@ -36,15 +38,7 @@ enum class ScopeEvent : ScopeEntry {
      * Communicate to the resolve processor that we are about to process wildecard imports.
      * This is basically a hack to make winapi 0.2 work in a reasonable amount of time.
      */
-    STAR_IMPORTS,
-    /**
-     * Communicate to the resolve processor that we are about to process dependency crates
-     * (regardless of `extern crate` declarations). It's used to support new paths (since
-     * Rust 1.30 and Rust 2018 edition), where non-global path can start with a crate name,
-     * but local modules have higher priority (if there are a crate and module with the same
-     * names, the module wins)
-     */
-    IMPLICIT_CRATES;
+    STAR_IMPORTS;
 
     override val element: RsElement? get() = null
 }
@@ -60,9 +54,9 @@ fun collectPathResolveVariants(
     referenceName: String,
     f: (RsResolveProcessor) -> Unit
 ): List<BoundElement<RsElement>> {
-    val result = mutableListOf<BoundElement<RsElement>>()
+    val result = SmartList<BoundElement<RsElement>>()
     f { e ->
-        if ((e == ScopeEvent.STAR_IMPORTS || e == ScopeEvent.IMPLICIT_CRATES) && result.isNotEmpty()) {
+        if ((e == ScopeEvent.STAR_IMPORTS) && result.isNotEmpty()) {
             return@f true
         }
 
@@ -76,12 +70,29 @@ fun collectPathResolveVariants(
 }
 
 fun collectResolveVariants(referenceName: String, f: (RsResolveProcessor) -> Unit): List<RsElement> {
-    val result = mutableListOf<RsElement>()
+    val result = SmartList<RsElement>()
     f { e ->
         if (e == ScopeEvent.STAR_IMPORTS && result.isNotEmpty()) return@f true
 
         if (e.name == referenceName) {
             result += e.element ?: return@f false
+        }
+        false
+    }
+    return result
+}
+
+fun <T : ScopeEntry> collectResolveVariantsAsScopeEntries(referenceName: String, f: ((T) -> Boolean) -> Unit): List<T> {
+    val result = mutableListOf<T>()
+    f { e ->
+        if ((e == ScopeEvent.STAR_IMPORTS) && result.isNotEmpty()) {
+            return@f true
+        }
+
+        if (e.name == referenceName) {
+            // de-lazying. See `RsResolveProcessor.lazy`
+            e.element ?: return@f false
+            result += e
         }
         false
     }
@@ -100,27 +111,44 @@ fun pickFirstResolveVariant(referenceName: String, f: (RsResolveProcessor) -> Un
     return result
 }
 
-fun collectCompletionVariants(result: CompletionResultSet, forSimplePath: Boolean, f: (RsResolveProcessor) -> Unit) {
+fun collectCompletionVariants(
+    result: CompletionResultSet,
+    forSimplePath: Boolean = false,
+    expectedTy: Ty? = null,
+    f: (RsResolveProcessor) -> Unit
+) {
     f { e ->
         val element = e.element ?: return@f false
         if (element is RsFunction && element.isTest) return@f false
-        result.addElement(createLookupElement(element, e.name, forSimplePath))
+        result.addElement(createLookupElement(
+            element = element,
+            scopeName = e.name,
+            forSimplePath = forSimplePath,
+            expectedTy = expectedTy
+        ))
         false
     }
 }
 
-private data class SimpleScopeEntry(
+data class SimpleScopeEntry(
     override val name: String,
     override val element: RsElement,
     override val subst: Substitution = emptySubstitution
 ) : ScopeEntry
 
+interface AssocItemScopeEntryBase<out T: RsAbstractable> : ScopeEntry {
+    override val element: T
+    val selfTy: Ty
+    val source: TraitImplSource
+}
+
 data class AssocItemScopeEntry(
     override val name: String,
-    override val element: RsElement,
+    override val element: RsAbstractable,
     override val subst: Substitution = emptySubstitution,
-    val source: TraitImplSource
-) : ScopeEntry
+    override val selfTy: Ty,
+    override val source: TraitImplSource
+) : AssocItemScopeEntryBase<RsAbstractable>
 
 private class LazyScopeEntry(
     override val name: String,
@@ -132,8 +160,8 @@ private class LazyScopeEntry(
 }
 
 
-operator fun RsResolveProcessor.invoke(name: String, e: RsElement, subst: Substitution = emptySubstitution): Boolean =
-    this(SimpleScopeEntry(name, e, subst))
+operator fun RsResolveProcessor.invoke(name: String, e: RsElement): Boolean =
+    this(SimpleScopeEntry(name, e))
 
 fun RsResolveProcessor.lazy(name: String, e: () -> RsElement?): Boolean =
     this(LazyScopeEntry(name, lazy(LazyThreadSafetyMode.PUBLICATION, e)))
@@ -148,14 +176,12 @@ operator fun RsResolveProcessor.invoke(e: BoundElement<RsNamedElement>): Boolean
     return this(SimpleScopeEntry(name, e.element, e.subst))
 }
 
-fun processAll(elements: Collection<RsNamedElement>, processor: RsResolveProcessor): Boolean =
-    processAll(elements.asSequence(), processor)
+fun processAll(elements: List<RsNamedElement>, processor: RsResolveProcessor): Boolean {
+    return elements.any { processor(it) }
+}
 
-fun processAll(elements: Sequence<RsNamedElement>, processor: RsResolveProcessor): Boolean {
-    for (e in elements) {
-        if (processor(e)) return true
-    }
-    return false
+fun processAllScopeEntries(elements: List<ScopeEntry>, processor: RsResolveProcessor): Boolean {
+    return elements.any { processor(it) }
 }
 
 fun processAllWithSubst(

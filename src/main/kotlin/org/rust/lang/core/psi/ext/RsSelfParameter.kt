@@ -7,7 +7,6 @@ package org.rust.lang.core.psi.ext
 
 import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiNameIdentifierOwner
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.psi.RsFunction
@@ -16,14 +15,13 @@ import org.rust.lang.core.stubs.RsSelfParameterStub
 import org.rust.lang.core.types.ty.Mutability
 
 
-val RsSelfParameter.mutability: Mutability get() = Mutability.valueOf(stub?.isMut ?: (mut != null))
-val RsSelfParameter.isRef: Boolean get() = stub?.isRef ?: (and != null)
-val RsSelfParameter.isExplicitType get() = stub?.isExplicitType ?: (colon != null)
+val RsSelfParameter.mutability: Mutability get() = Mutability.valueOf(greenStub?.isMut ?: (mut != null))
+val RsSelfParameter.isRef: Boolean get() = greenStub?.isRef ?: (and != null)
+val RsSelfParameter.isExplicitType get() = greenStub?.isExplicitType ?: (colon != null)
 val RsSelfParameter.parentFunction: RsFunction get() = ancestorStrict()!!
 
-abstract class RsSelfParameterImplMixin : RsStubbedElementImpl<RsSelfParameterStub>,
-                                          PsiNameIdentifierOwner,
-                                          RsSelfParameter {
+abstract class RsSelfParameterImplMixin : RsStubbedElementImpl<RsSelfParameterStub>, RsSelfParameter {
+
     constructor(node: ASTNode) : super(node)
     constructor(stub: RsSelfParameterStub, nodeType: IStubElementType<*, *>) : super(stub, nodeType)
 
@@ -34,6 +32,8 @@ abstract class RsSelfParameterImplMixin : RsStubbedElementImpl<RsSelfParameterSt
         // can't rename self
         throw UnsupportedOperationException()
     }
+
+    override fun getTextOffset(): Int = nameIdentifier.textOffset
 
     override fun getIcon(flags: Int) = RsIcons.ARGUMENT
 }

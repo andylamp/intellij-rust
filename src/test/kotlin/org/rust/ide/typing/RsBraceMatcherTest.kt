@@ -30,6 +30,18 @@ class RsBraceMatcherTest : RsTestBase() {
         "fn foo(<caret>){}"
     )
 
+    fun `test pair parenthesis deletion simple`() = doTest(
+        "fn foo(){(<caret>)}",
+        '\b',
+        "fn foo(){<caret>}"
+    )
+
+    fun `test pair parenthesis deletion after bracket`() = doTest(
+        "fn foo(){[];(<caret>)}",
+        '\b',
+        "fn foo(){[];<caret>}"
+    )
+
     fun `test pair parenthesis before bracket`() = doTest(
         "fn main() { let _ = &[foo<caret>]; }",
         '(',
@@ -49,6 +61,7 @@ class RsBraceMatcherTest : RsTestBase() {
             fn bar<T: IntoFuture<Item=Result<(), ()>>>() {
                 let x = xs.map().collect::<self::foo::Vec<_>>();
                 let x = xs.map().collect::<::Vec<super::Result<&mut String, * const i32>>>();
+                let x:Punctuated<Ident,Token![|]>;
             }
         """)
 

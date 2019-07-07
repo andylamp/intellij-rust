@@ -27,6 +27,7 @@ import org.rust.lang.core.resolve.ref.FieldResolveVariant
 import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
+import org.rust.lang.core.types.expectedType
 import org.rust.lang.core.types.infer.containsTyOfClass
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyPrimitive
@@ -50,7 +51,19 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         val processedPathNames = hashSetOf<String>()
 
         val isSimplePath = simplePathPattern.accepts(parameters.position)
-        collectCompletionVariants(result, isSimplePath) {
+        val expectedTy = getExpectedTypeForEnclosingPathOrDotExpr(element)
+        processElement(element, isSimplePath, expectedTy, processedPathNames, parameters, result)
+    }
+
+    fun processElement(
+        element: RsReferenceElement,
+        isSimplePath: Boolean,
+        expectedTy: Ty?,
+        processedPathNames: HashSet<String>,
+        parameters: CompletionParameters,
+        result: CompletionResultSet
+    ) {
+        collectCompletionVariants(result, isSimplePath, expectedTy) {
             when (element) {
                 is RsAssocTypeBinding -> processAssocTypeVariants(element, it)
                 is RsExternCrateItem -> processExternCrateResolveVariants(element, true, it)
@@ -61,7 +74,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                 is RsPatBinding -> processPatBindingResolveVariants(element, true, it)
                 is RsStructLiteralField -> processStructLiteralFieldResolveVariants(element, true, it)
 
-                is RsPath -> {
+                is RsPath -> if (element.parent !is RsMacroCall) {
                     val lookup = ImplLookup.relativeTo(element)
                     processPathResolveVariants(
                         lookup,
@@ -78,23 +91,26 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                             )
                         )
                     )
+                } else {
+                    processMacroCallPathResolveVariants(element, true, it)
                 }
             }
         }
 
         if (element is RsMethodOrField) {
-            addMethodAndFieldCompletion(element, result, isSimplePath)
+            addMethodAndFieldCompletion(element, result, isSimplePath, expectedTy)
         }
 
         if (isSimplePath && RsCodeInsightSettings.getInstance().suggestOutOfScopeItems) {
-            addCompletionsFromIndex(parameters, result, processedPathNames)
+            addCompletionsFromIndex(parameters, result, processedPathNames, expectedTy)
         }
     }
 
     private fun addMethodAndFieldCompletion(
         element: RsMethodOrField,
         result: CompletionResultSet,
-        forSimplePath: Boolean
+        forSimplePath: Boolean = false,
+        expectedTy: Ty? = null
     ) {
         val receiver = element.receiver.safeGetOriginalOrSelf()
         val lookup = ImplLookup.relativeTo(receiver)
@@ -104,7 +120,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         } else {
             ::processDotExprResolveVariants
         }
-        val processor = methodAndFieldCompletionProcessor(element, result, forSimplePath)
+        val processor = methodAndFieldCompletionProcessor(element, result, forSimplePath, expectedTy)
 
         processResolveVariants(
             lookup,
@@ -119,7 +135,8 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
     private fun addCompletionsFromIndex(
         parameters: CompletionParameters,
         result: CompletionResultSet,
-        processedPathNames: Set<String>
+        processedPathNames: Set<String>,
+        expectedTy: Ty?
     ) {
         // We use the position in the original file in order not to process empty paths
         val path = parameters.originalPosition?.parent as? RsPath ?: return
@@ -150,11 +167,12 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                 .map { candidate ->
                     val item = candidate.qualifiedNamedItem.item
                     createLookupElement(
-                        item,
-                        elementName,
-                        true,
-                        candidate.info.usePath,
-                        object : RsDefaultInsertHandler() {
+                        element = item,
+                        scopeName = elementName,
+                        locationString = candidate.info.usePath,
+                        forSimplePath = true,
+                        expectedTy = expectedTy,
+                        insertHandler = object : RsDefaultInsertHandler() {
                             override fun handleInsert(
                                 element: RsElement,
                                 scopeName: String,
@@ -162,8 +180,8 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                                 item: LookupElement
                             ) {
                                 super.handleInsert(element, scopeName, context, item)
-                                context.commitDocument()
                                 if (RsCodeInsightSettings.getInstance().importOutOfScopeItems) {
+                                    context.commitDocument()
                                     context.getElementOfType<RsElement>()?.let { candidate.import(it) }
                                 }
                             }
@@ -177,7 +195,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
     val elementPattern: ElementPattern<PsiElement>
         get() = PlatformPatterns.psiElement().withParent(psiElement<RsReferenceElement>())
 
-    private val simplePathPattern: ElementPattern<PsiElement>
+    val simplePathPattern: ElementPattern<PsiElement>
         get() {
             val simplePath = psiElement<RsPath>()
                 .with(object : PatternCondition<RsPath>("SimplePath") {
@@ -195,15 +213,6 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
         val pathCompletionFromIndex = Testmark("pathCompletionFromIndex")
     }
 }
-
-private fun <T: PsiElement> T.safeGetOriginalOrSelf(): T {
-    return CompletionUtil.getOriginalElement(this)
-        ?.takeIf { areAncestorTypesEquals(it, this) }
-        ?: this
-}
-
-private fun areAncestorTypesEquals(psi1: PsiElement, psi2: PsiElement): Boolean =
-    psi1.ancestors.zip(psi2.ancestors).all { (a, b) -> a.javaClass == b.javaClass }
 
 private fun filterAssocTypes(
     path: RsPath,
@@ -267,20 +276,26 @@ private fun filterMethodCompletionVariantsByTraitBounds(
 }
 
 private fun methodAndFieldCompletionProcessor(
-    element: RsMethodOrField,
+    methodOrField: RsMethodOrField,
     result: CompletionResultSet,
-    forSimplePath: Boolean
+    forSimplePath: Boolean = false,
+    expectedTy: Ty? = null
 ): RsResolveProcessor = fun(e: ScopeEntry): Boolean {
     when (e) {
-        is FieldResolveVariant -> result.addElement(createLookupElement(e.element, e.name, forSimplePath))
+        is FieldResolveVariant -> result.addElement(createLookupElement(
+            element = e.element,
+            scopeName = e.name,
+            forSimplePath = forSimplePath,
+            expectedTy = expectedTy
+        ))
         is MethodResolveVariant -> {
             if (e.element.isTest) return false
-            val traitImportCandidate = findTraitImportCandidate(element, e)
 
             result.addElement(createLookupElement(
-                e.element,
-                e.name,
-                forSimplePath,
+                element = e.element,
+                scopeName = e.name,
+                forSimplePath = forSimplePath,
+                expectedTy = expectedTy,
                 insertHandler = object : RsDefaultInsertHandler() {
                     override fun handleInsert(
                         element: RsElement,
@@ -288,9 +303,11 @@ private fun methodAndFieldCompletionProcessor(
                         context: InsertionContext,
                         item: LookupElement
                     ) {
+                        val traitImportCandidate = findTraitImportCandidate(methodOrField, e)
                         super.handleInsert(element, scopeName, context, item)
-                        context.commitDocument()
+
                         if (traitImportCandidate != null) {
+                            context.commitDocument()
                             context.getElementOfType<RsElement>()?.let { traitImportCandidate.import(it) }
                         }
                     }
@@ -317,4 +334,16 @@ private fun addProcessedPathName(
         processedPathNames.add(it.name)
     }
     return processor(it)
+}
+
+private fun getExpectedTypeForEnclosingPathOrDotExpr(element: RsReferenceElement): Ty? {
+    for (ancestor in element.ancestors) {
+        if (element.endOffset < ancestor.endOffset) continue
+        if (element.endOffset > ancestor.endOffset) break
+        when (ancestor) {
+            is RsPathExpr -> return ancestor.expectedType
+            is RsDotExpr -> return ancestor.expectedType
+        }
+    }
+    return null
 }

@@ -5,6 +5,9 @@
 
 package org.rust.lang.core.type
 
+import org.rust.MockEdition
+import org.rust.cargo.project.workspace.CargoWorkspace
+
 class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
     fun `test function call`() = testExpr("""
         struct S;
@@ -209,6 +212,14 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
             let bar = foo;
             bar
           //^ FOO
+        }
+    """)
+
+    fun `test const parameters`() = testExpr("""
+        fn foo<const N: i32>() {
+            let bar = N;
+            bar;
+          //^ i32
         }
     """)
 
@@ -500,6 +511,26 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         fn main() {
             let a = await!(42);
         }                //^ i32
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test await postfix 1`() = testExpr("""
+        #[lang = "core::future::future::Future"]
+        trait Future { type Output; }
+        fn main() {
+            let x = (async { 42 }).await;
+            x;
+          //^ i32
+        }
+    """)
+
+    fun `test await postfix 2`() = testExpr("""
+        struct S { await: i32 }
+        fn main() {
+            let x = (S { await: 42 }).await;
+            x;
+          //^ i32
+        }
     """)
 
     fun `test enum variant A`() = testExpr("""
@@ -913,6 +944,17 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
                 let a = Self {};
                 a;
             } //^ S
+        }
+    """)
+
+    // TODO
+    fun `test Self tuple struct init`() = testExpr("""
+        struct S();
+        impl S {
+            fn new() {
+                let a = Self();
+                a;
+            } //^ <unknown>
         }
     """)
 

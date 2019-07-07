@@ -45,8 +45,7 @@ class CargoProjectTreeRenderer : ColoredTreeCellRenderer() {
             is CargoProjectStructure.Node.Project -> {
                 val cargoProject = node.cargoProject
                 var attrs = SimpleTextAttributes.REGULAR_ATTRIBUTES
-                val status = cargoProject.mergedStatus
-                when (status) {
+                when (val status = cargoProject.mergedStatus) {
                     is CargoProject.UpdateStatus.UpdateFailed -> {
                         attrs = attrs.derive(SimpleTextAttributes.STYLE_WAVED, null, null, JBColor.RED)
                         toolTipText = status.reason
@@ -64,8 +63,8 @@ class CargoProjectTreeRenderer : ColoredTreeCellRenderer() {
             is CargoProjectStructure.Node.Target -> {
                 append(node.name)
                 val targetKind = node.target.kind
-                if (targetKind != CargoWorkspace.TargetKind.UNKNOWN) {
-                    toolTipText = "${StringUtil.capitalize(targetKind.name.toLowerCase())} target `${node.name}`"
+                if (targetKind != CargoWorkspace.TargetKind.Unknown) {
+                    toolTipText = "${StringUtil.capitalize(targetKind.name)} target `${node.name}`"
                 }
             }
             else -> append(node.name)

@@ -42,6 +42,7 @@ class RsHighlightingAnnotator : RsAnnotatorBase() {
         val color = when {
             isPrimitiveType -> RsColor.PRIMITIVE_TYPE
             element.parent is RsMacroCall -> RsColor.MACRO
+            element is RsFieldLookup && element.identifier?.text == "await" && element.isEdition2018 -> RsColor.KEYWORD
             else -> {
                 val ref = element.reference.resolve() ?: return null
                 // Highlight the element dependent on what it's referencing.
@@ -110,6 +111,7 @@ private fun colorFor(element: RsElement): RsColor? = when (element) {
     is RsTraitItem -> RsColor.TRAIT
     is RsTypeAlias -> RsColor.TYPE_ALIAS
     is RsTypeParameter -> RsColor.TYPE_PARAMETER
+    is RsConstParameter -> RsColor.CONST_PARAMETER
     is RsMacroReference -> RsColor.FUNCTION
     is RsMacroBinding -> RsColor.FUNCTION
     else -> null
@@ -117,12 +119,9 @@ private fun colorFor(element: RsElement): RsColor? = when (element) {
 
 private fun partToHighlight(element: RsElement): TextRange? {
     if (element is RsMacro) {
-        var range = element.identifier?.textRange ?: return null
+        val range = element.identifier?.textRange ?: return null
         val excl = element.excl
-        if (excl != null) {
-            range = range.union(excl.textRange)
-        }
-        return range
+        return range.union(excl.textRange)
     }
 
     if (element is RsMacroCall) {
@@ -149,6 +148,7 @@ private fun partToHighlight(element: RsElement): TextRange? {
         is RsTraitItem -> element.identifier
         is RsTypeAlias -> element.identifier
         is RsTypeParameter -> element.identifier
+        is RsConstParameter -> element.identifier
         is RsMacroBinding -> element.metaVarIdentifier
         else -> null
     }

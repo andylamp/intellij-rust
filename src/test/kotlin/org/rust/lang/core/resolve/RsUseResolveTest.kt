@@ -5,6 +5,10 @@
 
 package org.rust.lang.core.resolve
 
+import org.rust.MockEdition
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
+import org.rust.stdext.BothEditions
+
 class RsUseResolveTest : RsResolveTestBase() {
 
     fun `test view path`() = checkByCode("""
@@ -645,5 +649,46 @@ class RsUseResolveTest : RsResolveTestBase() {
         use foo::Foo as _;
         fn bar(a: &Foo) {}
                   //^ unresolved
+    """)
+
+    @MockEdition(Edition.EDITION_2018)
+    fun `test unified paths 2018 edition`() = checkByCode("""
+        mod foo {
+            pub fn bar() {}
+        }
+
+        mod baz {
+            mod foo {
+                pub fn bar() {}
+            }         //X
+            use foo::bar;
+        }          //^
+    """)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3989
+    @BothEditions
+    fun `test issue #3989 1`() = checkByCode("""
+        pub use crate::{bar::*, baz::*};
+        mod bar {}
+        mod baz { pub struct S; }
+                           //X
+        mod quux {
+            use crate::S;
+                     //^
+        }
+    """)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3989
+    @BothEditions
+    fun `test issue #3989 2`() = checkByCode("""
+        pub use foo::{bar::*, baz::*};
+        mod foo {
+            mod bar {}
+            mod baz { pub struct S; }
+        }                      //X
+        mod quux {
+            use crate::S;
+                     //^
+        }
     """)
 }

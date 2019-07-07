@@ -153,6 +153,18 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test custom vec!`() = stubOnlyTypeInfer("""
+    //- main.rs
+        macro_rules! vec {
+            ($ name:ident [ $($ field:ident = $ index:expr),* ] = $ fixed:ty) => {  };
+        }
+        fn main() {
+            let x = vec!(Vector2 [x=0, y=1] = [T; 2]);
+            x;
+          //^ <unknown>
+        }
+    """)
+
     fun `test format!`() = stubOnlyTypeInfer("""
     //- main.rs
         fn main() {
@@ -169,6 +181,18 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             let x = format!("{} {}", "Hello", "world!");
             x;
           //^ String
+        }
+    """)
+
+    fun `test custom format!`() = stubOnlyTypeInfer("""
+    //- main.rs
+        macro_rules! format {
+            ($ name:ident [ $($ field:ident = $ index:expr),* ] = $ fixed:ty) => {  };
+        }
+        fn main() {
+            let x = format!(Vector2 [x=0, y=1] = [T; 2]);
+            x;
+          //^ <unknown>
         }
     """)
 
@@ -353,6 +377,18 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test custom assert!`() = stubOnlyTypeInfer("""
+    //- main.rs
+        macro_rules! assert {
+            ($ name:ident [ $($ field:ident = $ index:expr),* ] = $ fixed:ty) => {  };
+        }
+        fn main() {
+            let x = assert!(Vector2 [x=0, y=1] = [T; 2]);
+            x;
+          //^ <unknown>
+        }
+    """)
+
     fun `test print!`() = stubOnlyTypeInfer("""
     //- main.rs
         fn main() {
@@ -441,8 +477,8 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
         fn main() {
             let test: Vec<i32> = Vec::new();
             let a = test.into_iter()
-                .filter(|x| x < 30)
-                .filter(|x| x > 10)
+                .filter(|x| *x < 30)
+                .filter(|x| *x > 10)
                 .filter(|x| x % 2 == 0)
                 .next().unwrap();
             a;
@@ -473,6 +509,18 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
                 .next().unwrap();
             a;
           //^ &mut i32
+        }
+    """)
+
+    fun `test iter take`() = stubOnlyTypeInfer("""
+    //- main.rs
+        fn main() {
+            let mut names = vec![0i32, 1]
+                .iter()
+                .take(3)
+                .next();
+            names;
+          //^ Option<&i32>
         }
     """)
 
@@ -711,5 +759,15 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             a;
           //^ String
         }
+    """)
+
+    fun `test overloaded add String + &String`() = stubOnlyTypeInfer("""
+    //- main.rs
+        fn main() {
+            let a = String::new();
+            let b = String::new();
+            let c = a + &b;
+            c;
+        } //^ String
     """)
 }

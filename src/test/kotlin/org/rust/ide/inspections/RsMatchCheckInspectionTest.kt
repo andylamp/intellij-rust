@@ -7,7 +7,7 @@ package org.rust.ide.inspections
 
 import org.rust.ide.inspections.checkMatch.RsMatchCheckInspection
 
-class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
+class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection::class) {
 
     fun `test simple boolean useless`() = checkByText("""
         fn main() {
@@ -732,12 +732,199 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
     """)
 
+    fun `test const bool expr evaluation`() = checkByFileTree("""
+    //- main.rs
+        mod foo;
+        const TRUE: bool = true;
+        const FALSE: bool = !TRUE;
+        const VALUE: bool = FALSE && true || TRUE;
+    //- foo.rs
+        use super::{FALSE, VALUE};
+        fn foo(v: bool) {
+            match v/*caret*/ {
+                true => {}
+                FALSE => {}
+                <warning descr="Unreachable pattern">VALUE</warning> => {}
+                <warning descr="Unreachable pattern">_</warning> => {}
+            }
+        }
+    """)
+
+    fun `test const float expr evaluation`() = checkByFileTree("""
+    //- main.rs
+        mod foo;
+        const PI: f32 = 3.14;
+        const E: f32 = 2.718;
+    //- foo.rs
+        use super::{PI, E};
+        fn foo(v: f32) {
+            match v/*caret*/ {
+                PI => {}
+                E => {}
+                <warning descr="Unreachable pattern">3.14</warning> => {}
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test const char expr evaluation`() = checkByFileTree("""
+    //- main.rs
+        mod foo;
+        const A: char = 'A';
+        const Z: char = 'Z';
+        const F: char = 'f';
+    //- foo.rs
+        use super::{A, F, Z};
+        fn foo(v: char) {
+            match v/*caret*/ {
+                A...'Z' => {}
+                F => {}
+                'a' => {}
+                <warning descr="Unreachable pattern">Z</warning> => {}
+                <warning descr="Unreachable pattern">'f'</warning> => {}
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test const str expr evaluation`() = checkByFileTree("""
+    //- main.rs
+        mod foo;
+        const HELLO: &str = "hello!";
+        const FOO: &'static str = "FOO";
+    //- foo.rs
+        use super::{HELLO, FOO};
+        fn foo(v: &str) {
+            match v/*caret*/ {
+                "hello" => {}
+                "hello!" => {}
+                <warning descr="Unreachable pattern">HELLO</warning> => {}
+                FOO => {}
+                <warning descr="Unreachable pattern">"FOO"</warning> => {}
+                _ => {}
+            }
+        }
+    """)
+
     fun `test unknown value`() = checkByText("""
         fn main() {
             match 42 {
                 0..UNRESOLVED => {}
                 20..50 => {}
                 _ => {}
+            }
+        }
+    """)
+
+    // https://github.com/intellij-rust/intellij-rust/issues/3776
+    fun `test tuple with multiple types exhaustiveness`() = checkByText("""
+        enum E { A }
+
+        fn main() {
+            match (E::A, true) {
+                (E::A, true) => {}
+                (E::A, false) => {}
+            }
+        }
+        """)
+
+    fun `test struct with multiple types exhaustiveness`() = checkByText("""
+        enum E { A }
+        struct S { e: E, x: bool }
+
+        fn main() {
+            match (S { e: E::A, x: true }) {
+                S { e: E::A, x: true } => {}
+                S { e: E::A, x: false } => {}
+            }
+        }
+        """)
+
+    fun `test tuple with different types remaining`() = checkFixByText("Add remaining patterns", """
+        enum E { A, B }
+
+        fn main() {
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> (E::A, true) {
+                (E::A, true) => {}
+                (E::A, false) => {}
+                (E::B, true) => {}
+            }
+        }
+        """, """
+        enum E { A, B }
+
+        fn main() {
+            match (E::A, true) {
+                (E::A, true) => {}
+                (E::A, false) => {}
+                (E::B, true) => {}
+                (E::B, false) => {}
+            }
+        }
+        """)
+
+    fun `test struct with unknown type parameter`() = checkByText("""
+        struct S<T> { x: T }
+
+        fn foo(s: S<MyBool>) {
+            match s {
+                S { x: true } => {}
+            }
+        }
+    """)
+
+    fun `test enum with type parameters`() = checkByText("""
+        enum E { A(F<i32>) }
+        enum F<T> { B(T), C }
+
+        fn foo(x: E) {
+            match x {
+                E::A(F::B(b)) => {}
+                E::A(F::C) => {}
+            }
+        }
+    """)
+
+    fun `test enum with type parameters exhaustive`() = checkFixByText("Add remaining patterns", """
+        enum E<T> { A(T), B }
+
+        fn bar(e: E<bool>) {
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> e {
+                E::A(true) => {},
+                E::B => {},
+            }
+        }
+    """, """
+        enum E<T> { A(T), B }
+
+        fn bar(e: E<bool>) {
+            match e {
+                E::A(true) => {},
+                E::B => {},
+                E::A(false) => {}
+            }
+        }
+    """)
+
+    fun `test struct with type parameters exhaustive`() = checkFixByText("Add remaining patterns", """
+        enum E<T> { A(S<T>), B }
+        struct S<T> { x: T}
+
+        fn bar(e: E<bool>) {
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> e {
+                E::A(S { x: true }) => {},
+                E::B => {},
+            }
+        }
+    """, """
+        enum E<T> { A(S<T>), B }
+        struct S<T> { x: T}
+
+        fn bar(e: E<bool>) {
+            match e {
+                E::A(S { x: true }) => {},
+                E::B => {},
+                E::A(S { x: false }) => {}
             }
         }
     """)

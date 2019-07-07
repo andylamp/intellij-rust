@@ -7,6 +7,7 @@ package org.rust.lang.core.psi.ext
 
 import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.macros.RsExpandedElement
@@ -28,7 +29,7 @@ enum class RsStructKind {
 }
 
 val RsStructItem.kind: RsStructKind get() {
-    val hasUnion = stub?.isUnion ?: (union != null)
+    val hasUnion = greenStub?.isUnion ?: (union != null)
     return if (hasUnion) RsStructKind.UNION else RsStructKind.STRUCT
 }
 
@@ -48,4 +49,6 @@ abstract class RsStructItemImplMixin : RsStubbedNamedElementImpl<RsStructItemStu
     override val declaredType: Ty get() = RsPsiTypeImplUtil.declaredType(this)
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
+
+    override fun getUseScope(): SearchScope = RsPsiImplUtil.getDeclarationUseScope(this) ?: super.getUseScope()
 }

@@ -424,7 +424,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         pub struct Foo;
     //- lib.rs
         use dep_lib_target::Foo;
-                //^ dep-lib/lib.rs
+                //^ unresolved
     """)
 
     @MockEdition(CargoWorkspace.Edition.EDITION_2015)
@@ -458,6 +458,46 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
         fn foo() -> dep_lib_target::Foo { unimplemented!() }
                                    //^ lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve module instead of crate in nested mod (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        mod bar {
+            mod dep_lib_target {
+                pub struct Foo;
+            }
+            fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                       //^ lib.rs
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve module instead of crate in use item in nested mod (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        mod bar {
+            mod dep_lib_target {
+                pub struct Foo;
+            }
+            use dep_lib_target::Foo;
+                               //^ lib.rs
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve crate instead of module in absolute use item (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        mod dep_lib_target {
+            pub struct Foo;
+        }
+        use ::dep_lib_target::Foo;
+                            //^ dep-lib/lib.rs
     """)
 
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
@@ -516,8 +556,69 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
+    // FIXME
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
-    fun `test resolve bang proc macro with use item`() = stubOnlyResolve("""
+    fun `test resolve bang proc definition in macro crate itself`() = expect<IllegalStateException> {
+        stubOnlyResolve("""
+        //- dep-proc-macro/lib.rs
+            #[proc_macro]
+            pub fn example_proc_macro_1(item: TokenStream) -> TokenStream { item }
+    
+            #[proc_macro]
+            pub fn example_proc_macro_2(item: TokenStream) -> TokenStream { example_proc_macro_1(item) }
+                                                                            //^ dep-proc-macro/lib.rs
+        """)
+    }
+
+    // FIXME
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve bang proc definition in macro in macro crate itself from mod`() = expect<IllegalStateException> {
+        stubOnlyResolve("""
+        //- dep-proc-macro/lib.rs
+            #[proc_macro]
+            pub fn example_proc_macro_1(item: TokenStream) -> TokenStream { item }
+        
+            mod foo {
+                use super::example_proc_macro_1;
+                pub fn proc_macro_user(item: TokenStream) -> TokenStream { example_proc_macro_1(item) }
+            }                                                                //^ dep-proc-macro/lib.rs
+        """)
+    }
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve use item inside proc macro crate`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        mod foo { pub fn bar() {} }
+        use foo::bar;
+                //^ dep-proc-macro/lib.rs
+
+        #[proc_macro]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve bang proc macro from use item`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+    //- lib.rs
+        use dep_proc_macro::example_proc_macro;
+                            //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test proc macro crate cannot export anything but proc macros`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+        pub fn unseen_function() {}
+    //- lib.rs
+        use dep_proc_macro::unseen_function;
+                                //^ unresolved
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve bang proc macro from macro call`() = stubOnlyResolve("""
     //- dep-proc-macro/lib.rs
         #[proc_macro]
         pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
@@ -525,5 +626,295 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         use dep_proc_macro::example_proc_macro;
         example_proc_macro!();
         //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve attr proc macro in use item`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_attribute]
+        pub fn example_proc_macro(attr: TokenStream, item: TokenStream) -> TokenStream { item }
+    //- lib.rs
+        use dep_proc_macro::example_proc_macro;
+                          //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve attr proc macro from macro call`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_attribute]
+        pub fn example_proc_macro(attr: TokenStream, item: TokenStream) -> TokenStream { item }
+    //- lib.rs
+        use dep_proc_macro::example_proc_macro;
+
+        #[example_proc_macro]
+              //^ dep-proc-macro/lib.rs
+        struct S;
+    """)
+
+    // FIXME
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve attr proc macro from macro call with full path`() = expect<IllegalStateException> {
+        stubOnlyResolve("""
+        //- dep-proc-macro/lib.rs
+            #[proc_macro_attribute]
+            pub fn example_proc_macro(attr: TokenStream, item: TokenStream) -> TokenStream { item }
+        //- lib.rs
+            #[dep_proc_macro::example_proc_macro]
+                                //^ dep-proc-macro/lib.rs
+            struct S;
+    """)
+    }
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve custom derive proc macro in use item`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_derive(ProcMacroName)]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+    //- lib.rs
+        use dep_proc_macro::ProcMacroName;
+                          //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve custom derive proc macro from derive attribute`() = stubOnlyResolve("""
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_derive(ProcMacroName)]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+    //- lib.rs
+        use dep_proc_macro::ProcMacroName;
+        #[derive(ProcMacroName)]
+                  //^ dep-proc-macro/lib.rs
+        struct S;
+    """)
+
+    // FIXME
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve custom derive proc macro from derive attribute with full path`() = expect<IllegalStateException>{
+        stubOnlyResolve("""
+        //- dep-proc-macro/lib.rs
+            #[proc_macro_derive(ProcMacroName)]
+            pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+        //- lib.rs
+            #[derive(dep_proc_macro::ProcMacroName)]
+                      //^ dep-proc-macro/lib.rs
+            struct S;
+        """)
+    }
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve bang proc macro reexported from lib to main from use item`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::example_proc_macro;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::example_proc_macro;
+                            //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve bang proc macro reexported from lib to main from macro call`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::example_proc_macro;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::example_proc_macro;
+        
+        example_proc_macro!();
+                    //^ dep-proc-macro/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve custom derive proc macro reexported from lib to main from use item`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::ProcMacroName;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_derive(ProcMacroName)]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::ProcMacroName;
+                         //^ dep-proc-macro/lib.rs 
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve custom derive proc macro reexported from lib to main from macro call`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::ProcMacroName;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_derive(ProcMacroName)]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::ProcMacroName;
+        
+        #[derive(ProcMacroName)]
+                 //^ dep-proc-macro/lib.rs
+        struct S;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve attribute proc macro reexported from lib to main from use item`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::example_proc_macro;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_attribute]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::example_proc_macro;
+                             //^ dep-proc-macro/lib.rs 
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve attribute proc macro reexported from lib to main from macro call`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_proc_macro;
+        pub use dep_proc_macro::example_proc_macro;
+
+    //- dep-proc-macro/lib.rs
+        #[proc_macro_attribute]
+        pub fn example_proc_macro(item: TokenStream) -> TokenStream { item }
+
+    //- main.rs
+        use test_package::example_proc_macro;
+        
+        #[example_proc_macro]
+                 //^ dep-proc-macro/lib.rs
+        struct S;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate alias`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        mod foo {
+            use dep_lib::Foo;
+                       //^ dep-lib/lib.rs
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate alias shadows implicit extern crate names`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- dep-lib-2/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib_target_2;
+
+        mod foo {
+            use dep_lib_target_2::Foo;
+                                 //^ dep-lib/lib.rs
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test local item shadows extern crate alias`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        mod bar {
+            mod dep_lib {
+                pub struct Foo;
+            }
+            use dep_lib::Foo;
+                       //^ lib.rs
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test ambiguity of extern crate alias and other item with the same name`() {
+        stubOnlyResolve("""
+        //- dep-lib/lib.rs
+            pub struct Foo;
+        //- lib.rs
+            extern crate dep_lib_target as dep_lib;
+
+            mod dep_lib {
+                pub struct Foo;
+            }
+            use dep_lib::Foo;
+                       //^ unresolved
+        """)
+    }
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    @ProjectDescriptor(WithStdlibAndDependencyRustProjectDescriptor::class)
+    fun `test ambiguity of extern crate alias and prelude item`() = expect<IllegalStateException> {
+        stubOnlyResolve("""
+        //- dep-lib/lib.rs
+            pub struct Ok;
+        //- lib.rs
+            extern crate dep_lib_target as Result;
+
+            mod foo {
+                use Result::Ok;
+                           //^ unresolved
+            }
+        """)
+    }
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3846
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extra use of crate name 1`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        use dep_lib_target;
+        use dep_lib_target::Foo;
+                          //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.extraAtomUse)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test "extra use of crate name 1" with alias`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        use dep_lib_target as dep;
+        use dep::Foo;
+                 //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extra use of crate name 2`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        use dep_lib_target::{self};
+        use dep_lib_target::Foo;
+                          //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.extraAtomUse)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3912
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test star import of item with the same name as extern crate`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        mod dep_lib_target {}
+        pub mod foo {}
+    //- lib.rs
+        use dep_lib_target::*;
+        use dep_lib_target::foo;
+                          //^ dep-lib/lib.rs
     """)
 }

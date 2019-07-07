@@ -7,6 +7,7 @@ package org.rust.lang.core.psi.ext
 
 import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.macros.RsExpandedElement
@@ -22,9 +23,9 @@ enum class RsConstantKind {
     CONST
 }
 
-val RsConstant.isMut: Boolean get() = stub?.isMut ?: (mut != null)
+val RsConstant.isMut: Boolean get() = greenStub?.isMut ?: (mut != null)
 
-val RsConstant.isConst: Boolean get() = stub?.isConst ?: (const != null)
+val RsConstant.isConst: Boolean get() = greenStub?.isConst ?: (const != null)
 
 val RsConstant.kind: RsConstantKind get() = when {
     isMut -> RsConstantKind.MUT_STATIC
@@ -53,4 +54,6 @@ abstract class RsConstantImplMixin : RsStubbedNamedElementImpl<RsConstantStub>, 
     override val crateRelativePath: String? get() = RsPsiImplUtil.crateRelativePath(this)
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
+
+    override fun getUseScope(): SearchScope = RsPsiImplUtil.getDeclarationUseScope(this) ?: super.getUseScope()
 }

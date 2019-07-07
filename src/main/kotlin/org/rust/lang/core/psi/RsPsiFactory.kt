@@ -14,6 +14,8 @@ import org.rust.ide.inspections.checkMatch.Pattern
 import org.rust.ide.presentation.insertionSafeText
 import org.rust.ide.presentation.insertionSafeTextWithLifetimes
 import org.rust.lang.RsFileType
+import org.rust.lang.core.macros.MacroExpansionContext
+import org.rust.lang.core.macros.prepareExpandedTextForParsing
 import org.rust.lang.core.psi.RsPsiFactory.PathNamespace.TYPES
 import org.rust.lang.core.psi.RsPsiFactory.PathNamespace.VALUES
 import org.rust.lang.core.psi.ext.*
@@ -25,9 +27,14 @@ import org.rust.lang.core.types.regions.ReUnknown
 import org.rust.lang.core.types.ty.Mutability
 import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
 import org.rust.lang.core.types.ty.Mutability.MUTABLE
+import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.type
 
-class RsPsiFactory(private val project: Project, private val markGenerated: Boolean = true) {
+class RsPsiFactory(
+    private val project: Project,
+    private val markGenerated: Boolean = true,
+    private val eventSystemEnabled: Boolean = false
+) {
     fun createFile(text: CharSequence): RsFile =
         PsiFileFactory.getInstance(project)
             .createFileFromText(
@@ -35,13 +42,33 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
                 RsFileType,
                 text,
                 /*modificationStamp =*/ LocalTimeCounter.currentTime(), // default value
-                /*eventSystemEnabled =*/ false, // default value
+                /*eventSystemEnabled =*/ eventSystemEnabled, // `false` by default
                 /*markAsCopy =*/ markGenerated // `true` by default
             ) as RsFile
 
     fun createMacroBody(text: String): RsMacroBody? = createFromText(
         "macro_rules! m $text"
     )
+
+    fun createMacroCall(
+        context: MacroExpansionContext,
+        braces: MacroBraces,
+        macroName: String,
+        vararg arguments: String
+    ): RsMacroCall = createMacroCall(context, braces, macroName, arguments.joinToString(", "))
+
+    fun createMacroCall(
+        context: MacroExpansionContext,
+        braces: MacroBraces,
+        macroName: String,
+        argument: String
+    ): RsMacroCall {
+        val appendSemicolon = (context == MacroExpansionContext.ITEM || context == MacroExpansionContext.STMT) &&
+            braces.needsSemicolon
+        val semicolon = if (appendSemicolon) ";" else ""
+        return createFromText(context.prepareExpandedTextForParsing("$macroName!${braces.wrap(argument)}$semicolon"))
+            ?: error("Failed to create macro call")
+    }
 
     fun createSelf(mutable: Boolean = false): RsSelfParameter {
         return createFromText<RsFunction>("fn main(&${if (mutable) "mut " else ""}self){}")?.selfParameter
@@ -61,7 +88,7 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
             ?: error("Failed to create expression from text: `$text`")
 
     fun tryCreateExpression(text: CharSequence): RsExpr? =
-        createFromText("fn main() { $text; }")
+        createFromText("fn main() { let _ = $text; }")
 
     fun createTryExpression(expr: RsExpr): RsTryExpr {
         val newElement = createExpressionOfType<RsTryExpr>("a?")
@@ -114,15 +141,19 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
         return structLiteralField
     }
 
-    data class BlockField(val pub: Boolean, val name: String, val type: RsTypeReference)
+    data class BlockField(val pub: Boolean, val name: String, val type: Ty)
 
     fun createBlockFields(fields: List<BlockField>): RsBlockFields {
         val fieldsText = fields.joinToString(separator = ",\n") {
-            "${"pub".iff(it.pub)}${it.name}: ${it.type.text}"
+            "${"pub".iff(it.pub)}${it.name}: ${it.type.insertionSafeTextWithLifetimes}"
         }
         return createStruct("struct S { $fieldsText }")
             .blockFields!!
     }
+
+    fun createEnum(text: String): RsEnumItem =
+        createFromText(text)
+            ?: error("Failed to create enum from text: `$text`")
 
     fun createStruct(text: String): RsStructItem =
         createFromText(text)
@@ -156,8 +187,8 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
         createFromText("mod $modName;")
             ?: error("Failed to create mod decl with name: `$modName`")
 
-    fun createUseItem(text: String): RsUseItem =
-        createFromText("use $text;")
+    fun createUseItem(text: String, visibility: String = ""): RsUseItem =
+        createFromText("$visibility use $text;")
             ?: error("Failed to create use item from text: `$text`")
 
     fun createUseSpeck(text: String): RsUseSpeck =
@@ -266,8 +297,9 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
         createFromText("#![$text]")
             ?: error("Failed to create an inner attribute from text: `$text`")
 
-    fun createMatchBody(enumName: String?, variants: List<RsEnumVariant>): RsMatchBody {
+    fun createMatchBody(context: RsElement, enumName: String, variants: List<RsEnumVariant>): RsMatchBody {
         val matchBodyText = variants.joinToString(",\n", postfix = ",") { variant ->
+            val variantName = variant.name ?: return@joinToString ""
             val tupleFields = variant.tupleFields?.tupleFieldDeclList
             val blockFields = variant.blockFields
             val suffix = when {
@@ -275,8 +307,8 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
                 blockFields != null -> " { .. }"
                 else -> ""
             }
-            val prefix = if (enumName != null) "$enumName::" else ""
-            "$prefix${variant.name}$suffix => {}"
+            val prefix = if (context.findInScope(variantName) != variant) "$enumName::" else ""
+            "$prefix$variantName$suffix => {}"
         }
         return createExpressionOfType<RsMatchExpr>("match x { $matchBodyText }").matchBody
             ?: error("Failed to create match body from text: `$matchBodyText`")
@@ -288,8 +320,16 @@ class RsPsiFactory(private val project: Project, private val markGenerated: Bool
             ?: error("Failed to create match body from patterns: `$arms`")
     }
 
-    private inline fun <reified T : RsElement> createFromText(code: String): T? =
+    private inline fun <reified T : RsElement> createFromText(code: CharSequence): T? =
         createFile(code).descendantOfTypeStrict()
+
+    fun createPub(): RsVis =
+        createFromText("pub fn f() {}")
+            ?: error("Failed to create `pub` element")
+
+    fun createPubCrateRestricted(): RsVis =
+        createFromText("pub(crate) fn f() {}")
+            ?: error("Failed to create `pub(crate)` element")
 
     fun createComma(): PsiElement =
         createFromText<RsValueParameter>("fn f(_ : (), )")!!.nextSibling

@@ -45,8 +45,10 @@ fun RsVisible.isVisibleFrom(mod: RsMod): Boolean {
     val parent = members.context ?: return true
     return when {
         // Associated items in a pub Trait are public by default
-        parent is RsImplItem && parent.traitRef != null -> parent.traitRef?.resolveToTrait?.isPublic ?: true
-        parent is RsTraitItem && parent.isPublic -> true
+        parent is RsImplItem && parent.traitRef != null -> {
+            parent.traitRef?.resolveToTrait()?.isVisibleFrom(mod) ?: true
+        }
+        parent is RsTraitItem -> parent.isVisibleFrom(mod)
         else -> false
     }
 }
@@ -56,7 +58,7 @@ enum class RsVisStubKind {
 }
 
 val RsVis.stubKind: RsVisStubKind
-    get() = stub?.kind ?: when {
+    get() = greenStub?.kind ?: when {
         crate != null -> RsVisStubKind.CRATE
         visRestriction != null -> RsVisStubKind.RESTRICTED
         else -> RsVisStubKind.PUB
@@ -66,6 +68,18 @@ sealed class RsVisibility {
     object Private : RsVisibility()
     object Public : RsVisibility()
     data class Restricted(val inMod: RsMod) : RsVisibility()
+}
+
+fun RsVisibility.intersect(other: RsVisibility): RsVisibility = when (this) {
+    RsVisibility.Private -> this
+    RsVisibility.Public -> other
+    is RsVisibility.Restricted -> when (other) {
+        RsVisibility.Private -> other
+        RsVisibility.Public -> this
+        is RsVisibility.Restricted -> {
+            RsVisibility.Restricted(if (inMod.superMods.contains(other.inMod)) inMod else other.inMod)
+        }
+    }
 }
 
 val RsVis.visibility: RsVisibility

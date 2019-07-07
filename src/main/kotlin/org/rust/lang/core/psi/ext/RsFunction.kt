@@ -8,6 +8,7 @@ package org.rust.lang.core.psi.ext
 import com.intellij.lang.ASTNode
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.PsiElement
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.util.PsiTreeUtil
 import org.rust.ide.icons.RsIcons
@@ -22,34 +23,35 @@ import org.rust.lang.core.types.type
 import javax.swing.Icon
 
 val RsFunction.isAssocFn: Boolean get() = selfParameter == null && owner.isImplOrTrait
+val RsFunction.isMethod: Boolean get() = selfParameter != null && owner.isImplOrTrait
 
 val RsFunction.isTest: Boolean get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.isTest ?: (queryAttributes.hasAtomAttribute("test") || queryAttributes.hasAtomAttribute("quickcheck"))
 }
 
 val RsFunction.isBench: Boolean get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.isBench ?: queryAttributes.hasAtomAttribute("bench")
 }
 
 val RsFunction.isConst: Boolean get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.isConst ?: (const != null)
 }
 
 val RsFunction.isExtern: Boolean get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.isExtern ?: (abi != null)
 }
 
 val RsFunction.isVariadic: Boolean get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.isVariadic ?: (valueParameterList?.variadic != null)
 }
 
 val RsFunction.abiName: String? get() {
-    val stub = stub
+    val stub = greenStub
     return stub?.abiName ?: abi?.stringLiteral?.text
 }
 
@@ -63,7 +65,7 @@ val RsFunction.default: PsiElement?
     get() = node.findChildByType(RsElementTypes.DEFAULT)?.psi
 
 val RsFunction.isAsync: Boolean
-    get() = stub?.isAsync ?: (node.findChildByType(RsElementTypes.ASYNC) != null)
+    get() = greenStub?.isAsync ?: (node.findChildByType(RsElementTypes.ASYNC) != null)
 
 val RsFunction.title: String
     get() = when (owner) {
@@ -101,15 +103,31 @@ val RsFunction.isActuallyUnsafe: Boolean
         }
     }
 
+val RsFunction.isBangProcMacroDef: Boolean
+    get() = queryAttributes.hasAtomAttribute("proc_macro")
+
+val RsFunction.isAttributeProcMacroDef: Boolean
+    get() = queryAttributes.hasAtomAttribute("proc_macro_attribute")
+
+val RsFunction.isCustomDeriveProcMacroDef: Boolean
+    get() = queryAttributes.hasAttribute("proc_macro_derive")
+
+val RsFunction.isProcMacroDef: Boolean
+    get() = queryAttributes.hasAnyOfOuterAttributes(
+        "proc_macro",
+        "proc_macro_attribute",
+        "proc_macro_derive"
+    )
+
 abstract class RsFunctionImplMixin : RsStubbedNamedElementImpl<RsFunctionStub>, RsFunction, RsModificationTrackerOwner {
 
     constructor(node: ASTNode) : super(node)
 
     constructor(stub: RsFunctionStub, nodeType: IStubElementType<*, *>) : super(stub, nodeType)
 
-    override val isAbstract: Boolean get() = stub?.isAbstract ?: (block == null)
+    override val isAbstract: Boolean get() = greenStub?.isAbstract ?: (block == null)
 
-    override val isUnsafe: Boolean get() = this.stub?.isUnsafe ?: (unsafe != null)
+    override val isUnsafe: Boolean get() = this.greenStub?.isUnsafe ?: (unsafe != null)
 
     override val crateRelativePath: String? get() = RsPsiImplUtil.crateRelativePath(this)
 
@@ -144,4 +162,6 @@ abstract class RsFunctionImplMixin : RsStubbedNamedElementImpl<RsFunctionStub>, 
         if (shouldInc) modificationTracker.incModificationCount()
         return shouldInc
     }
+
+    override fun getUseScope(): SearchScope = RsPsiImplUtil.getDeclarationUseScope(this) ?: super.getUseScope()
 }

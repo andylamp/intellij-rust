@@ -9,6 +9,7 @@ import com.intellij.lang.ASTNode
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.Condition
 import com.intellij.psi.PsiElement
+import com.intellij.psi.search.SearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.util.Query
@@ -35,7 +36,7 @@ val RsTraitItem.langAttribute: String? get() = queryAttributes.langAttribute
 val RsTraitItem.isSizedTrait: Boolean get() = langAttribute == "sized"
 
 val RsTraitItem.isAuto: Boolean
-    get() = stub?.isAuto ?: (node.findChildByType(RsElementTypes.AUTO) != null)
+    get() = greenStub?.isAuto ?: (node.findChildByType(RsElementTypes.AUTO) != null)
 
 val RsTraitItem.isKnownDerivable: Boolean get() {
     val derivableTrait = KNOWN_DERIVABLE_TRAITS[name] ?: return false
@@ -86,7 +87,7 @@ private val RsTraitItem.superTraits: Sequence<BoundElement<RsTraitItem>> get() {
     val bounds = typeParamBounds?.polyboundList.orEmpty().asSequence() + whereBounds
     return bounds
         .filter { !it.hasQ } // ignore `?Sized`
-        .mapNotNull { it.bound.traitRef?.resolveToBoundTrait }
+        .mapNotNull { it.bound.traitRef?.resolveToBoundTrait() }
 }
 
 val RsTraitItem.isSized: Boolean get() {
@@ -139,13 +140,15 @@ abstract class RsTraitItemImplMixin : RsStubbedNamedElementImpl<RsTraitItemStub>
         get() = BoundElement(this).associatedTypesTransitively
 
     override val isUnsafe: Boolean get() {
-        val stub = stub
+        val stub = greenStub
         return stub?.isUnsafe ?: (unsafe != null)
     }
 
     override val declaredType: Ty get() = RsPsiTypeImplUtil.declaredType(this)
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
+
+    override fun getUseScope(): SearchScope = RsPsiImplUtil.getDeclarationUseScope(this) ?: super.getUseScope()
 }
 
 

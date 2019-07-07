@@ -5,8 +5,10 @@
 
 package org.rust.ide.annotator
 
+import org.rust.MockEdition
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibAndDependencyRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.ide.colors.RsColor
 
 class RsHighlightingAnnotatorTest : RsAnnotatorTestBase(RsHighlightingAnnotator::class.java) {
@@ -67,6 +69,18 @@ class RsHighlightingAnnotatorTest : RsAnnotatorTestBase(RsHighlightingAnnotator:
         }
         struct <STRUCT>MyStruct</STRUCT><<TYPE_PARAMETER>N</TYPE_PARAMETER>: ?<TRAIT>Sized</TRAIT>+<TRAIT>Debug</TRAIT>+<TRAIT>MyTrait</TRAIT>> {
             <FIELD>N</FIELD>: my_field
+        }
+    """)
+
+    fun `test const parameters`() = checkHighlighting("""
+        struct MyStruct<const <CONST_PARAMETER>N</CONST_PARAMETER>: usize>;
+        trait MyTrait<const <CONST_PARAMETER>N</CONST_PARAMETER>: usize> {
+            fn foo<const <CONST_PARAMETER>M</CONST_PARAMETER>: usize>(a: [i32; <CONST_PARAMETER>M</CONST_PARAMETER>]);
+        }
+        impl MyTrait<0> for MyStruct<0> {
+            fn foo<const <CONST_PARAMETER>M</CONST_PARAMETER>: usize>(a: [i32; <CONST_PARAMETER>M</CONST_PARAMETER>]) {
+                let x = <CONST_PARAMETER>M</CONST_PARAMETER>;
+            }
         }
     """)
 
@@ -150,6 +164,20 @@ class RsHighlightingAnnotatorTest : RsAnnotatorTestBase(RsHighlightingAnnotator:
         fn main() {
             <CONST>FOO</CONST>;
             <CONST>BAR</CONST>;
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2015)
+    fun `test postfix await 2015`() = checkHighlighting("""
+        fn main() {
+            dummy.await;
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test postfix await 2018`() = checkHighlighting("""
+        fn main() {
+            dummy.<KEYWORD>await</KEYWORD>;
         }
     """)
 }

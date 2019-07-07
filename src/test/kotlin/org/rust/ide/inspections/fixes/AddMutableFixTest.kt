@@ -6,15 +6,17 @@
 package org.rust.ide.inspections.fixes
 
 
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.ide.inspections.RsAssignToImmutableInspection
 import org.rust.ide.inspections.RsBorrowCheckerInspection
 import org.rust.ide.inspections.RsMultipleInspectionsTestBase
 import org.rust.ide.inspections.RsReassignImmutableInspection
 
 class AddMutableFixTest : RsMultipleInspectionsTestBase(
-    RsBorrowCheckerInspection(),
-    RsAssignToImmutableInspection(),
-    RsReassignImmutableInspection()
+    RsBorrowCheckerInspection::class,
+    RsAssignToImmutableInspection::class,
+    RsReassignImmutableInspection::class
 ) {
     fun `test fix E0596 method call`() = checkFixByText("Make `self` mutable", """
         struct A {}
@@ -196,6 +198,7 @@ class AddMutableFixTest : RsMultipleInspectionsTestBase(
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test fix E0594 assign to array element`() = checkFixByText("Make `arr` mutable", """
         fn main() {
             let arr = [0; 3];
@@ -208,6 +211,7 @@ class AddMutableFixTest : RsMultipleInspectionsTestBase(
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test fix E0594 assign to borrowed array element`() = checkFixIsUnavailable("Make `arr2` mutable", """
         fn main() {
             let arr = [0; 3];

@@ -10,6 +10,8 @@ import org.rust.lang.core.psi.RsFieldLookup
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.RsMethodCall
 import org.rust.lang.core.psi.ext.RsElement
+import org.rust.lang.core.psi.ext.RsFieldDecl
+import org.rust.lang.core.psi.ext.isMethod
 import org.rust.lang.core.resolve.*
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.Ty
@@ -24,6 +26,9 @@ class RsMethodCallReferenceImpl(
 
     override fun multiResolve(): List<RsElement> =
         element.inference?.getResolvedMethod(element)?.map { it.element } ?: emptyList()
+
+    override fun isReferenceTo(element: PsiElement): Boolean =
+        element is RsFunction && element.isMethod && super.isReferenceTo(element)
 }
 
 class RsFieldLookupReferenceImpl(
@@ -41,6 +46,9 @@ class RsFieldLookupReferenceImpl(
         if (ident != null) doRename(ident, newName)
         return element
     }
+
+    override fun isReferenceTo(element: PsiElement): Boolean =
+        element is RsFieldDecl && super.isReferenceTo(element)
 }
 
 fun resolveMethodCallReferenceWithReceiverType(
@@ -48,7 +56,7 @@ fun resolveMethodCallReferenceWithReceiverType(
     receiverType: Ty,
     methodCall: RsMethodCall
 ): List<MethodResolveVariant> {
-    return collectResolveVariants(methodCall.referenceName) {
+    return collectResolveVariantsAsScopeEntries(methodCall.referenceName) {
         processMethodCallExprResolveVariants(lookup, receiverType, it)
     }
 }
@@ -58,7 +66,7 @@ fun resolveFieldLookupReferenceWithReceiverType(
     receiverType: Ty,
     expr: RsFieldLookup
 ): List<FieldResolveVariant> {
-    return collectResolveVariants(expr.referenceName) {
+    return collectResolveVariantsAsScopeEntries(expr.referenceName) {
         processFieldExprResolveVariants(lookup, receiverType, it)
     }
 }
@@ -87,16 +95,5 @@ data class MethodResolveVariant(
      * trait definition, this contains the impl of the actual trait for the receiver type.
      * Otherwise it's just a trait the method defined in
      */
-    val source: TraitImplSource
-) : DotExprResolveVariant
-
-private fun <T : ScopeEntry> collectResolveVariants(referenceName: String, f: ((T) -> Boolean) -> Unit): List<T> {
-    val result = mutableListOf<T>()
-    f { e ->
-        if (e.name == referenceName) {
-            result += e
-        }
-        false
-    }
-    return result
-}
+    override val source: TraitImplSource
+) : DotExprResolveVariant, AssocItemScopeEntryBase<RsFunction>

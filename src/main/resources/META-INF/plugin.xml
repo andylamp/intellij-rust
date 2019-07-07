@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/04/24/changelog-97.html">
-                 https://intellij-rust.github.io/2019/04/24/changelog-97.html
+        <a href="https://intellij-rust.github.io/2019/06/20/changelog-100.html">
+                 https://intellij-rust.github.io/2019/06/20/changelog-100.html
     ]]>
     </change-notes>
 
@@ -25,6 +25,7 @@
     <depends optional="true" config-file="debugger-only.xml">com.intellij.modules.clion</depends>
     <depends optional="true" config-file="toml-only.xml">org.toml.lang</depends>
     <depends optional="true" config-file="copyright-only.xml">com.intellij.copyright</depends>
+    <depends optional="true" config-file="duplicates-only.xml">com.intellij.modules.duplicatesDetector</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- although Rust module type is only created by IDEA, we need it in other IDEs as well
@@ -50,12 +51,10 @@
 
         <!-- Code insight settings -->
 
-        <applicationService serviceInterface="org.rust.ide.settings.RsCodeInsightSettings"
-                            serviceImplementation="org.rust.ide.settings.RsCodeInsightSettings"/>
+        <applicationService serviceImplementation="org.rust.ide.settings.RsCodeInsightSettings"/>
         <editorActionHandler action="EditorEnter" implementationClass="org.rust.ide.actions.RsEnterHandler"/>
 
-        <applicationService serviceInterface="org.rust.cargo.runconfig.RsRunConfigurationExtensionManager"
-                            serviceImplementation="org.rust.cargo.runconfig.RsRunConfigurationExtensionManager"/>
+        <applicationService serviceImplementation="org.rust.cargo.runconfig.RsRunConfigurationExtensionManager"/>
 
         <!-- Selection Handler -->
 
@@ -112,6 +111,7 @@
         <lang.findUsagesProvider language="Rust" implementationClass="org.rust.ide.search.RsFindUsagesProvider"/>
         <findUsagesHandlerFactory implementation="org.rust.ide.search.RsFindUsagesHandlerFactory"/>
         <usageTypeProvider implementation="org.rust.ide.search.RsUsageTypeProvider"/>
+        <readWriteAccessDetector implementation="org.rust.ide.search.RsReadWriteAccessDetector" id="rust"/>
 
         <!-- Todos -->
 
@@ -142,6 +142,9 @@
         <targetElementEvaluator language="Rust"
                                 implementationClass="org.rust.ide.navigation.goto.RsTargetElementEvaluator"/>
         <generatedSourcesFilter implementation="org.rust.ide.navigation.goto.RsGeneratedSourcesFilter"/>
+
+        <!-- Focus mode -->
+        <focusModeProvider language="Rust" implementationClass="org.rust.ide.focusMode.RsFocusModeProvider"/>
 
         <!-- Hints -->
 
@@ -213,6 +216,7 @@
                                   implementation="org.rust.lang.core.resolve.ref.RsMetaItemReferenceContributor"/>
         <psi.referenceContributor language="Rust"
                                   implementation="org.rust.lang.core.resolve.ref.RsLitExprReferenceContributor"/>
+        <referencesSearch implementation="org.rust.lang.core.resolve.ref.RsReferencesSearchExtensionImpl"/>
 
         <!-- Completion -->
 
@@ -246,15 +250,11 @@
                       id="RsAngleBraceTypedHandler"/>
         <typedHandler implementation="org.rust.ide.typing.RsDotTypedHandler"
                       id="RsDotTypedHandler"/>
-        <typedHandler implementation="org.rust.ide.typing.RsAttributeParenthesisTypedHandler"
-                      id="RsAttributeParenthesisTypedHandler"/>
 
         <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsRawLiteralHashesDeleter"
                                   id="RsRawLiteralHashesDeleter"/>
         <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsAngleBraceBackspaceHandler"
                                   id="RsAngleBraceBackspaceHandler"/>
-        <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsAttributeParenthesisBackspaceHandler"
-                                  id="RsAttributeParenthesisBackspaceHandler"/>
 
         <joinLinesHandler implementation="org.rust.ide.actions.RsJoinLinesHandler"
                           id="RsJoinLinesHandler"/>
@@ -670,6 +670,10 @@
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
+            <className>org.rust.ide.intentions.FlattenUseStatementsIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
             <className>org.rust.ide.intentions.ChopParameterListIntention</className>
             <category>Rust</category>
         </intentionAction>
@@ -693,6 +697,11 @@
             <className>org.rust.ide.intentions.DestructureIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.addFmtStringArgument.AddFmtStringArgumentIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+
 
         <!-- Run Configurations -->
 
@@ -748,6 +757,7 @@
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsGotoClassIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsReexportIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsFeatureIndex"/>
+        <stubIndex implementation="org.rust.lang.core.stubs.index.RsIncludeMacroIndex"/>
 
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsImplIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsLangItemIndex"/>
@@ -757,6 +767,7 @@
         <!-- Notification Providers -->
 
         <editorNotificationProvider implementation="org.rust.ide.notifications.MissingToolchainNotificationProvider"/>
+        <editorNotificationProvider implementation="org.rust.ide.notifications.DetachedFileNotificationProvider"/>
 
         <!-- Editor Tab Title Providers -->
 
@@ -871,16 +882,31 @@
         </action>
 
         <action id="Rust.RsConvertToNamedFields"
-                class="org.rust.ide.refactoring.RsConvertToNamedFieldsAction"
+                class="org.rust.ide.refactoring.convertStruct.RsConvertToNamedFieldsAction"
                 text="Convert to named fields"
-                description="Move this module to a single file">
+                description="Converts tuple struct to named fields">
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
-        <action id="Rust.CargoFmtFile"
+        <action id="Rust.RsConvertToTuple"
+                class="org.rust.ide.refactoring.convertStruct.RsConvertToTupleAction"
+                text="Convert to tuple"
+                description="Converts struct to tuple representation">
+            <add-to-group group-id="RefactoringMenu"/>
+        </action>
+
+        <action id="Rust.RustfmtFile"
                 class="org.rust.ide.actions.RustfmtFileAction"
                 text="Reformat File with Rustfmt"
                 description="Reformat current file with rustfmt"
+                icon="AllIcons.Actions.RealIntentionBulb">
+            <add-to-group group-id="CodeMenu" anchor="last"/>
+        </action>
+
+        <action id="Rust.RustfmtCargoProject"
+                class="org.rust.ide.actions.RustfmtCargoProjectAction"
+                text="Reformat Cargo Project with Rustfmt"
+                description="Reformat cargo project with rustfmt"
                 icon="AllIcons.Actions.RealIntentionBulb">
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </action>
@@ -933,7 +959,7 @@
         <group id="Rust.Cargo">
             <reference id="Rust.RefreshCargoProject"/>
             <reference id="Rust.CargoCommand"/>
-            <reference id="Rust.CargoFmtFile"/>
+            <reference id="Rust.RustfmtCargoProject"/>
             <reference id="Rust.RunExternalLinter"/>
             <separator/>
             <reference id="Rust.AttachCargoProject"/>

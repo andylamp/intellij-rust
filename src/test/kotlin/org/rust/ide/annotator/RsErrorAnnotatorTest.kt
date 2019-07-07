@@ -35,7 +35,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     //- helper.rs
     """)
 
-    fun `test create file quick fix`() = checkFixByFileTree("Create module file", """
+    fun `test create file quick fix 1`() = checkFixByFileTree("Create module file `foo.rs`", """
     //- main.rs
         mod bar;
     //- bar/mod.rs
@@ -56,13 +56,89 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     //- bar/foo.rs
     """)
 
+    @MockRustcVersion("1.30.0")
+    fun `test create file quick fix 2`() = checkFixByFileTree("Create module file `foo.rs`", """
+    //- main.rs
+        mod bar;
+    //- bar.rs
+        mod <error descr="File not found for module `foo` [E0583]">/*caret*/foo</error>;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    """, """
+    //- main.rs
+        mod bar;
+    //- bar.rs
+        mod foo;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    //- bar/foo.rs
+    """)
+
+    fun `test create file in subdirectory quick fix 1`() = checkFixByFileTree("Create module file `foo/mod.rs`", """
+    //- main.rs
+        mod bar;
+    //- bar/mod.rs
+        mod <error descr="File not found for module `foo` [E0583]">/*caret*/foo</error>;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    """, """
+    //- main.rs
+        mod bar;
+    //- bar/mod.rs
+        mod foo;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    //- bar/foo/mod.rs
+    """)
+
+    @MockRustcVersion("1.30.0")
+    fun `test create file in subdirectory quick fix 2`() = checkFixByFileTree("Create module file `foo/mod.rs`", """
+    //- main.rs
+        mod bar;
+    //- bar.rs
+        mod <error descr="File not found for module `foo` [E0583]">/*caret*/foo</error>;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    """, """
+    //- main.rs
+        mod bar;
+    //- bar.rs
+        mod foo;
+
+        fn main() {
+            println!("Hello, World!");
+        }
+    //- bar/foo/mod.rs
+    """)
+
+    fun `test create file in existing subdirectory quick fix`() = checkFixByFileTree("Create module file `bar/mod.rs`", """
+    //- main.rs
+        mod <error descr="File not found for module `bar` [E0583]">/*caret*/bar</error>;
+    //- bar/some_random_file_to_create_a_directory.txt
+    """, """
+    //- main.rs
+        mod bar;
+    //- bar/mod.rs
+    //- bar/some_random_file_to_create_a_directory.txt
+    """)
+
     fun `test no E0583 if no semicolon after module declaration`() = checkByText("""
         mod foo<error descr="';' or '{' expected"> </error>
         // often happens during typing `mod foo {}`
     """)
 
     @MockRustcVersion("1.29.0")
-    fun `test create file and expand module quick fix`() = checkFixByFileTree("Create module file", """
+    fun `test create file and expand module quick fix`() = checkFixByFileTree("Create module file `bar.rs`", """
     //- main.rs
         mod foo;
     //- foo.rs
@@ -75,13 +151,18 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     //- foo/bar.rs
     """)
 
-    // TODO: check `Create module file` quick fix
-    @MockRustcVersion("1.31.0")
-    fun `test create module file`() = checkByFileTree("""
+    @MockRustcVersion("1.29.0")
+    fun `test create file in subdirectory and expand module quick fix`() = checkFixByFileTree("Create module file `bar/mod.rs`", """
     //- main.rs
         mod foo;
     //- foo.rs
-        mod <error descr="File not found for module `bar` [E0583]">/*caret*/bar</error>;
+        <error descr="mod statements in non-mod.rs files is experimental [E0658]">mod bar/*caret*/;</error>
+    """, """
+    //- main.rs
+        mod foo;
+    //- foo/mod.rs
+        mod bar;
+    //- foo/bar/mod.rs
     """)
 
     fun `test paths`() = checkErrors("""
@@ -285,6 +366,10 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
             let _ = || return;
             return 10
         }
+        fn ok4() -> u32 {
+            let _ = async { return; };
+            return 10
+        }
 
         fn err1() -> bool {
             <error descr="`return;` in a function whose return type is not `()` [E0069]">return</error>;
@@ -445,6 +530,31 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         trait Tr2<<error>'_</error>> {}
     """)
 
+    @MockRustcVersion("1.23.0")
+    fun `test in-band lifetimes feature E0658 1`() = checkErrors("""
+        fn foo(x: &<error descr="in-band lifetimes is experimental [E0658]">'a</error> str) {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 2`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        fn foo<T: 'a>(x: &'b str) where 'c: 'd {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 3`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        fn foo<'b>(x: &<error descr="Cannot mix in-band and explicit lifetime definitions [E0688]">'a</error> str) {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 4`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        fn foo() {
+            let x: &<error descr="Use of undeclared lifetime name `'a` [E0261]">'a</error> str = unimplemented!();
+        }
+    """)
+
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
         fn foo<'a, 'b>(x: &'a str, y: &'b str) { }
         struct Str<'a, 'b> { a: &'a u32, b: &'b f64 }
@@ -459,18 +569,32 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         trait Tr<<error>'a</error>, 'b, <error>'a</error>> {}
     """)
 
+    @MockRustcVersion("1.34.0-nightly")
     fun `test name duplication in generic params E0403`() = checkErrors("""
-        fn sub<T, P>() {}
-        struct Str<T, P> { t: T, p: P }
-        impl<T, P> Str<T, P> {}
-        enum Direction<T, P> { LEFT(T), RIGHT(P) }
-        trait Trait<T, P> {}
+        #![feature(const_generics)]
 
-        fn add<<error descr="The name `T` is already used for a type parameter in this type parameter list [E0403]">T</error>, <error>T</error>, P>() {}
-        struct S< <error>T</error>, <error>T</error>, P> { t: T, p: P }
-        impl<     <error>T</error>, <error>T</error>, P> S<T, T, P> {}
-        enum En<  <error>T</error>, <error>T</error>, P> { LEFT(T), RIGHT(P) }
-        trait Tr< <error>T</error>, <error>T</error>, P> { fn foo(t: T) -> P; }
+        fn f1<T1, T2>() {}
+        fn f2<T1, const T2: i32>() {}
+        fn f3<const T1: i32, const T2: i32>() {}
+        fn f4<<error descr="The name `T1` is already used for a type parameter in this type parameter list [E0403]">T1</error>, <error>T2</error>, T3, <error>T1</error>, const <error>T4</error>: i32, const T5: i32, const <error>T4</error>: i32, const <error>T2</error>: i32>() {}
+
+        struct S1<T1, T2> { t1: T1, t2: T2 }
+        struct S2<T1, const T2: i32> { t1: T1 }
+        struct S3<const T1: i32, const T2: i32> {}
+        struct S4<<error>T1</error>, <error>T2</error>, T3, <error>T1</error>, const <error>T4</error>: i32, const T5: i32, const <error>T4</error>: i32, const <error>T2</error>: i32> { t: T1, p: T2 }
+
+        impl<T1, T2> S1<T1, T2> {}
+        impl<<error>T1</error>, T2, T3, <error>T1</error>> S4<T1, T2, T3, T1, 0, 0, 0, 0> {}
+
+        enum E1<T1, T2> { L(T1), R(T2) }
+        enum E2<T1, const T2: i32> { L(T1) }
+        enum E3<const T1: i32, const T2: i32> {}
+        enum E4<<error>T1</error>, <error>T2</error>, T3, <error>T1</error>, const <error>T4</error>: i32, const T5: i32, const <error>T4</error>: i32, const <error>T2</error>: i32> { L(T1), M(T2), R(T3) }
+
+        trait Tr1<T1, T2> {}
+        trait Tr2<T1, const T2: i32> {}
+        trait Tr3<const T1: i32, const T2: i32> {}
+        trait Tr4<<error>T1</error>, <error>T2</error>, T3, <error>T1</error>, const <error>T4</error>: i32, const T5: i32, const <error>T4</error>: i32, const <error>T2</error>: i32> {}
     """)
 
     fun `test no E0407 for method defined with a macro`() = checkErrors("""
@@ -1167,6 +1291,27 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         use self::foo as bar;
     """)
 
+    fun `test no E0603 for trait with impl in a child mod`() = checkErrors("""
+        trait T { fn foo(&self); }
+        struct S;
+        mod a {
+            use super::*;
+            impl T for S { fn foo(&self) {} }
+        }
+        fn main() {
+            S.foo();
+        }
+    """)
+
+    fun `test E0603 when access member of trait with restricted visibility`() = checkErrors("""
+        mod foo {
+            pub(in foo) trait Bar { fn baz(&self); }
+        }
+        fn quux(a: &<error descr="Trait `foo::Bar` is private [E0603]">foo::Bar</error>) {
+            a.<error descr="Method `baz` is private [E0624]">baz</error>();
+        }
+    """)
+
     fun `test function args should implement Sized trait E0277`() = checkErrors("""
         fn foo1(bar: <error descr="the trait bound `[u8]: std::marker::Sized` is not satisfied [E0277]">[u8]</error>) {}
         fn foo2(bar: i32) {}
@@ -1313,6 +1458,18 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     @MockRustcVersion("1.21.0-nightly")
     fun `test yield syntax feature E0658 2`() = checkErrors("""
         #![feature(generators)]
+
+        fn main() {
+            let mut generator = || {
+                yield 1;
+                return "foo"
+            };
+        }
+    """)
+
+    @MockRustcVersion("1.21.0-nightly")
+    fun `test yield syntax feature E0658 3`() = checkErrors("""
+        #![feature(generators, box_syntax)]
 
         fn main() {
             let mut generator = || {
@@ -1532,4 +1689,594 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
             }
         }
     """)
+
+    fun `test duplicate enum discriminant #1 E0081`() = checkErrors("""
+        enum Bad {
+            <error descr="Discriminant value `0` already exists [E0081]">X</error>,
+            <error descr="Discriminant value `0` already exists [E0081]">Y = 0</error>,
+        }
+    """)
+
+    fun `test duplicate enum discriminant #2 E0081`() = checkErrors("""
+        enum Bad {
+            <error descr="Discriminant value `3` already exists [E0081]">P = 3</error>,
+            Y = 0,
+            <error descr="Discriminant value `3` already exists [E0081]">X = 3</error>,
+        }
+    """)
+
+    fun `test duplicate enum discriminant #3 E0081`() = checkErrors("""
+        enum Bad {
+            <error descr="Discriminant value `0` already exists [E0081]">X = 0</error>,
+            <error descr="Discriminant value `0` already exists [E0081]">Y = 0</error>,
+            <error descr="Discriminant value `0` already exists [E0081]">Z = 0</error>,
+            <error descr="Discriminant value `0` already exists [E0081]">W = 0</error>,
+        }
+    """)
+
+
+    fun `test duplicate enum discriminant #4 E0081`() = checkErrors("""
+        enum Good {
+            X = 0,
+            Y = 1,
+            Z = 2,
+            W = 3,
+        }
+    """)
+
+    fun `test duplicate enum discriminant #5 E0081`() = checkErrors("""
+        enum Good {
+            X = 1,
+            Y,
+        }
+    """)
+
+    fun `test duplicate enum discriminant #6 E0081`() = checkErrors("""
+        enum Good {
+            X,
+            Y = 1,
+            Z
+        }
+    """)
+
+    fun `test duplicate enum discriminant #7 E0081`() = checkErrors("""
+        enum Good {
+            X,
+            Y = 2,
+            Z
+        }
+    """)
+
+
+    fun `test E0040`() = checkErrors("""
+        struct X;
+        #[lang = "drop"]
+        pub trait Drop {
+            fn drop(&mut self);
+        }
+        impl Drop for X {
+            fn drop(&mut self) {}
+        }
+        struct XFactory;
+        impl XFactory {
+            fn create_x(&self, foo: u32) -> X {
+                X {}
+            }
+        }
+
+        fn main() {
+            let mut x = X {};
+            <error descr="Explicit calls to `drop` are forbidden. Use `std::mem::drop` instead [E0040]">Drop::drop</error>(&mut x);
+            <error descr="Explicit calls to `drop` are forbidden. Use `std::mem::drop` instead [E0040]">X::drop</error>(&mut x);
+            x.<error descr="Explicit calls to `drop` are forbidden. Use `std::mem::drop` instead [E0040]">drop</error>();
+            XFactory {}.create_x(123).<error descr="Explicit calls to `drop` are forbidden. Use `std::mem::drop` instead [E0040]">drop</error>();
+        }
+    """)
+
+    fun `test E0040 fake drop`() = checkErrors("""
+        struct X;
+        impl X {
+            // Note this has nothing to do with the actual core::ops::drop::Drop and is just a regular function
+            fn drop(&mut self) {}
+        }
+        struct XFactory;
+        impl XFactory {
+            fn create_x(&self, foo: u32) -> X {
+                X {}
+            }
+        }
+
+
+        fn main() {
+            let mut x = X {};
+            X::drop(&mut x);
+            x.drop();
+            XFactory {}.create_x(123).drop();
+        }
+    """)
+
+    fun `test impl Drop for Trait E0120`() = checkErrors("""
+        trait Trait {}
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self);
+        }
+        impl <error descr="Drop can be only implemented by structs and enums [E0120]">Drop</error> for Trait {
+            fn drop(&mut self) {}
+        }
+    """)
+
+    fun `test impl Drop for primitive E0120`() = checkByText("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self);
+        }
+        impl <error descr="Drop can be only implemented by structs and enums [E0120]">Drop</error> for u32 {
+            fn drop(&mut self) {}
+        }
+    """, ignoreExtraHighlighting = true /* impl X for u32 is also an error so we ignore it here */)
+
+    fun `test impl Drop for reference E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self);
+        }
+        impl<'a> <error descr="Drop can be only implemented by structs and enums [E0120]">Drop</error> for &'a str {
+            fn drop(&mut self) {}
+        }
+    """)
+
+    fun `test impl Drop for array E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self);
+        }
+        impl <error descr="Drop can be only implemented by structs and enums [E0120]">Drop</error> for [u32; 1] {
+            fn drop(&mut self) {}
+        }
+    """)
+
+    fun `test impl Drop for pointer E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self);
+        }
+        impl <error descr="Drop can be only implemented by structs and enums [E0120]">Drop</error> for *u32 {
+            fn drop(&mut self) {}
+        }
+    """)
+
+    fun `test impl for blank E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self) {}
+        }
+        // E0120 should not be triggered
+        impl Drop for<error descr="'..' or <type reference> expected, got '{'"> </error>{}
+    """)
+
+    fun `test impl for struct E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self) {}
+        }
+        struct Foo; // E0120 should not get triggered
+        impl Drop for Foo {}
+    """)
+
+    fun `test impl for enum E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self) {}
+        }
+        enum Foo {} // E0120 should not get triggered
+        impl Drop for Foo {}
+    """)
+
+    fun `test impl for union E0120`() = checkErrors("""
+        #[lang = "drop"]
+        trait Drop {
+            fn drop(&mut self) {}
+        }
+        union Foo { x: u32 } // E0120 should not get triggered
+        impl Drop for Foo {}
+    """)
+
+    fun `test impl FakeDrop for Trait E0120`() = checkErrors("""
+        trait Drop {}
+        trait Trait {}
+        impl Drop for Trait {}
+    """)
+
+    fun `test impl Drop and derive Copy E0184`() = checkErrors("""
+        #[lang = "copy"]
+        trait Copy {}
+        #[lang = "drop"]
+        trait Drop {}
+
+        #[derive(<error descr="Cannot implement both Copy and Drop [E0184]">Copy</error>)]
+        struct Foo;
+
+        impl <error descr="Cannot implement both Copy and Drop [E0184]">Drop</error> for Foo {}
+    """)
+
+    fun `test impl Drop and impl Copy E0184`() = checkErrors("""
+        #[lang = "copy"]
+        trait Copy {}
+        #[lang = "drop"]
+        trait Drop {}
+
+        struct Foo;
+
+        impl <error descr="Cannot implement both Copy and Drop [E0184]">Copy</error> for Foo {}
+        impl <error descr="Cannot implement both Copy and Drop [E0184]">Drop</error> for Foo {}
+    """)
+
+    fun `test impl Drop and impl Copy on generic struct E0184`() = checkErrors("""
+        #[lang = "copy"]
+        trait Copy {}
+        #[lang = "drop"]
+        trait Drop {}
+        struct Foo<T>(T);
+
+        impl<T> <error descr="Cannot implement both Copy and Drop [E0184]">Copy</error> for Foo<T> {}
+        impl<T> <error descr="Cannot implement both Copy and Drop [E0184]">Drop</error> for Foo<T> {}
+""")
+
+    fun `test outer inline attr on function E0518`() = checkErrors("""
+        #[inline]
+        fn foo() {}
+        #[inline(always)]
+        fn bar() {}
+    """)
+
+    fun `test inner inline attr on function E0518`() = checkErrors("""
+        fn foo() { #![inline] }
+        fn bar() { #![inline(always)] }
+    """)
+
+    fun `test outer inline attr E0518`() = checkErrors("""
+        #[<error descr="Attribute should be applied to function or closure [E0518]">inline</error>]
+        struct Foo;
+        #[<error descr="Attribute should be applied to function or closure [E0518]">inline</error>(always)]
+        enum Bar {}
+    """)
+
+    fun `test inner inline attr E0518`() = checkErrors("""
+        fn main() {
+            #[<error descr="Attribute should be applied to function or closure [E0518]">inline</error>]
+            let x = "foo";
+            #[<error descr="Attribute should be applied to function or closure [E0518]">inline</error>(always)]
+            let y = "bar";
+        }
+    """)
+
+    fun `test empty enum with repr E0084`() = checkErrors("""
+        #[<error descr="Enum with no variants can't have `repr` attribute [E0084]">repr</error>(u8)]
+        enum Test {}
+    """)
+
+    fun `test enum without body with repr E0084`() = checkErrors("""
+        #[repr(u8)] // There should not be a `repr` error when enum doesn't have a body
+        enum Test<EOLError descr="<, where or '{' expected"></EOLError>
+    """)
+
+
+    fun `test impl unknown E0118`() = checkErrors("""
+        impl Foo {} // Should not report errors for unresolved types
+    """)
+
+    fun `test impl u8 E0118`() = checkErrors("""
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">u8</error> {}
+    """)
+
+    fun `test impl tuple E0118`() = checkErrors("""
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">(u8, u8)</error> {}
+    """)
+
+    fun `test impl array E0118`() = checkErrors("""
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">[u8; 1]</error> {}
+    """)
+
+    fun `test impl pointer E0118`() = checkErrors("""
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">*const u8</error> {}
+    """)
+
+    fun `test impl dyn Trait E0118`() = checkErrors("""
+        trait Bar {}
+        impl dyn Bar {
+            fn foo(&self) {}
+        }
+    """)
+
+    fun `test impl const ptr E0118`() = checkErrors("""
+        impl<T> <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">*const T</error> {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang const ptr E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "const_ptr"]
+        impl<T> *const T {}
+    """)
+
+    fun `test impl mut ptr E0118`() = checkErrors("""
+        impl<T> <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">*mut T</error> {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang mut ptr E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "mut_ptr"]
+        impl<T> *mut T {}
+    """)
+
+    fun `test impl slice E0118`() = checkErrors("""
+        impl<T> <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">[T]</error> {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang slice E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "slice"]
+        impl<T> [T] {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang slice alloc E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "slice_alloc"]
+        impl<T> [T] {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang slice u8 E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "slice_u8"]
+        impl [u8] {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang slice u8 alloc E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "slice_u8_alloc"]
+        impl [u8] {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test impl feature lang u8 E0118`() = checkErrors("""
+        #![feature(lang_items)]
+        #[lang = "u8"]
+        impl u8 {}
+    """)
+
+    fun `test no core impl u8 E0118`() = checkErrors("""
+        #![no_core]
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">u8</error> {}
+    """)
+
+    fun `test feature no core impl u8 E0118`() = checkErrors("""
+        #![feature(no_core)]
+        #![no_core]
+        impl <error descr="Can impl only `struct`s, `enum`s, `union`s and trait objects [E0118]">u8</error> {}
+    """)
+
+
+    fun `test impl sized for struct E0322`() = checkErrors("""
+        #[lang = "sized"]
+        trait Sized {}
+
+        struct Foo;
+        impl <error descr="Explicit impls for the `Sized` trait are not permitted [E0322]">Sized</error> for Foo {}
+    """)
+
+    fun `test impl sized for enum E0322`() = checkErrors("""
+        #[lang = "sized"]
+        trait Sized {}
+
+        enum Foo {}
+        impl <error descr="Explicit impls for the `Sized` trait are not permitted [E0322]">Sized</error> for Foo {}
+    """)
+
+    fun `test impl sized for trait E0322`() = checkErrors("""
+        #[lang = "sized"]
+        trait Sized {}
+
+        trait Foo {}
+        impl <error descr="Explicit impls for the `Sized` trait are not permitted [E0322]">Sized</error> for Foo {}
+    """)
+
+    fun `test impl unsize for struct E0328`() = checkErrors("""
+        #[lang = "unsize"]
+        trait Unsize {}
+
+        struct Foo;
+        impl <error descr="Explicit impls for the `Unsize` trait are not permitted [E0328]">Unsize</error> for Foo {}
+    """)
+
+    fun `test impl unsize for enum E0328`() = checkErrors("""
+        #[lang = "unsize"]
+        trait Unsize {}
+
+        enum Foo {}
+        impl <error descr="Explicit impls for the `Unsize` trait are not permitted [E0328]">Unsize</error> for Foo {}
+    """)
+
+    fun `test impl unsize for trait E0328`() = checkErrors("""
+        #[lang = "unsize"]
+        trait Unsize {}
+
+        trait Foo {}
+        impl <error descr="Explicit impls for the `Unsize` trait are not permitted [E0328]">Unsize</error> for Foo {}
+    """)
+
+    @MockRustcVersion("1.34.0")
+    fun `test const generics E0658 1`() = checkErrors("""
+        fn f<<error descr="const generics is experimental [E0658]">const C: i32</error>>() {}
+        struct S<<error descr="const generics is experimental [E0658]">const C: i32</error>>(A);
+        trait T<<error descr="const generics is experimental [E0658]">const C: i32</error>> {}
+        enum E<<error descr="const generics is experimental [E0658]">const C: i32</error>> {}
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
+    fun `test const generics E0658 2`() = checkErrors("""
+        #![feature(const_generics)]
+        fn f<const C: i32>() {}
+        struct S<const C: i32>(A);
+        trait T<const C: i32> {}
+        enum E<const C: i32> {}
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test stable attr on invalid owner E0132`() = checkErrors("""
+        #![feature(start)]
+        #[<error descr="Start attribute can be placed only on functions [E0132]">start</error>]
+        struct Foo;
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test stable attr on fn with return mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn test_name(_argc: isize, _argv: *const *const u8) -> <error descr="Functions with a `start` attribute must return `isize` [E0132]">u32</error> { 0 }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test stable attr on fn without return E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn <error descr="Functions with a `start` attribute must return `isize` [E0132]">test_name</error>(_argc: isize, _argv: *const *const u8) { 0 }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test inner stable attr on fn with return mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        fn test_name(_argc: isize, _argv: *const *const u8) -> <error descr="Functions with a `start` attribute must return `isize` [E0132]">u32</error> {
+            #![start]
+            0
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test param count mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn <error descr="Functions with a `start` attribute must have the following signature: `fn(isize, *const *const u8) -> isize` [E0132]">test_name</error>(_argc: isize, _argv: *const *const u8, foo: bool) -> isize {
+            0
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test 1st param mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn lets_go(_argc: <error descr="Functions with a `start` attribute must have `isize` as first parameter [E0132]">usize</error>, _argv: *const *const u8) -> isize { 0 }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test 2nd param mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn lets_go(_argc: isize, _argv: <error descr="Functions with a `start` attribute must have `*const *const u8` as second parameter [E0132]">*const *const bool</error>) -> isize { 0 }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test all params mismatch E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn lets_go(_argc: <error descr="Functions with a `start` attribute must have `isize` as first parameter [E0132]">usize</error>, _argv: <error descr="Functions with a `start` attribute must have `*const *const u8` as second parameter [E0132]">*const *const bool</error>) -> isize { 0 }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test valid E0132`() = checkErrors("""
+        #![feature(start)]
+        #[start]
+        fn valid(_argc: isize, _argv: *const *const u8) -> isize { 0 }
+    """)
+
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test missing feature E0132`() = checkErrors("""
+        #[<error descr="#[start] function is experimental [E0658]">start</error>]
+        fn valid(_argc: isize, _argv: *const *const u8) -> isize { 0 }
+    """)
+
+    fun `test inclusive range with no end E0586`() = checkErrors("""
+        fn foo() {
+            let x = 1<error descr="inclusive ranges must be bounded at the end (`..=b` or `a..=b`) [E0586]">..=</error>;
+        }
+    """)
+
+    fun `test dot dot dot range with end`() = checkErrors("""
+        fn foo() {
+            let x = 1<error descr="`...` syntax is deprecated. Use `..` for an exclusive range or `..=` for an inclusive range">...</error>2;
+        }
+    """)
+
+    fun `test dot dot dot range with no end`() = checkErrors("""
+        fn foo() {
+            let x = 1<error descr="`...` syntax is deprecated. Use `..` for an exclusive range or `..=` for an inclusive range">...</error>;;
+        }
+    """)
+    fun `test inclusive range with end E0586`() = checkErrors("""
+        fn foo() {
+            let x = 1..=2;
+        }
+    """)
+
+    fun `test range with no end E0586`() = checkErrors("""
+        fn foo() {
+            let x = 1..;
+        }
+    """)
+
+    fun `test range with end E0586`() = checkErrors("""
+        fn foo() {
+            let x = 1..2;
+        }
+    """)
+
+    fun `test arbitrary enum discriminant without repr E0732`() = checkErrors("""
+        #![feature(arbitrary_enum_discriminant)]
+        enum <error descr="`#[repr(inttype)]` must be specified [E0732]">Enum</error> {
+            Unit = 1,
+            Tuple() = 2,
+            Struct{} = 3,
+        }
+    """)
+
+    fun `test valid arbitrary enum discriminant E0732`() = checkErrors("""
+        #![feature(arbitrary_enum_discriminant)]
+        #[repr(u8)]
+        enum Enum {
+            Unit = 3,
+            Tuple(u16) = 2,
+            Struct {
+                a: u8,
+                b: u16,
+            } = 1,
+        } 
+    """)
+
+    @MockRustcVersion("1.37.0-nightly")
+    fun `test arbitrary enum discriminant without feature`() = checkErrors("""
+        #[repr(isize)]
+        enum Enum {
+            Unit = 1, 
+            Tuple() = <error descr="discriminant on a non-unit variant is experimental [E0658]">2</error>,
+            Struct{} = <error descr="discriminant on a non-unit variant is experimental [E0658]">3</error>,
+        } 
+    """)
+
+    @MockRustcVersion("1.37.0-nightly")
+    fun `test arbitrary enum discriminant with feature`() = checkErrors("""
+        #![feature(arbitrary_enum_discriminant)]
+        #[repr(isize)]
+        enum Enum {
+            Unit = 1, 
+            Tuple() = 2,
+            Struct{} = 3,
+        } 
+    """)
+
 }

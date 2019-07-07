@@ -31,6 +31,8 @@ val baseVersion = when (baseIDE) {
     else -> error("Unexpected IDE name: `$baseIDE`")
 }
 
+val isAtLeast192 = platformVersion.toInt() >= 192
+
 plugins {
     idea
     kotlin("jvm") version "1.3.30"
@@ -162,13 +164,14 @@ project(":") {
     version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
+        val plugins = mutableListOf(project(":intellij-toml"), "IntelliLang")
         if (baseIDE == "idea") {
-            setPlugins(project(":intellij-toml"), "IntelliLang", "copyright")
-        } else {
-            // BACKCOMPAT: 2018.3
-            // Add `IntelliLang` to plugin list because it is bundled in CLion since 191
-            setPlugins(project(":intellij-toml"))
+            plugins += "copyright"
+            if (isAtLeast192) {
+                plugins += "java"
+            }
         }
+        setPlugins(*plugins.toTypedArray())
     }
 
     val testOutput = configurations.create("testOutput")
@@ -262,6 +265,9 @@ project(":") {
 project(":idea") {
     intellij {
         version = ideaVersion
+        if (isAtLeast192) {
+            setPlugins("java")
+        }
     }
     dependencies {
         compile(project(":"))
@@ -291,7 +297,11 @@ project(":debugger") {
 
 project(":toml") {
     intellij {
-        setPlugins(project(":intellij-toml"))
+        if (isAtLeast192 && baseIDE == "idea") {
+            setPlugins(project(":intellij-toml"), "java")
+        } else {
+            setPlugins(project(":intellij-toml"))
+        }
     }
     dependencies {
         compile(project(":"))
@@ -301,10 +311,11 @@ project(":toml") {
 
 project(":intelliLang") {
     intellij {
-        // BACKCOMPAT: 2018.3
-        // use `baseVersion` because `IntelliLang` is bundled in CLion since 191
-        version = ideaVersion
-        setPlugins("IntelliLang")
+        if (isAtLeast192 && baseIDE == "idea") {
+            setPlugins("IntelliLang", "java")
+        } else {
+            setPlugins("IntelliLang")
+        }
     }
     dependencies {
         compile(project(":"))
@@ -315,7 +326,23 @@ project(":intelliLang") {
 project(":copyright") {
     intellij {
         version = ideaVersion
-        setPlugins("copyright")
+        if (isAtLeast192) {
+            setPlugins("copyright", "java")
+        } else {
+            setPlugins("copyright")
+        }
+    }
+    dependencies {
+        compile(project(":"))
+        testCompile(project(":", "testOutput"))
+    }
+}
+
+project(":duplicates") {
+    intellij {
+        if (isAtLeast192 && baseIDE == "idea") {
+            setPlugins("java")
+        }
     }
     dependencies {
         compile(project(":"))
@@ -325,6 +352,12 @@ project(":copyright") {
 
 project(":intellij-toml") {
     version = "0.2.0.${prop("buildNumber")}$channelSuffix"
+
+    intellij {
+        if (isAtLeast192 && baseIDE == "idea") {
+            setPlugins("java")
+        }
+    }
 
     val generateTomlLexer = task<GenerateLexer>("generateTomlLexer") {
         source = "src/main/grammars/TomlLexer.flex"

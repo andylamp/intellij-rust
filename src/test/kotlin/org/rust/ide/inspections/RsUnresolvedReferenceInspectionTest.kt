@@ -8,7 +8,7 @@ package org.rust.ide.inspections
 import org.intellij.lang.annotations.Language
 import org.rust.ide.inspections.import.AutoImportFix
 
-class RsUnresolvedReferenceInspectionTest : RsInspectionsTestBase(RsUnresolvedReferenceInspection()) {
+class RsUnresolvedReferenceInspectionTest : RsInspectionsTestBase(RsUnresolvedReferenceInspection::class) {
 
     fun `test unresolved reference with quick fix`() = checkByText("""
         mod foo {
@@ -115,8 +115,21 @@ class RsUnresolvedReferenceInspectionTest : RsInspectionsTestBase(RsUnresolvedRe
         }
     """, testmark = AutoImportFix.Testmarks.nameInScope)
 
+    fun `test do not highlight unresolved method of trait bound if multiple defs (invalid code)`() = checkByText("""
+        mod foo {
+            pub trait Trait {
+                fn foo(&self) {}
+                fn foo(&self) {}
+            }
+        }
+        fn bar<T: foo::Trait>(t: T) {
+            t.foo(a); // no error here
+        }
+    """)
+
     private fun checkByText(@Language("Rust") text: String, ignoreWithoutQuickFix: Boolean) {
-        val defaultValue = (inspection as RsUnresolvedReferenceInspection).ignoreWithoutQuickFix
+        val inspection = inspection as RsUnresolvedReferenceInspection
+        val defaultValue = inspection.ignoreWithoutQuickFix
         try {
             inspection.ignoreWithoutQuickFix = ignoreWithoutQuickFix
             checkByText(text)

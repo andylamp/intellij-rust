@@ -24,33 +24,50 @@ import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.stubs.RsFileStub
+import org.rust.lang.core.stubs.index.RsIncludeMacroIndex
 import org.rust.lang.core.stubs.index.RsModulesIndex
+
+/**
+ * This class was added in order to fix [RsCodeFragment] copying inside
+ * [com.intellij.codeInsight.template.postfix.templates.PostfixLiveTemplate.copyFile]
+ *
+ * The problem was because old [RsFile.getOriginalFile] casted `super.getOriginalFile()` to [RsFile],
+ * but after manual [RsCodeFragment] copying new [RsFile] has [RsCodeFragment] as original file.
+ */
+abstract class RsFileBase(fileViewProvider: FileViewProvider)
+    : PsiFileBase(fileViewProvider, RsLanguage), RsInnerAttributeOwner {
+
+    override fun getReference(): RsReference? = null
+
+    override fun getOriginalFile(): RsFileBase = super.getOriginalFile() as RsFileBase
+
+    override fun getFileType(): FileType = RsFileType
+
+    override fun getStub(): RsFileStub? = super.getStub() as RsFileStub?
+
+    override val innerAttrList: List<RsInnerAttr>
+        get() = stubChildrenOfType()
+}
 
 class RsFile(
     fileViewProvider: FileViewProvider
-) : PsiFileBase(fileViewProvider, RsLanguage),
-    RsMod,
-    RsInnerAttributeOwner {
-
-    override fun getReference(): RsReference? = null
+) : RsFileBase(fileViewProvider), RsMod {
 
     override val containingMod: RsMod get() = this
 
     override val crateRoot: RsMod?
         get() = superMods.lastOrNull()?.takeIf { it.isCrateRoot }
 
-    override fun getFileType(): FileType = RsFileType
-
-    override fun getStub(): RsFileStub? = super.getStub() as RsFileStub?
-
-    override fun getOriginalFile(): RsFile = super.getOriginalFile() as RsFile
-
     override fun setName(name: String): PsiElement {
         val nameWithExtension = if ('.' !in name) "$name.rs" else name
         return super.setName(nameWithExtension)
     }
 
-    override val `super`: RsMod? get() = declaration?.containingMod
+    override val `super`: RsMod?
+        get() {
+            val includingMod = RsIncludeMacroIndex.getIncludingMod(this) ?: return declaration?.containingMod
+            return includingMod.`super`
+        }
 
     // We can't just return file name here because
     // if mod declaration has `path` attribute file name differs from mod name
@@ -73,6 +90,9 @@ class RsFile(
             // we should be able to resolve it by absolute path
             if (originalFile.isDoctestInjection) return true
 
+            val includingMod = RsIncludeMacroIndex.getIncludingMod(this)
+            if (includingMod != null) return includingMod.isCrateRoot
+
             val file = originalFile.virtualFile ?: return false
             return cargoWorkspace?.isCrateRoot(file) ?: false
         }
@@ -82,12 +102,9 @@ class RsFile(
         return declaration?.visibility ?: RsVisibility.Private
     }
 
-    override val innerAttrList: List<RsInnerAttr>
-        get() = stubChildrenOfType()
-
     val attributes: Attributes
         get() {
-            val stub = stub
+            val stub = greenStub as RsFileStub?
             if (stub != null) return stub.attributes
             if (queryAttributes.hasAtomAttribute("no_core")) return Attributes.NO_CORE
             if (queryAttributes.hasAtomAttribute("no_std")) return Attributes.NO_STD
@@ -98,7 +115,7 @@ class RsFile(
         // XXX: without this we'll close over `thisFile`, and it's verboten
         // to store references to PSI inside `CachedValueProvider` other than
         // the key PSI element
-        val originalFile = originalFile
+        val originalFile = originalFile as? RsFile ?: return null
         // [RsModulesIndex.getDeclarationFor] behaves differently depending on whether macros are expanding
         val key = if (project.macroExpansionManager.isResolvingMacro) MOD_DECL_MACROS_KEY else MOD_DECL_KEY
         return CachedValuesManager.getCachedValue(originalFile, key) {

@@ -10,6 +10,7 @@ alygin
 amakeev
 andruhon
 anton-okolelov
+AregevDev
 ArtsiomCh
 ashleysommer
 AtomicInteger
@@ -62,6 +63,7 @@ mcarlin
 mchernyavsky
 mfarrugi
 mhaessig
+mibac138
 mitchhentges
 mkaput
 mrhota
@@ -81,6 +83,8 @@ pocket7878
 rrevenantt
 sanmai-NL
 sgift
+sgrif
+shevtsiv
 Shiroy
 shssoichiro
 sirgl

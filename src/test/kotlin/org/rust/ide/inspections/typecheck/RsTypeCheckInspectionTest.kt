@@ -12,7 +12,7 @@ import org.rust.ide.inspections.RsInspectionsTestBase
 import org.rust.ide.inspections.RsTypeCheckInspection
 import org.rust.lang.core.macros.MacroExpansionScope
 
-class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection()) {
+class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection::class) {
     fun `test type mismatch E0308 primitive`() = checkByText("""
         fn main () {
             let _: u8 = <error>1u16</error>;
@@ -157,11 +157,28 @@ class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection())
         }
     """)
 
-    // issue 2670
+    // https://github.com/intellij-rust/intellij-rust/issues/2670
+    // https://github.com/intellij-rust/intellij-rust/issues/3791
     fun `test no type mismatch E0308 when matching with string literal`() = checkByText("""
         fn main() {
             match "" {
                 "" => {}
+                _ => {}
+            }
+            match &("", "") {
+                ("", "") => {},
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test no type mismatch E0308 when matching with string constant`() = checkByText("""
+        mod a {
+            pub const A: &str = "";
+        }
+        fn main() {
+            match "" {
+                a::A => {}
                 _ => {}
             }
         }
@@ -220,6 +237,30 @@ class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection())
                 yield 0;
                 yield <error>"string"</error>;
             };
+        }
+    """)
+
+    fun `test ! unification`() = checkByText("""
+        fn unify<T>(_: T, _: T) {}
+
+        fn main() {
+            unify(0, panic!());
+            unify(panic!(), 0);
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test ? expression in closure with different error types`() = checkByText("""
+        struct ErrorTo;
+        struct ErrorFrom;
+        impl From<ErrorFrom> for ErrorTo {
+            fn from(_: ErrorFrom) -> Self { ErrorTo }
+        }
+        fn main() {
+            let a: Result<(), ErrorTo> = (|| {
+                Err(ErrorFrom)?;
+                Ok(())
+            })();
         }
     """)
 }

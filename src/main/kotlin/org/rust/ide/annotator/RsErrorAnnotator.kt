@@ -15,6 +15,8 @@ import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
+import org.rust.ide.annotator.fixes.CreateLifetimeParameterFromUsageFix
+import org.rust.ide.annotator.fixes.MakePublicFix
 import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
 import org.rust.lang.core.*
 import org.rust.lang.core.FeatureAvailability.CAN_BE_ADDED
@@ -22,13 +24,12 @@ import org.rust.lang.core.FeatureAvailability.NOT_AVAILABLE
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
+import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.resolve.namespaces
 import org.rust.lang.core.resolve.ref.deepResolve
+import org.rust.lang.core.types.TraitRef
 import org.rust.lang.core.types.inference
-import org.rust.lang.core.types.ty.Ty
-import org.rust.lang.core.types.ty.TyUnit
-import org.rust.lang.core.types.ty.isSelf
-import org.rust.lang.core.types.ty.isSized
+import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.lang.utils.RsDiagnostic
 import org.rust.lang.utils.RsErrorCode
@@ -44,8 +45,8 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitConstant(o: RsConstant) = checkConstant(holder, o)
             override fun visitValueArgumentList(o: RsValueArgumentList) = checkValueArgumentList(holder, o)
             override fun visitStructItem(o: RsStructItem) = checkDuplicates(holder, o)
-            override fun visitEnumItem(o: RsEnumItem) = checkDuplicates(holder, o)
-            override fun visitEnumVariant(o: RsEnumVariant) = checkDuplicates(holder, o)
+            override fun visitEnumItem(o: RsEnumItem) = checkEnumItem(holder, o)
+            override fun visitEnumVariant(o: RsEnumVariant) = checkEnumVariant(holder, o)
             override fun visitFunction(o: RsFunction) = checkFunction(holder, o)
             override fun visitImplItem(o: RsImplItem) = checkImpl(holder, o)
             override fun visitLabel(o: RsLabel) = checkLabel(holder, o)
@@ -61,6 +62,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitTraitItem(o: RsTraitItem) = checkDuplicates(holder, o)
             override fun visitTypeAlias(o: RsTypeAlias) = checkTypeAlias(holder, o)
             override fun visitTypeParameter(o: RsTypeParameter) = checkDuplicates(holder, o)
+            override fun visitConstParameter(o: RsConstParameter) = checkConstParameter(holder, o)
             override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkLifetimeParameter(holder, o)
             override fun visitVis(o: RsVis) = checkVis(holder, o)
             override fun visitVisRestriction(o: RsVisRestriction) = checkVisRestriction(holder, o)
@@ -77,13 +79,69 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitBlockExpr(o: RsBlockExpr) = checkBlockExpr(holder, o)
             override fun visitBreakExpr(o: RsBreakExpr) = checkBreakExpr(holder, o)
             override fun visitContExpr(o: RsContExpr) = checkContExpr(holder, o)
+            override fun visitAttr(o: RsAttr) = checkAttr(holder, o)
+            override fun visitRangeExpr(o: RsRangeExpr) = checkRangeExpr(holder, o)
         }
 
         element.accept(visitor)
     }
 
+    private fun checkEnumItem(holder: AnnotationHolder, o: RsEnumItem) {
+        checkDuplicates(holder, o)
+        o.enumBody?.let { checkDuplicateEnumVariants(holder, it) }
+        if (!hasReprIntType(o) && hasStructOrTupleEnumVariantWithDiscriminant(o)) {
+            RsDiagnostic.ReprIntRequired(o.identifier ?: o.enum).addToHolder(holder)
+        }
+    }
+
+    private fun hasReprIntType(owner: RsDocAndAttributeOwner): Boolean =
+        owner.queryAttributes.reprAttributes
+            .mapNotNull { it.metaItemArgs }
+            .flatMap { it.metaItemList.asSequence() }
+            .mapNotNull { it.name }
+            .any { it in TyInteger.NAMES }
+
+    private fun hasStructOrTupleEnumVariantWithDiscriminant(enum: RsEnumItem): Boolean =
+        enum.enumBody?.enumVariantList
+            ?.filter { it.blockFields != null || it.tupleFields != null }
+            ?.mapNotNull { it.variantDiscriminant }
+            ?.isEmpty() == false
+
+    private fun checkEnumVariant(holder: AnnotationHolder, variant: RsEnumVariant) {
+        checkDuplicates(holder, variant)
+        val discr = variant.variantDiscriminant ?: return
+        if (variant.blockFields != null || variant.tupleFields != null) {
+            ARBITRARY_ENUM_DISCRIMINANT.check(holder, discr.expr ?: discr, "discriminant on a non-unit variant")
+        }
+    }
+
+    private fun checkDuplicateEnumVariants(holder: AnnotationHolder, o: RsEnumBody) {
+        data class VariantInfo(val variant: RsEnumVariant, val alreadyReported: Boolean)
+
+        var discrCounter = 0L
+        val indexToVariantMap = hashMapOf<Long, VariantInfo>()
+        for (variant in o.enumVariantList) {
+            val literal = variant.variantDiscriminant?.expr as? RsLitExpr
+            val int = literal?.integerValue
+            val idx = int ?: discrCounter
+            discrCounter = idx + 1
+
+            val previous = indexToVariantMap[idx]
+            if (previous != null) {
+                RsDiagnostic.DuplicateEnumDiscriminant(variant, idx).addToHolder(holder)
+                if (!previous.alreadyReported) {
+                    RsDiagnostic.DuplicateEnumDiscriminant(previous.variant, idx).addToHolder(holder)
+                    indexToVariantMap[idx] = previous.copy(alreadyReported = true)
+                }
+            } else {
+                indexToVariantMap[idx] = VariantInfo(variant, alreadyReported = false)
+            }
+        }
+    }
+
     private fun checkCallExpr(holder: AnnotationHolder, o: RsCallExpr) {
         val path = (o.expr as? RsPathExpr)?.path ?: return
+        checkNotCallingDrop(o, holder)
         val deepResolve = path.reference.deepResolve()
         val owner = deepResolve as? RsFieldsOwner ?: return
         if (owner.tupleFields == null) {
@@ -101,26 +159,56 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     private fun checkDotExpr(holder: AnnotationHolder, o: RsDotExpr) {
         val field = o.fieldLookup ?: o.methodCall ?: return
         checkReferenceIsPublic(field, o, holder)
+        if (field is RsMethodCall) {
+            checkNotCallingDrop(field, holder)
+        }
     }
 
     private fun checkYieldExpr(holder: AnnotationHolder, o: RsYieldExpr) {
         GENERATORS.check(holder, o.yield, "`yield` syntax")
     }
 
-    private fun checkReferenceIsPublic(ref: RsReferenceElement, o: PsiElement, holder: AnnotationHolder) {
-        val element = ref.reference.resolve() as? RsVisible ?: return
+    // E0040: Explicit destructor call (call to Drop::drop() method on an instance explicitly)
+    private fun checkNotCallingDrop(call: RsElement, holder: AnnotationHolder) {
+        val (ref, identifier) = when (call) {
+            is RsCallExpr -> (call.expr as? RsPathExpr)?.path?.reference?.resolve() to call.expr
+            is RsMethodCall -> call.reference.resolve() to call.identifier
+            else -> null to null
+        }
+        if ((ref as? RsFunction)?.name != "drop") return
+
+        val trait = when (val owner = ref.owner) {
+            // core::ops::drop::Drop::drop(x)
+            is RsAbstractableOwner.Trait -> owner.trait
+            // Foo::drop(x), x.drop()
+            is RsAbstractableOwner.Impl -> owner.impl.traitRef?.resolveToTrait()
+            else -> null
+        } ?: return
+
+        if (trait == trait.knownItems.Drop) {
+            RsDiagnostic.ExplicitCallToDrop(identifier ?: call).addToHolder(holder)
+        }
+    }
+
+    private fun checkReferenceIsPublic(ref: RsReferenceElement, o: RsElement, holder: AnnotationHolder) {
+        var element = ref.reference.resolve() as? RsVisible ?: return
         val oMod = o.contextStrict<RsMod>() ?: return
         if (element.isVisibleFrom(oMod)) return
-
+        val withinOneCrate = element.crateRoot == o.crateRoot
+        if (element is RsFile) {
+            element = element.declaration ?: return
+        }
         val error = when {
             element is RsNamedFieldDecl -> {
                 val structName = element.ancestorStrict<RsStructItem>()?.crateRelativePath?.removePrefix("::") ?: ""
-                RsDiagnostic.StructFieldAccessError(ref, ref.referenceName, structName)
+                RsDiagnostic.StructFieldAccessError(ref, ref.referenceName, structName,
+                    MakePublicFix.createIfCompatible(element, element.name, withinOneCrate))
             }
-            ref is RsMethodCall -> RsDiagnostic.AccessError(ref.identifier, RsErrorCode.E0624, "Method")
+            ref is RsMethodCall -> RsDiagnostic.AccessError(ref.identifier, RsErrorCode.E0624, "Method",
+                MakePublicFix.createIfCompatible(element, ref.referenceName, withinOneCrate))
             else -> {
                 val itemType = when (element) {
-                    is RsMod -> "Module"
+                    is RsMod, is RsModDeclItem -> "Module"
                     is RsConstant -> "Constant"
                     is RsFunction -> "Function"
                     is RsStructItem -> "Struct"
@@ -129,7 +217,9 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
                     is RsTypeAlias -> "Type alias"
                     else -> "Item"
                 }
-                RsDiagnostic.AccessError(ref, RsErrorCode.E0603, itemType)
+
+                RsDiagnostic.AccessError(ref, RsErrorCode.E0603, itemType,
+                    MakePublicFix.createIfCompatible(element, ref.referenceName, withinOneCrate))
             }
         }
         error.addToHolder(holder)
@@ -193,6 +283,11 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         checkReferenceIsPublic(path, path, holder)
     }
 
+    private fun checkConstParameter(holder: AnnotationHolder, constParameter: RsConstParameter) {
+        CONST_GENERICS.check(holder, constParameter, "const generics")
+        checkDuplicates(holder, constParameter)
+    }
+
     private fun checkLifetimeParameter(holder: AnnotationHolder, lifetimeParameter: RsLifetimeParameter) {
         checkReservedLifetimeName(holder, lifetimeParameter)
         checkDuplicates(holder, lifetimeParameter)
@@ -232,7 +327,25 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
     private fun checkLifetime(holder: AnnotationHolder, lifetime: RsLifetime) {
         if (lifetime.isPredefined || !hasResolve(lifetime)) return
-        RsDiagnostic.UndeclaredLifetimeError(lifetime).addToHolder(holder)
+
+        val owner = lifetime.ancestorStrict<RsGenericDeclaration>() ?: return
+        val declarationParts = listOfNotNull(
+            owner.typeParameterList,
+            (owner as? RsFunction)?.valueParameterList,
+            owner.whereClause
+        )
+        val inDeclaration = lifetime.ancestors.takeWhile { it != owner }.any { it in declarationParts }
+
+        when {
+            inDeclaration && owner.lifetimeParameters.isEmpty() -> {
+                val fixes = listOfNotNull(CreateLifetimeParameterFromUsageFix.tryCreate(lifetime)).toTypedArray()
+                IN_BAND_LIFETIMES.check(holder, lifetime, "in-band lifetimes", *fixes)
+            }
+            inDeclaration && IN_BAND_LIFETIMES.availability(lifetime) == FeatureAvailability.AVAILABLE ->
+                RsDiagnostic.InBandAndExplicitLifetimesError(lifetime).addToHolder(holder)
+            else ->
+                RsDiagnostic.UndeclaredLifetimeError(lifetime).addToHolder(holder)
+        }
     }
 
     private fun checkModDecl(holder: AnnotationHolder, modDecl: RsModDeclItem) {
@@ -254,12 +367,13 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
                 // associated with the current module. Without it we can't know for
                 // sure that a mod is not a directory owner.
                 if (modDecl.cargoWorkspace != null) {
-                    val addModule = AddModuleFileFix(modDecl, expandModuleFirst = true)
+                    val addModule = AddModuleFileFix.createFixes(modDecl, expandModuleFirst = true)
+                        .toTypedArray()
                     NON_MODRS_MODS.check(
                         holder,
                         modDecl,
                         "mod statements in non-mod.rs files",
-                        addModule
+                        *addModule
                     )
                 }
                 return
@@ -272,8 +386,12 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkImpl(holder: AnnotationHolder, impl: RsImplItem) {
+        checkImplForNonAdtError(holder, impl)
         val traitRef = impl.traitRef ?: return
-        val trait = traitRef.resolveToTrait ?: return
+        val trait = traitRef.resolveToTrait() ?: return
+        checkForbiddenImpl(holder, traitRef, trait)
+        checkImplDropForNonAdtError(holder, impl, traitRef, trait)
+        checkImplBothCopyAndDrop(holder, impl, trait)
         val traitName = trait.name ?: return
 
         fun mayDangleOnTypeOrLifetimeParameters(impl: RsImplItem): Boolean {
@@ -295,6 +413,62 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             !impl.isUnsafe && !trait.isUnsafe && impl.excl == null && attrRequiringUnsafeImpl != null ->
                 RsDiagnostic.TraitMissingUnsafeImplAttributeError(traitRef, attrRequiringUnsafeImpl).addToHolder(holder)
         }
+    }
+
+    // E0118: Can impl only `struct`s, `enum`s and `union`s (when not implementing a trait)
+    private fun checkImplForNonAdtError(holder: AnnotationHolder, impl: RsImplItem) {
+        if (impl.`for` != null) return
+        val typeRef = impl.typeReference ?: return
+        if (typeRef.traitType != null) return
+        val type = typeRef.type
+        if (impl.queryAttributes.langAttribute != null) {
+            // There are some special rules for #[lang] items, see:
+            // https://doc.rust-lang.org/unstable-book/language-features/lang-items.html)
+            return
+        }
+        if (type !is TyAdt && type !is TyTraitObject && type != TyUnknown) {
+            RsDiagnostic.ImplForNonAdtError(typeRef).addToHolder(holder)
+        }
+    }
+
+
+    // E0322: Explicit impls for the `Sized` trait are not permitted
+    // E0328: Explicit impls for the `Unsized` trait are not permitted
+    private fun checkForbiddenImpl(holder: AnnotationHolder, traitRef: RsTraitRef, trait: RsTraitItem) {
+        if (trait == trait.knownItems.Sized) RsDiagnostic.ImplSizedError(traitRef).addToHolder(holder)
+        if (trait == trait.knownItems.Unsize) RsDiagnostic.ImplUnsizeError(traitRef).addToHolder(holder)
+    }
+
+    // E0120: Drop can be only implemented by structs and enums
+    private fun checkImplDropForNonAdtError(holder: AnnotationHolder, impl: RsImplItem, traitRef: RsTraitRef, trait: RsTraitItem) {
+        if (trait != trait.knownItems.Drop) return
+
+        if (impl.typeReference?.type is TyAdt?) return
+
+        RsDiagnostic.ImplDropForNonAdtError(traitRef).addToHolder(holder)
+    }
+
+    private fun checkImplBothCopyAndDrop(holder: AnnotationHolder, impl: RsImplItem, trait: RsTraitItem) {
+        checkImplBothCopyAndDrop(holder, impl.typeReference?.type ?: return, impl.traitRef ?: return, trait)
+    }
+
+    private fun checkImplBothCopyAndDrop(holder: AnnotationHolder, attr: RsAttr) {
+        if (attr.metaItem.name != "derive") return
+        val deriveCopy = attr.metaItem.metaItemArgs?.metaItemList?.find { it?.identifier?.text == "Copy" } ?: return
+        val selfType = (attr.parent as? RsStructOrEnumItemElement)?.declaredType ?: return
+        checkImplBothCopyAndDrop(holder, selfType, deriveCopy, attr.knownItems.Copy ?: return)
+    }
+
+    // E0184: Cannot implement both Copy and Drop
+    private fun checkImplBothCopyAndDrop(holder: AnnotationHolder, self: Ty, element: PsiElement, trait: RsTraitItem) {
+        val oppositeTrait = when (trait) {
+            trait.knownItems.Drop -> trait.knownItems.Copy
+            trait.knownItems.Copy -> trait.knownItems.Drop
+            else -> null
+        } ?: return
+        if (!trait.implLookup.canSelect(TraitRef(self, oppositeTrait.withSubst()))) return
+
+        RsDiagnostic.ImplBothCopyAndDropError(element).addToHolder(holder)
     }
 
     private fun checkTypeAlias(holder: AnnotationHolder, ta: RsTypeAlias) {
@@ -360,9 +534,85 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         }
     }
 
+    private fun checkAttr(holder: AnnotationHolder, attr: RsAttr) {
+        checkImplBothCopyAndDrop(holder, attr)
+        checkInlineAttr(holder, attr)
+        checkReprForEmptyEnum(holder, attr)
+        checkStartAttribute(holder, attr)
+    }
+
+    // E0132: Invalid `start` attribute
+    private fun checkStartAttribute(holder: AnnotationHolder, attr: RsAttr) {
+        if (attr.metaItem.name != "start") return
+
+        START.check(holder, attr.metaItem, "#[start] function")
+
+        when (val owner = attr.owner) {
+            is RsFunction -> {
+                // Check if signature matches `fn(isize, *const *const u8) -> isize`
+                val params = owner.valueParameters
+                if (owner.returnType != TyInteger.ISize) {
+                    RsDiagnostic.InvalidStartAttrError.ReturnMismatch(owner.retType?.typeReference ?: owner.identifier)
+                        .addToHolder(holder)
+                }
+                if (params.size != 2) {
+                    RsDiagnostic.InvalidStartAttrError.InvalidParam(owner.identifier)
+                        .addToHolder(holder)
+                    // Don't check specific param types if param count is invalid to avoid overloading the user
+                    // with errors
+                    return
+                }
+                if (params[0].typeReference?.type != TyInteger.ISize) {
+                    RsDiagnostic.InvalidStartAttrError.InvalidParam(params[0].typeReference ?: params[0], 0)
+                        .addToHolder(holder)
+                }
+                if (params[1].typeReference?.type != TyPointer(TyPointer(TyInteger.U8, Mutability.IMMUTABLE), Mutability.IMMUTABLE)) {
+                    RsDiagnostic.InvalidStartAttrError.InvalidParam(params[1].typeReference ?: params[1], 1)
+                        .addToHolder(holder)
+                }
+            }
+            else ->
+                RsDiagnostic.InvalidStartAttrError.InvalidOwner(attr.metaItem.identifier ?: attr.metaItem)
+                    .addToHolder(holder)
+        }
+    }
+
+    // E0084: Enum with no variants can't have `repr` attribute
+    private fun checkReprForEmptyEnum(holder: AnnotationHolder, attr: RsAttr) {
+        if (attr.metaItem.name != "repr") return
+        val enum = attr.owner as? RsEnumItem ?: return
+        // Not using `enum.variants` to avoid false positive for enum without body
+        if (enum.enumBody?.enumVariantList?.isEmpty() == true) {
+            RsDiagnostic.ReprForEmptyEnumError(attr).addToHolder(holder)
+        }
+    }
+
+    // E0518: Inline attribute is allowed only on functions
+    private fun checkInlineAttr(holder: AnnotationHolder, attr: RsAttr) {
+        val metaItem = attr.metaItem
+        if (metaItem.name == "inline") {
+            val parent = when (attr) {
+                // #[inline] fn foo() {}
+                is RsOuterAttr -> attr.parent
+                // Apparently you can place attr inside the function as well
+                // fn foo() { #![inline] }
+                is RsInnerAttr -> attr.parent?.parent
+                else -> null
+            } ?: return
+
+            if (parent !is RsFunction && parent !is RsLambdaExpr) {
+                RsDiagnostic.IncorrectlyPlacedInlineAttr(metaItem.identifier ?: metaItem, attr)
+                    .addToHolder(holder)
+            }
+        }
+    }
+
+
     private fun checkRetExpr(holder: AnnotationHolder, ret: RsRetExpr) {
         if (ret.expr != null) return
-        val fn = ret.ancestors.find { it is RsFunction || it is RsLambdaExpr } as? RsFunction ?: return
+        val fn = ret.ancestors.find {
+            it is RsFunction || it is RsLambdaExpr || it is RsBlockExpr && it.isAsync
+        } as? RsFunction ?: return
         val retType = fn.retType?.typeReference?.type ?: return
         if (retType is TyUnit) return
         RsDiagnostic.ReturnMustHaveValueError(ret).addToHolder(holder)
@@ -393,6 +643,21 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         val label = expr.labelDecl
         if (label != null) {
             LABEL_BREAK_VALUE.check(holder, label, "label on block")
+        }
+    }
+
+    // E0586: inclusive range with no end
+    private fun checkRangeExpr(holder: AnnotationHolder, range: RsRangeExpr) {
+        val dotdoteq = range.dotdoteq ?: range.dotdotdot ?: return
+        if (dotdoteq == range.dotdotdot) {
+            // rustc doesn't have an error code for this ("error: unexpected token: `...`")
+            holder.createErrorAnnotation(dotdoteq,
+                "`...` syntax is deprecated. Use `..` for an exclusive range or `..=` for an inclusive range")
+            return
+        }
+        val expr = range.exprList.singleOrNull() ?: return
+        if (expr.startOffsetInParent < dotdoteq.startOffsetInParent) {
+            RsDiagnostic.InclusiveRangeWithNoEndError(dotdoteq).addToHolder(holder)
         }
     }
 

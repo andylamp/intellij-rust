@@ -65,8 +65,8 @@ open class RustProjectDescriptorBase : LightProjectDescriptor() {
         name = name,
         version = "0.0.1",
         targets = listOf(
-            Target("$contentRoot/main.rs", name, TargetKind.BIN, listOf(CrateType.BIN), edition = Edition.EDITION_2015),
-            Target("$contentRoot/lib.rs", name, TargetKind.LIB, listOf(CrateType.LIB), edition = Edition.EDITION_2015)
+            Target("$contentRoot/main.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/lib.rs", name, TargetKind.Lib(LibKind.LIB), edition = Edition.EDITION_2015, doctest = true)
         ),
         source = null,
         origin = PackageOrigin.WORKSPACE,
@@ -97,7 +97,7 @@ open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustPro
 
     override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
         val stdlib = StandardLibrary.fromFile(stdlib!!)!!
-        return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib)
+        return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib, rustcInfo)
     }
 
     override fun setUp(fixture: CodeInsightTestFixture) {
@@ -136,7 +136,7 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
         targetName: String = name,
         version: String = "0.0.1",
         origin: PackageOrigin = PackageOrigin.DEPENDENCY,
-        crateType: CrateType = CrateType.BIN
+        libKind: LibKind = LibKind.LIB
     ): Package {
         return Package(
             id = "$name $version",
@@ -147,7 +147,7 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
                 // don't use `FileUtil.join` here because it uses `File.separator`
                 // which is system dependent although all other code uses `/` as separator
                 Target(source?.let { "$contentRoot/$it" } ?: "", targetName,
-                    TargetKind.LIB, listOf(crateType), Edition.EDITION_2015)
+                    TargetKind.Lib(libKind), Edition.EDITION_2015, doctest = true)
             ),
             source = source,
             origin = origin,
@@ -171,12 +171,18 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
                 origin = PackageOrigin.TRANSITIVE_DEPENDENCY),
             externalPackage("$contentRoot/dep-lib-new", "lib.rs", "dep-lib", "dep-lib-target",
                 version = "0.0.2", origin = PackageOrigin.TRANSITIVE_DEPENDENCY),
-            externalPackage("$contentRoot/dep-proc-macro", "lib.rs", "dep-proc-macro", crateType = CrateType.PROC_MACRO)
+            externalPackage("$contentRoot/dep-proc-macro", "lib.rs", "dep-proc-macro", libKind = LibKind.PROC_MACRO),
+            externalPackage("$contentRoot/dep-lib-2", "lib.rs", "dep-lib-2", "dep-lib-target-2")
         )
 
         return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, mapOf(
-            // Our package depends on dep_lib 0.0.1, nosrc_lib and dep-proc-macro
-            packages[0].id to setOf(Dependency(packages[1].id), Dependency(packages[2].id), Dependency(packages[5].id)),
+            // Our package depends on dep_lib 0.0.1, nosrc_lib, dep-proc-macro and dep_lib-2
+            packages[0].id to setOf(
+                Dependency(packages[1].id),
+                Dependency(packages[2].id),
+                Dependency(packages[5].id),
+                Dependency(packages[6].id)
+            ),
             // dep_lib 0.0.1 depends on dep_lib 0.0.2
             packages[1].id to setOf(Dependency(packages[4].id))
         )))

@@ -5,11 +5,11 @@
 
 package org.rust.lang.core.psi.ext
 
-import com.intellij.psi.PsiNameIdentifierOwner
+import com.intellij.psi.PsiElement
 import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.psi.*
 
-interface RsAbstractable : RsNamedElement, PsiNameIdentifierOwner, RsExpandedElement {
+interface RsAbstractable : RsNameIdentifierOwner, RsExpandedElement {
     val isAbstract: Boolean
 }
 
@@ -24,28 +24,27 @@ sealed class RsAbstractableOwner {
     val isImplOrTrait: Boolean get() = this is Impl || this is Trait
 }
 
-val RsAbstractable.owner: RsAbstractableOwner
-    get() {
-        val context = context
-        return when (context) {
-            is RsForeignModItem -> RsAbstractableOwner.Foreign
-            is RsMembers -> {
-                val traitOrImpl = context.context
-                when (traitOrImpl) {
-                    is RsImplItem -> RsAbstractableOwner.Impl(traitOrImpl, isInherent = traitOrImpl.traitRef == null)
-                    is RsTraitItem -> RsAbstractableOwner.Trait(traitOrImpl)
-                    else -> error("unreachable")
-                }
+val RsAbstractable.owner: RsAbstractableOwner get() = getOwner(PsiElement::getContext)
+
+inline fun RsAbstractable.getOwner(getAncestor: PsiElement.() -> PsiElement?): RsAbstractableOwner {
+    return when (val ancestor = getAncestor()) {
+        is RsForeignModItem -> RsAbstractableOwner.Foreign
+        is RsMembers -> {
+            when (val traitOrImpl = ancestor.getAncestor()) {
+                is RsImplItem -> RsAbstractableOwner.Impl(traitOrImpl, isInherent = traitOrImpl.traitRef == null)
+                is RsTraitItem -> RsAbstractableOwner.Trait(traitOrImpl)
+                else -> error("unreachable")
             }
-            else -> RsAbstractableOwner.Free
         }
+        else -> RsAbstractableOwner.Free
     }
+}
 
 // Resolve a const, fn or type in a impl block to the corresponding item in the trait block
 val RsAbstractable.superItem: RsAbstractable?
     get() {
         val rustImplItem = ancestorStrict<RsImplItem>() ?: return null
-        val superTrait = rustImplItem.traitRef?.resolveToTrait ?: return null
+        val superTrait = rustImplItem.traitRef?.resolveToTrait() ?: return null
         return superTrait.findCorrespondingElement(this)
     }
 

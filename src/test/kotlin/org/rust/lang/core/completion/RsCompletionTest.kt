@@ -5,10 +5,7 @@
 
 package org.rust.lang.core.completion
 
-import org.rust.ProjectDescriptor
-import org.rust.WithDependencyRustProjectDescriptor
-import org.rust.WithStdlibAndDependencyRustProjectDescriptor
-import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.*
 
 class RsCompletionTest : RsCompletionTestBase() {
     fun `test local variable`() = doSingleCompletion("""
@@ -478,10 +475,22 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """)
 
-    fun `test complete macro`() = doSingleCompletion("""
+    fun `test complete macro 1`() = doSingleCompletion("""
         macro_rules! foo_bar { () => () }
         fn main() {
             fo/*caret*/
+        }
+    """, """
+        macro_rules! foo_bar { () => () }
+        fn main() {
+            foo_bar!(/*caret*/)
+        }
+    """)
+
+    fun `test complete macro 2`() = doSingleCompletion("""
+        macro_rules! foo_bar { () => () }
+        fn main() {
+            fo/*caret*/!()
         }
     """, """
         macro_rules! foo_bar { () => () }
@@ -735,6 +744,12 @@ class RsCompletionTest : RsCompletionTestBase() {
         fn foo<'aaaaaa>(x:&'aaaaaa/*caret*/ str) {}
     """)
 
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test complete in-band lifetime`() = checkContainsCompletion("'aaaaaa", """
+        #![feature(in_band_lifetimes)]
+        fn foo(x:&'aaaaaa str, y:&'a/*caret*/ str) {}
+    """)
+
     fun `test super completion`() = doSingleCompletion("""
         pub mod foo {
             fn bar() {
@@ -782,5 +797,17 @@ class RsCompletionTest : RsCompletionTestBase() {
             let x = (0, S { field: 0 });
             x.1.field/*caret*/
         }
+    """)
+
+    fun `test const generics completion`() = doSingleCompletion("""
+        fn f<const AAA: usize>() { A/*caret*/; }
+        struct S<const AAA: usize>([usize; A/*caret*/]);
+        trait T<const AAA: usize> { const BBB: usize = A/*caret*/; }
+        enum E<const AAA: usize> { V([usize; A/*caret*/]) }
+    """, """
+        fn f<const AAA: usize>() { AAA/*caret*/; }
+        struct S<const AAA: usize>([usize; AAA/*caret*/]);
+        trait T<const AAA: usize> { const BBB: usize = AAA/*caret*/; }
+        enum E<const AAA: usize> { V([usize; AAA/*caret*/]) }
     """)
 }

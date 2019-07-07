@@ -10,7 +10,7 @@ import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.ide.inspections.RsBorrowCheckerInspection
 import org.rust.ide.inspections.RsInspectionsTestBase
 
-class RsBorrowCheckerInspectionTest : RsInspectionsTestBase(RsBorrowCheckerInspection()) {
+class RsBorrowCheckerInspectionTest : RsInspectionsTestBase(RsBorrowCheckerInspection::class) {
 
     fun `test mutable used at ref mutable method call (self)`() = checkByText("""
         struct S;
@@ -278,4 +278,11 @@ class RsBorrowCheckerInspectionTest : RsInspectionsTestBase(RsBorrowCheckerInspe
             let c = &mut b[0];
         }
     """, checkWarn = false)
+
+    /** Issue [3914](https://github.com/intellij-rust/intellij-rust/issues/3914) */
+    fun `test closure borrow parameter of unknown type as mutable`() = checkByText("""
+        fn main() {
+            |x| &mut x;
+        }
+    """)
 }

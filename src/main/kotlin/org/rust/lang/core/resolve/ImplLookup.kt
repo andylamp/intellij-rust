@@ -104,7 +104,7 @@ sealed class TraitImplSource {
     abstract val value: RsTraitOrImpl
 
     val impl: RsImplItem?
-        get() = (this as? TraitImplSource.ExplicitImpl)?.value
+        get() = (this as? ExplicitImpl)?.value
 
     /** An impl block, directly defined in the code */
     data class ExplicitImpl(override val value: RsImplItem): TraitImplSource()
@@ -159,7 +159,7 @@ data class ParamEnv(val callerBounds: List<TraitRef>) {
 
 class ImplLookup(
     private val project: Project,
-    private val items: KnownItems,
+    val items: KnownItems,
     private val paramEnv: ParamEnv = ParamEnv.EMPTY
 ) {
     // Non-concurrent HashMap and lazy(NONE) are safe here because this class isn't shared between threads
@@ -363,7 +363,7 @@ class ImplLookup(
         val result = selectWithoutConfirm(ref, recursionDepth)
         val candidate = result.ok() ?: return result.map { error("unreachable") }
         // TODO optimize it. Obligations may be already evaluated, so we don't need to re-evaluated it
-        if (!canEvaluateObligations(ref, candidate, recursionDepth)) return SelectionResult.Err()
+        if (!canEvaluateObligations(ref, candidate, recursionDepth)) return SelectionResult.Err
         return result
     }
 
@@ -377,7 +377,7 @@ class ImplLookup(
         selectWithoutConfirm(ref, recursionDepth).map { confirmCandidate(ref, it, recursionDepth) }
 
     private fun selectWithoutConfirm(ref: TraitRef, recursionDepth: Int): SelectionResult<SelectionCandidate> {
-        if (recursionDepth > DEFAULT_RECURSION_LIMIT) return SelectionResult.Err()
+        if (recursionDepth > DEFAULT_RECURSION_LIMIT) return SelectionResult.Err
         testAssert { !ctx.hasResolvableTypeVars(ref) }
         val freshenRef = freshen(ref)
         @Suppress("IfThenToElvis")
@@ -394,13 +394,13 @@ class ImplLookup(
         if (ref.selfTy is TyReference && ref.selfTy.referenced is TyInfer.TyVar) {
             // This condition is related to TyFingerprint internals: TyFingerprint should not be created for
             // TyInfer.TyVar, and TyReference is a single special case: it unwraps during TyFingerprint creation
-            return SelectionResult.Ambiguous()
+            return SelectionResult.Ambiguous
         }
 
         val candidates = assembleCandidates(ref)
 
         return when (candidates.size) {
-            0 -> SelectionResult.Err()
+            0 -> SelectionResult.Err
             1 -> SelectionResult.Ok(candidates.single())
             else -> {
                 val filtered = candidates.filter {
@@ -408,7 +408,7 @@ class ImplLookup(
                 }
 
                 when (filtered.size) {
-                    0 -> SelectionResult.Err()
+                    0 -> SelectionResult.Err
                     1 -> SelectionResult.Ok(filtered.single())
                     else -> {
                         // basic specialization
@@ -417,7 +417,7 @@ class ImplLookup(
                         }?.let {
                             TypeInferenceMarks.traitSelectionSpecialization.hit()
                             SelectionResult.Ok(it)
-                        } ?: SelectionResult.Ambiguous()
+                        } ?: SelectionResult.Ambiguous
                     }
                 }
             }
@@ -613,7 +613,7 @@ class ImplLookup(
     fun findArithmeticBinaryExprOutputType(lhsType: Ty, rhsType: Ty, op: ArithmeticOp): TyWithObligations<Ty>? {
         val trait = op.findTrait(items) ?: return null
         val assocType = trait.findAssociatedType("Output") ?: return null
-        return selectProjection(TraitRef(lhsType, trait.withSubst(rhsType)), assocType).ok()
+        return ctx.normalizeAssociatedTypesIn(TyProjection.valueOf(lhsType, trait.withSubst(rhsType), assocType))
     }
 
     private fun selectProjection(
@@ -666,7 +666,7 @@ class ImplLookup(
         coercionSequence(ref.selfTy)
             .map { selectProjectionStrict(TraitRef(it, ref.trait), assocType, recursionDepth) }
             .firstOrNull { it.isOk() }
-            ?: SelectionResult.Err()
+            ?: SelectionResult.Err
 
     private fun lookupAssociatedType(selfTy: Ty, res: Selection, assocType: RsTypeAlias): Ty? {
         return when (selfTy) {
@@ -695,7 +695,7 @@ class ImplLookup(
     }
 
     fun selectOverloadedOp(lhsType: Ty, rhsType: Ty, op: OverloadableBinaryOperator): SelectionResult<Selection> {
-        val trait = op.findTrait(items) ?: return SelectionResult.Err()
+        val trait = op.findTrait(items) ?: return SelectionResult.Err
         return select(TraitRef(lhsType, trait.withSubst(rhsType)))
     }
 
@@ -708,7 +708,7 @@ class ImplLookup(
 
             val inputArgVar = TyInfer.TyVar()
             val ok = fnTraits.asSequence()
-                .mapNotNull { selectProjection(it to output, ty, inputArgVar).ok() }
+                .mapNotNull { ctx.commitIfNotNull { selectProjection(it to output, ty, inputArgVar).ok() } }
                 .firstOrNull() ?: return@run null
             TyWithObligations(
                 TyFunction((ctx.shallowResolve(inputArgVar) as? TyTuple)?.types.orEmpty(), ok.value),
@@ -721,6 +721,7 @@ class ImplLookup(
         return ref.asFunctionType
     }
 
+    fun isDeref(ty: Ty): Boolean = ty.isTraitImplemented(items.Deref)
     fun isCopy(ty: Ty): Boolean = ty.isTraitImplemented(items.Copy)
     fun isClone(ty: Ty): Boolean = ty.isTraitImplemented(items.Clone)
     fun isSized(ty: Ty): Boolean = ty.isTraitImplemented(items.Sized)
@@ -747,7 +748,7 @@ class ImplLookup(
         fun relativeTo(psi: RsElement): ImplLookup {
             val parentItem = psi.contextOrSelf<RsItemElement>()
             val paramEnv = if (parentItem is RsGenericDeclaration) {
-                if (psi.contextOrSelf<RsWherePred>() == null) {
+                if (psi.contextOrSelf<RsWherePred>() == null && psi.contextOrSelf<RsBound>() == null) {
                     ParamEnv.buildFor(parentItem)
                 } else {
                     // We should mock ParamEnv here. Otherwise we run into infinite recursion
@@ -769,8 +770,8 @@ class ImplLookup(
 }
 
 sealed class SelectionResult<out T> {
-    class Err<out T> : SelectionResult<T>()
-    class Ambiguous<out T> : SelectionResult<T>()
+    object Err : SelectionResult<Nothing>()
+    object Ambiguous : SelectionResult<Nothing>()
     data class Ok<out T>(
         val result: T
     ) : SelectionResult<T>()
@@ -780,9 +781,9 @@ sealed class SelectionResult<out T> {
     fun isOk(): Boolean = this is Ok<T>
 
     inline fun <R> map(action: (T) -> R): SelectionResult<R> = when (this) {
-        is SelectionResult.Err -> SelectionResult.Err()
-        is SelectionResult.Ambiguous -> SelectionResult.Ambiguous()
-        is SelectionResult.Ok -> SelectionResult.Ok(action(result))
+        is Err -> Err
+        is Ambiguous -> Ambiguous
+        is Ok -> Ok(action(result))
     }
 }
 
@@ -838,13 +839,6 @@ private fun prepareSubstAndTraitRefRaw(
         }
     }.substituteInValues(mapOf(TyTypeParameter.self() to selfTy).toTypeSubst())
     return subst to TraitRef(formalSelfTy.substitute(subst), BoundElement(formalTrait.element, boundSubst))
-}
-
-private fun lookupAssociatedType(impl: RsTraitOrImpl, name: String): Ty {
-    return impl.associatedTypesTransitively
-        .find { it.name == name }
-        ?.let { it.typeReference?.type ?: TyProjection.valueOf(it) }
-        ?: TyUnknown
 }
 
 private fun <T : Ty> T.withObligations(obligations: List<Obligation> = emptyList()): TyWithObligations<T> =

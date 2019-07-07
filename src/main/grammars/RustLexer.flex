@@ -36,7 +36,7 @@ import static com.intellij.psi.TokenType.*;
 %{
   IElementType imbueBlockComment() {
       assert(zzNestedCommentLevel == 0);
-      yybegin(INITIAL);
+      yybegin(YYINITIAL);
 
       zzStartRead = zzPostponedMarkedPos;
       zzPostponedMarkedPos = -1;
@@ -53,13 +53,22 @@ import static com.intellij.psi.TokenType.*;
   }
 
   IElementType imbueRawLiteral() {
-      yybegin(INITIAL);
+      yybegin(YYINITIAL);
 
       zzStartRead = zzPostponedMarkedPos;
       zzShaStride = -1;
       zzPostponedMarkedPos = -1;
 
       return yycharat(0) == 'b' ? RAW_BYTE_STRING_LITERAL : RAW_STRING_LITERAL;
+  }
+
+  IElementType imbueOuterEolComment(){
+      yybegin(YYINITIAL);
+
+      zzStartRead = zzPostponedMarkedPos;
+      zzPostponedMarkedPos = -1;
+
+      return OUTER_EOL_DOC_COMMENT;
   }
 %}
 
@@ -69,9 +78,10 @@ import static com.intellij.psi.TokenType.*;
 %function advance
 %type IElementType
 
-%s INITIAL
+%s IN_SHEBANG
 
 %s IN_BLOCK_COMMENT
+%s IN_OUTER_EOL_COMMENT
 
 %s IN_LIFETIME_OR_CHAR
 
@@ -126,19 +136,16 @@ STRING_LITERAL = \" ( [^\\\"] | \\[^] )* ( \" {SUFFIX}? | \\ )?
 INNER_EOL_DOC = ({LINE_WS}*"//!".*{EOL_WS})*({LINE_WS}*"//!".*)
 // !(!a|b) is a (set) difference between a and b.
 EOL_DOC_LINE  = {LINE_WS}*!(!("///".*)|("////".*))
-OUTER_EOL_DOC = ({EOL_DOC_LINE}{EOL_WS})*{EOL_DOC_LINE}
 
 %%
-
 <YYINITIAL> {
-  "#!" [\r\n]                     { yybegin(INITIAL); yypushback(1); return SHEBANG_LINE; }
-  "#!" [^\[\r\n] [^\r\n]*         { yybegin(INITIAL); return SHEBANG_LINE; }
-  [^]                             { yybegin(INITIAL); yypushback(1); }
-}
+  "#" / "!"[^\[]                  { if (getTokenStart() == 0)
+                                        yybegin(IN_SHEBANG);
+                                    else
+                                        return SHA;
+                                  }
 
-<INITIAL> \'                    { yybegin(IN_LIFETIME_OR_CHAR); yypushback(1); }
-
-<INITIAL>                       {
+  \'                              { yybegin(IN_LIFETIME_OR_CHAR); yypushback(1); }
 
   "{"                             { return LBRACE; }
   "}"                             { return RBRACE; }
@@ -227,8 +234,10 @@ OUTER_EOL_DOC = ({EOL_DOC_LINE}{EOL_WS})*{EOL_DOC_LINE}
 
   "/*"                            { yybegin(IN_BLOCK_COMMENT); yypushback(2); }
 
+  "////" .*                       { return EOL_COMMENT; }
   {INNER_EOL_DOC}                 { return INNER_EOL_DOC_COMMENT; }
-  {OUTER_EOL_DOC}                 { return OUTER_EOL_DOC_COMMENT; }
+  {EOL_DOC_LINE}                  { yybegin(IN_OUTER_EOL_COMMENT);
+                                    zzPostponedMarkedPos = zzStartRead; }
   "//" .*                         { return EOL_COMMENT; }
 
   {IDENTIFIER}                    { return IDENTIFIER; }
@@ -256,9 +265,18 @@ OUTER_EOL_DOC = ({EOL_DOC_LINE}{EOL_WS})*{EOL_DOC_LINE}
                                     zzPostponedMarkedPos = zzStartRead;
                                     zzShaStride          = yylength() - 2; }
 
+//nessesary to allow proper restart of lexer when there is an error in raw literal, see RsRestartLexingTestCase
+  "r"  #+ |
+  "br" #+                         { return BAD_CHARACTER; }
+
   {WHITE_SPACE}                   { return WHITE_SPACE; }
 }
 
+<IN_SHEBANG> {
+    [\r\n]  { yypushback(1); yybegin(YYINITIAL); return SHEBANG_LINE;}
+    [^]     {}
+    <<EOF>> { yybegin(YYINITIAL); return SHEBANG_LINE;}
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Literals
@@ -305,14 +323,25 @@ OUTER_EOL_DOC = ({EOL_DOC_LINE}{EOL_WS})*{EOL_DOC_LINE}
   [^]     { }
 }
 
+<IN_OUTER_EOL_COMMENT>{
+  {EOL_WS}{LINE_WS}*"////"   { yybegin(YYINITIAL);
+                               yypushback(yylength());
+                               return imbueOuterEolComment();}
+  {EOL_WS}{EOL_DOC_LINE}     {}
+  <<EOF>>                    { return imbueOuterEolComment(); }
+  [^]                        { yybegin(YYINITIAL);
+                               yypushback(1);
+                               return imbueOuterEolComment();}
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Quote identifiers & Literals
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 <IN_LIFETIME_OR_CHAR> {
-  \'{IDENTIFIER}                        { yybegin(INITIAL); return QUOTE_IDENTIFIER; }
-  {CHAR_LITERAL}                        { yybegin(INITIAL); return CHAR_LITERAL; }
-  <<EOF>>                               { yybegin(INITIAL); return BAD_CHARACTER; }
+  \'{IDENTIFIER}                        { yybegin(YYINITIAL); return QUOTE_IDENTIFIER; }
+  {CHAR_LITERAL}                        { yybegin(YYINITIAL); return CHAR_LITERAL; }
+  <<EOF>>                               { yybegin(YYINITIAL); return BAD_CHARACTER; }
 }
 
 

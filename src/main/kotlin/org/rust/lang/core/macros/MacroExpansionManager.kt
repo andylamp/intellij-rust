@@ -6,6 +6,7 @@
 package org.rust.lang.core.macros
 
 import com.intellij.AppTopics
+import com.intellij.codeInsight.template.TemplateManager
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.*
 import com.intellij.openapi.application.impl.LaterInvocator
@@ -14,6 +15,8 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileDocumentManagerListener
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.progress.*
 import com.intellij.openapi.progress.impl.BackgroundableProcessIndicator
 import com.intellij.openapi.progress.impl.ProgressManagerImpl
@@ -54,10 +57,7 @@ import org.rust.stdext.cleanDirectory
 import org.rust.stdext.waitForWithCheckCanceled
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.concurrent.Callable
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Future
+import java.util.concurrent.*
 
 interface MacroExpansionManager {
     val indexableDirectory: VirtualFile?
@@ -113,7 +113,8 @@ class MacroExpansionManagerImpl(
         PersistentState(inner?.save())
 
     override fun loadState(state: PersistentState) {
-        check(!isUnitTestMode)
+        // initialized manually at setUnitTestExpansionModeAndDirectory
+        if (isUnitTestMode) return
         dirs = updateDirs(state.directoryName)
     }
 
@@ -144,10 +145,17 @@ class MacroExpansionManagerImpl(
     override fun getExpansionFor(call: RsMacroCall): MacroExpansion? {
         val impl = inner
         return when {
+            call.macroName == "include" -> expandIncludeMacroCall(call)
             impl != null -> impl.getExpansionFor(call)
             isUnitTestMode -> expandMacroOld(call)
             else -> null
         }
+    }
+
+    private fun expandIncludeMacroCall(call: RsMacroCall): MacroExpansion? {
+        val includingFile = call.findIncludingFile() ?: return null
+        val items = includingFile.stubChildrenOfType<RsExpandedElement>()
+        return MacroExpansion.Items(includingFile, items)
     }
 
     override fun getExpandedFrom(element: RsExpandedElement): RsMacroCall? {
@@ -246,6 +254,18 @@ private class MacroExpansionServiceImplInner(
     }
 
     private val taskQueue = MacroExpansionTaskQueue(project)
+
+    /**
+     * We must use a separate pool because:
+     * 1. [ForkJoinPool.commonPool] is heavily used by the platform
+     * 2. [ForkJoinPool] can start execute a task when joining ([ForkJoinTask.get]) another task
+     * 3. the platform sometimes join ForkJoinTasks under read lock
+     * 4. for macro expansion it's critically important that tasks are executed without read lock.
+     *
+     * In short, use of [ForkJoinPool.commonPool] in this place leads to crashes.
+     * See [issue](https://github.com/intellij-rust/intellij-rust/issues/3966)
+     */
+    private val pool = Executors.newWorkStealingPool()
 
     private val dataFile: Path
         get() = dirs.dataFile
@@ -429,7 +449,7 @@ private class MacroExpansionServiceImplInner(
             if (!isExpansionModeNew) return
             val file = event.file as? RsFile ?: return
             val virtualFile = file.virtualFile ?: return
-            if (isExpansionFile(virtualFile)) return
+            if (virtualFile !is VirtualFileWithId || isExpansionFile(virtualFile)) return
 
             val element = when (event) {
                 is ChildAddition.After -> event.child
@@ -469,14 +489,6 @@ private class MacroExpansionServiceImplInner(
         private fun scheduleChangedMacrosUpdate(workspaceOnly: Boolean) {
             shouldProcessChangedMacrosOnWriteActionFinish += if (workspaceOnly) ChangedMacrosScope.WORKSPACE else ChangedMacrosScope.ALL
         }
-
-        // BACKCOMPAT 2018.3
-
-        override fun applicationExiting() = Unit
-        override fun beforeWriteActionStart(action: Any) = Unit
-        override fun afterWriteActionFinished(action: Any) = Unit
-        override fun writeActionStarted(action: Any) = Unit
-        override fun canExitApplication(): Boolean = true
     }
 
     private inner class MyFileDocumentManagerListener : FileDocumentManagerListener {
@@ -519,6 +531,7 @@ private class MacroExpansionServiceImplInner(
         class ProcessUnprocessedMacrosTask : MacroExpansionTaskBase(
             project,
             storage,
+            pool,
             dirs.expansionsDirVi.pathAsPath
         ) {
             override fun getMacrosToExpand(): Sequence<List<Extractable>> {
@@ -549,9 +562,14 @@ private class MacroExpansionServiceImplInner(
     private fun processChangedMacros(workspaceOnly: Boolean) {
         MACRO_LOG.trace("processChangedMacros")
         if (!isExpansionModeNew) return
+
+        // Fixes inplace rename when the renamed element is referenced from a macro call body
+        if (isTemplateActiveInAnyEditor()) return
+
         class ProcessModifiedMacrosTask(private val workspaceOnly: Boolean) : MacroExpansionTaskBase(
             project,
             storage,
+            pool,
             dirs.expansionsDirVi.pathAsPath
         ) {
             override fun getMacrosToExpand(): Sequence<List<Extractable>> {
@@ -566,6 +584,15 @@ private class MacroExpansionServiceImplInner(
         val task = ProcessModifiedMacrosTask(workspaceOnly)
 
         taskQueue.run(task)
+    }
+
+    private fun isTemplateActiveInAnyEditor(): Boolean {
+        val tm = TemplateManager.getInstance(project)
+        for (editor in FileEditorManager.getInstance(project).allEditors) {
+            if (editor is TextEditor && tm.getActiveTemplate(editor.editor) != null) return true
+        }
+
+        return false
     }
 
     fun ensureUpToDate() {
@@ -584,7 +611,7 @@ private class MacroExpansionServiceImplInner(
         }
 
         if (!call.isTopLevelExpansion || call.containingFile.virtualFile?.fileSystem !is LocalFileSystem) {
-            return expandMacroToMemoryFile(call)
+            return expandMacroToMemoryFile(call, storeRangeMap = true)
         }
 
         ensureUpToDate()
@@ -716,8 +743,7 @@ private class MacroExpansionTaskQueue(val project: Project) {
 
         @Synchronized
         fun cancel() {
-            val state = state
-            when (state) {
+            when (val state = state) {
                 State.Pending -> this.state = State.Canceled
                 is State.Running -> state.indicator.cancel()
                 State.Canceled -> Unit
@@ -748,14 +774,23 @@ private fun expandMacroOld(call: RsMacroCall): MacroExpansion? {
     if (call.containingCargoTarget?.pkg?.origin == PackageOrigin.STDLIB) {
         return null
     }
-    return expandMacroToMemoryFile(call)
+    return expandMacroToMemoryFile(
+        call,
+        // Old macros already consume too much memory, don't force them to consume more by range maps
+        storeRangeMap = isUnitTestMode // false
+    )
 }
 
-private fun expandMacroToMemoryFile(call: RsMacroCall): MacroExpansion? {
+private fun expandMacroToMemoryFile(call: RsMacroCall, storeRangeMap: Boolean): MacroExpansion? {
     val context = call.context as? RsElement ?: return null
     val def = call.resolveToMacro() ?: return null
     val project = call.project
-    val result = MacroExpander(project).expandMacro(def, call, RsPsiFactory(project))
+    val result = MacroExpander(project).expandMacro(
+        def,
+        call,
+        RsPsiFactory(project, markGenerated = false),
+        storeRangeMap
+    )
     result?.elements?.forEach {
         it.setContext(context)
         it.setExpandedFrom(call)

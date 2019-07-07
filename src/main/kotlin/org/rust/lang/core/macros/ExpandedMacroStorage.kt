@@ -10,14 +10,17 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.VirtualFileWithId
+import com.intellij.openapi.vfs.newvfs.FileAttribute
 import com.intellij.psi.PsiAnchor
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
 import com.intellij.psi.StubBasedPsiElement
 import com.intellij.reference.SoftReference
+import com.intellij.util.indexing.FileBasedIndexScanRunnableCollector
 import gnu.trove.TIntObjectHashMap
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.lang.RsFileType
@@ -36,6 +39,7 @@ import org.rust.stdext.HashCode
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.FileNotFoundException
+import java.lang.ref.WeakReference
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.zip.DeflaterOutputStream
@@ -109,7 +113,8 @@ class ExpandedMacroStorage(val project: Project) {
         oldInfo: ExpandedMacroInfo,
         callHash: HashCode?,
         defHash: HashCode?,
-        expansionFile: VirtualFile?
+        expansionFile: VirtualFile?,
+        ranges: RangeMap?
     ): ExpandedMacroInfo {
         checkWriteAccessAllowed()
 
@@ -134,6 +139,10 @@ class ExpandedMacroStorage(val project: Project) {
         }
 
         newInfo.expansionFile?.let { getOrCreateSourceFile(it) }
+
+        if (newInfo.expansionFile != null && ranges != null) {
+            newInfo.expansionFile.writeRangeMap(ranges)
+        }
 
         return newInfo
     }
@@ -189,13 +198,15 @@ class ExpandedMacroStorage(val project: Project) {
 
     companion object {
         private val LOG = Logger.getInstance(ExpandedMacroStorage::class.java)
-        private const val STORAGE_VERSION = 5
+        private const val STORAGE_VERSION = 6
+        const val RANGE_MAP_ATTRIBUTE_VERSION = 2
 
         fun load(project: Project, dataFile: Path): ExpandedMacroStorage? {
             return try {
                 DataInputStream(InflaterInputStream(Files.newInputStream(dataFile))).use { data ->
                     if (data.readInt() != STORAGE_VERSION) return null
                     if (data.readInt() != RsFileStub.Type.stubVersion) return null
+                    if (data.readInt() != RANGE_MAP_ATTRIBUTE_VERSION) return null
 
                     val sourceFilesSize = data.readInt()
                     val sourceFiles = ArrayList<SourceFile>(sourceFilesSize)
@@ -222,6 +233,7 @@ class ExpandedMacroStorage(val project: Project) {
             DataOutputStream(DeflaterOutputStream(Files.newOutputStream(dataFile))).use { data ->
                 data.writeInt(STORAGE_VERSION)
                 data.writeInt(RsFileStub.Type.stubVersion)
+                data.writeInt(RANGE_MAP_ATTRIBUTE_VERSION)
 
                 data.writeInt(storage.sourceFiles.size())
                 storage.sourceFiles.forEachValue { it.writeTo(data); true }
@@ -298,6 +310,18 @@ class SourceFile(
     fun rebind(calls: List<RsMacroCall>? = null) {
         checkReadAccessAllowed() // Needed to access PSI
         checkIsSmartMode(project)
+
+        val isIndexedFile = FileBasedIndexScanRunnableCollector.getInstance(project).shouldCollect(file) ||
+            project.macroExpansionManager.isExpansionFile(file)
+        if (!isIndexedFile) {
+            // The file is now outside of the project, so we should not access it.
+            // All infos of this file should be invalidated
+            for (info in infos) {
+                info.cachedMacroCall = null
+                info.stubIndex = -1
+            }
+            return
+        }
 
         if (isBoundToPsi()) {
             check(!fresh)
@@ -639,3 +663,34 @@ private fun calcStubIndex(psi: StubBasedPsiElement<*>): Int {
 
 private val VirtualFile.fileId: Int
     get() = (this as VirtualFileWithId).id
+
+/** We use [WeakReference] because uncached [loadRangeMap] is quite cheap */
+private val MACRO_RANGE_MAP_CACHE_KEY: Key<WeakReference<RangeMap>> = Key.create("MACRO_RANGE_MAP_CACHE_KEY")
+private val RANGE_MAP_ATTRIBUTE = FileAttribute(
+    "org.rust.macro.RangeMap",
+    ExpandedMacroStorage.RANGE_MAP_ATTRIBUTE_VERSION,
+    /*fixedSize = */ true // don't allocate extra space for each record
+)
+
+private fun VirtualFile.writeRangeMap(ranges: RangeMap) {
+    checkWriteAccessAllowed()
+
+    RANGE_MAP_ATTRIBUTE.writeAttribute(this).use {
+        ranges.writeTo(it)
+    }
+
+    if (getUserData(MACRO_RANGE_MAP_CACHE_KEY)?.get() != null) {
+        putUserData(MACRO_RANGE_MAP_CACHE_KEY, WeakReference(ranges))
+    }
+}
+
+fun VirtualFile.loadRangeMap(): RangeMap? {
+    checkReadAccessAllowed()
+
+    getUserData(MACRO_RANGE_MAP_CACHE_KEY)?.get()?.let { return it }
+
+    val data = RANGE_MAP_ATTRIBUTE.readAttribute(this) ?: return null
+    val ranges = RangeMap.readFrom(data)
+    putUserData(MACRO_RANGE_MAP_CACHE_KEY, WeakReference(ranges))
+    return ranges
+}

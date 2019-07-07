@@ -7,7 +7,11 @@ package org.rust.cargo.project.workspace
 
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.util.text.SemVer
 import org.jetbrains.annotations.TestOnly
+import org.rust.cargo.project.model.RustcInfo
+import org.rust.cargo.util.AutoInjectedCrates.CORE
+import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.cargo.util.StdLibType
 import org.rust.openapiext.CachedVirtualFile
 import org.rust.stdext.applyWithSymlink
@@ -27,12 +31,12 @@ interface CargoWorkspace {
     val workspaceRootPath: Path?
 
     val packages: Collection<Package>
-    fun findPackage(name: String): Package? = packages.find { it.name == name }
+    fun findPackage(name: String): Package? = packages.find { it.name == name || it.normName == name }
 
     fun findTargetByCrateRoot(root: VirtualFile): Target?
     fun isCrateRoot(root: VirtualFile) = findTargetByCrateRoot(root) != null
 
-    fun withStdlib(stdlib: StandardLibrary): CargoWorkspace
+    fun withStdlib(stdlib: StandardLibrary, rustcInfo: RustcInfo? = null): CargoWorkspace
     val hasStandardLibrary: Boolean get() = packages.any { it.origin == PackageOrigin.STDLIB }
 
     @TestOnly
@@ -70,18 +74,23 @@ interface CargoWorkspace {
         val normName: String get() = name.replace('-', '_')
 
         val kind: TargetKind
-        val crateTypes: List<CrateType>
 
-        val isLib: Boolean get() = kind == TargetKind.LIB
-        val isBin: Boolean get() = kind == TargetKind.BIN
-        val isExample: Boolean get() = kind == TargetKind.EXAMPLE
-        val isProcMacro: Boolean get() = CrateType.PROC_MACRO in crateTypes
+        val isLib: Boolean get() = kind is TargetKind.Lib
+        val isBin: Boolean get() = kind == TargetKind.Bin
+        val isExampleBin: Boolean get() = kind == TargetKind.ExampleBin
+        val isProcMacro: Boolean
+            get() {
+                val kind = kind
+                return kind is TargetKind.Lib && kind.kinds.contains(LibKind.PROC_MACRO)
+            }
 
         val crateRoot: VirtualFile?
 
         val pkg: Package
 
         val edition: Edition
+
+        val doctest: Boolean
     }
 
     interface Dependency {
@@ -89,18 +98,21 @@ interface CargoWorkspace {
         val name: String
     }
 
-    enum class TargetKind {
-        LIB, BIN, TEST, EXAMPLE, BENCH, UNKNOWN
+    sealed class TargetKind(val name: String) {
+        class Lib(val kinds: EnumSet<LibKind>) : TargetKind("lib") {
+            constructor(vararg kinds: LibKind) : this(EnumSet.copyOf(kinds.asList()))
+        }
+
+        object Bin : TargetKind("bin")
+        object Test : TargetKind("test")
+        object ExampleBin : TargetKind("example")
+        class ExampleLib(val kinds: EnumSet<LibKind>) : TargetKind("example")
+        object Bench : TargetKind("bench")
+        object Unknown : TargetKind("unknown")
     }
 
-    /**
-     * Represents possible variants of generated artifact binary
-     * corresponded to `--crate-type` compiler attribute
-     *
-     * See [linkage](https://doc.rust-lang.org/reference/linkage.html)
-     */
-    enum class CrateType {
-        BIN, LIB, DYLIB, STATICLIB, CDYLIB, RLIB, PROC_MACRO, UNKNOWN
+    enum class LibKind {
+        LIB, DYLIB, STATICLIB, CDYLIB, RLIB, PROC_MACRO, UNKNOWN
     }
 
     enum class Edition {
@@ -138,7 +150,7 @@ private class WorkspaceImpl(
     override fun findTargetByCrateRoot(root: VirtualFile): CargoWorkspace.Target? =
         root.applyWithSymlink { targetByCrateRootUrl[it.url] }
 
-    override fun withStdlib(stdlib: StandardLibrary): CargoWorkspace {
+    override fun withStdlib(stdlib: StandardLibrary, rustcInfo: RustcInfo?): CargoWorkspace {
         // This is a bit trickier than it seems required.
         // The problem is that workspace packages and targets have backlinks
         // so we have to rebuild the whole workspace from scratch instead of
@@ -152,7 +164,7 @@ private class WorkspaceImpl(
             manifestPath,
             workspaceRootPath,
             packages.map { it.asPackageData() } +
-                stdlib.crates.map { it.asPackageData }
+                stdlib.crates.map { it.asPackageData(rustcInfo) }
         )
 
         run {
@@ -261,8 +273,8 @@ private class PackageImpl(
             crateRootUrl = it.crateRootUrl,
             name = it.name,
             kind = it.kind,
-            crateTypes = it.crateTypes,
-            edition = it.edition
+            edition = it.edition,
+            doctest = it.doctest
         )
     }
 
@@ -273,8 +285,7 @@ private class PackageImpl(
 
     override val dependencies: MutableList<DependencyImpl> = ArrayList()
 
-    override fun toString()
-        = "Package(name='$name', contentRootUrl='$contentRootUrl')"
+    override fun toString() = "Package(name='$name', contentRootUrl='$contentRootUrl')"
 }
 
 
@@ -283,14 +294,13 @@ private class TargetImpl(
     val crateRootUrl: String,
     override val name: String,
     override val kind: CargoWorkspace.TargetKind,
-    override val crateTypes: List<CargoWorkspace.CrateType>,
-    override val edition: CargoWorkspace.Edition
+    override val edition: CargoWorkspace.Edition,
+    override val doctest: Boolean
 ) : CargoWorkspace.Target {
 
     override val crateRoot: VirtualFile? by CachedVirtualFile(crateRootUrl)
 
-    override fun toString(): String
-        = "Target(name='$name', kind=$kind, crateRootUrl='$crateRootUrl')"
+    override fun toString(): String = "Target(name='$name', kind=$kind, crateRootUrl='$crateRootUrl')"
 }
 
 private class DependencyImpl(override val pkg: PackageImpl, name: String? = null) : CargoWorkspace.Dependency {
@@ -311,8 +321,8 @@ private fun PackageImpl.asPackageData(edition: CargoWorkspace.Edition? = null): 
                 crateRootUrl = it.crateRootUrl,
                 name = it.name,
                 kind = it.kind,
-                crateTypes = it.crateTypes,
-                edition = edition ?: it.edition
+                edition = edition ?: it.edition,
+                doctest = it.doctest
             )
         },
         source = source,
@@ -320,21 +330,38 @@ private fun PackageImpl.asPackageData(edition: CargoWorkspace.Edition? = null): 
         edition = edition ?: this.edition
     )
 
-private val StandardLibrary.StdCrate.asPackageData
-    get() =
-        CargoWorkspaceData.Package(
-            id = id,
-            contentRootUrl = packageRootUrl,
+private fun StandardLibrary.StdCrate.asPackageData(rustcInfo: RustcInfo?): CargoWorkspaceData.Package {
+    val firstVersionWithEdition2018 = when (name) {
+        CORE -> RUST_1_36
+        STD -> RUST_1_35
+        else -> RUST_1_34
+    }
+
+    val currentRustcVersion = rustcInfo?.version?.semver
+    val edition = if (currentRustcVersion == null || currentRustcVersion < firstVersionWithEdition2018) {
+        CargoWorkspace.Edition.EDITION_2015
+    } else {
+        CargoWorkspace.Edition.EDITION_2018
+    }
+
+    return CargoWorkspaceData.Package(
+        id = id,
+        contentRootUrl = packageRootUrl,
+        name = name,
+        version = "",
+        targets = listOf(CargoWorkspaceData.Target(
+            crateRootUrl = crateRootUrl,
             name = name,
-            version = "",
-            targets = listOf(CargoWorkspaceData.Target(
-                crateRootUrl = crateRootUrl,
-                name = name,
-                kind = CargoWorkspace.TargetKind.LIB,
-                crateTypes = listOf(CargoWorkspace.CrateType.LIB),
-                edition = CargoWorkspace.Edition.EDITION_2015
-            )),
-            source = null,
-            origin = PackageOrigin.STDLIB,
-            edition = CargoWorkspace.Edition.EDITION_2015
-        )
+            kind = CargoWorkspace.TargetKind.Lib(CargoWorkspace.LibKind.LIB),
+            edition = edition,
+            doctest = true
+        )),
+        source = null,
+        origin = PackageOrigin.STDLIB,
+        edition = edition
+    )
+}
+
+private val RUST_1_34: SemVer = SemVer.parseFromText("1.34.0")!!
+private val RUST_1_35: SemVer = SemVer.parseFromText("1.35.0")!!
+private val RUST_1_36: SemVer = SemVer.parseFromText("1.36.0")!!

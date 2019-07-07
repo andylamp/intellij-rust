@@ -11,7 +11,7 @@
     <!-- TODO: create normal change note list -->
     <change-notes><![CDATA[
         <ul>
-            <li>New icon for general Toml files.</li>
+            <li>Support dotted keys introduced in Toml 0.5.0.</li>
         </ul>
     ]]>
     </change-notes>

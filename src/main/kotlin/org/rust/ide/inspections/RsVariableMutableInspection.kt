@@ -11,9 +11,9 @@ import com.intellij.psi.search.LocalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import org.rust.ide.inspections.fixes.RemoveMutableFix
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.ext.ancestorStrict
 import org.rust.lang.core.psi.ext.descendantsOfType
 import org.rust.lang.core.psi.ext.mutability
-import org.rust.lang.core.psi.ext.ancestorStrict
 import org.rust.lang.core.psi.ext.selfParameter
 
 class RsVariableMutableInspection : RsLocalInspectionTool() {
@@ -26,7 +26,7 @@ class RsVariableMutableInspection : RsLocalInspectionTool() {
                 if (ReferencesSearch.search(o, LocalSearchScope(block))
                     .asSequence()
                     .any { checkOccurrenceNeedMutable(it.element.parent) }) return
-                if (block.descendantsOfType<RsMacroExpr>().any { checkExprPosition(o, it) }) return
+                if (block.descendantsOfType<RsMacroCall>().any { checkExprPosition(o, it) }) return
                 holder.registerProblem(
                     o,
                     "Variable `${o.identifier.text}` does not need to be mutable",
@@ -35,11 +35,10 @@ class RsVariableMutableInspection : RsLocalInspectionTool() {
             }
         }
 
-    fun checkExprPosition(o: RsPatBinding, expr: RsMacroExpr) = o.textOffset < expr.textOffset
+    fun checkExprPosition(o: RsPatBinding, expr: RsMacroCall) = o.textOffset < expr.textOffset
 
     fun checkOccurrenceNeedMutable(occurrence: PsiElement): Boolean {
-        val parent = occurrence.parent
-        when (parent) {
+        when (val parent = occurrence.parent) {
             is RsUnaryExpr -> return parent.isMutable || parent.mul != null
             is RsBinaryExpr -> return parent.left == occurrence
             is RsMethodCall -> {

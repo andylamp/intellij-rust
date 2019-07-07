@@ -21,6 +21,7 @@ import org.rust.lang.core.types.regions.Region
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.stdext.buildMap
+import org.rust.stdext.intersects
 
 class RsPathReferenceImpl(
     element: RsPath
@@ -30,6 +31,15 @@ class RsPathReferenceImpl(
     override val RsPath.referenceAnchor: PsiElement get() = referenceNameElement
 
     override fun isReferenceTo(element: PsiElement): Boolean {
+        if (element is RsFieldDecl) return false
+
+        val path = this.element
+        if (element is RsNamedElement && !path.allowedNamespaces().intersects(element.namespaces)) return false
+
+        val isMember = element is RsAbstractable && element.owner.isImplOrTrait
+        if (isMember && (path.parent is RsUseSpeck || path.path == null && path.typeQual == null)) {
+            return false
+        }
         val target = resolve()
         return element.manager.areElementsEquivalent(target, element)
     }
@@ -37,16 +47,16 @@ class RsPathReferenceImpl(
     override fun advancedResolve(): BoundElement<RsElement>? =
         advancedMultiResolve().singleOrNull()
 
-    override fun advancedMultiResolve(): List<BoundElement<RsElement>> =
-        (element.parent as? RsPathExpr)?.let { it.inference?.getResolvedPaths(it)?.map { BoundElement(it) } }
-            ?: advancedCachedMultiResolve()
-
     override fun multiResolve(incompleteCode: Boolean): Array<out ResolveResult> {
         return advancedMultiResolve().toTypedArray()
     }
 
     override fun multiResolve(): List<RsNamedElement> =
         advancedMultiResolve().mapNotNull { it.element as? RsNamedElement }
+
+    private fun advancedMultiResolve(): List<BoundElement<RsElement>> =
+        (element.parent as? RsPathExpr)?.let { it.inference?.getResolvedPaths(it)?.map { BoundElement(it) } }
+            ?: advancedCachedMultiResolve()
 
     private fun advancedCachedMultiResolve(): List<BoundElement<RsElement>> {
         return RsResolveCache.getInstance(element.project)
@@ -64,11 +74,30 @@ class RsPathReferenceImpl(
     }
 }
 
+fun resolvePathRaw(path: RsPath, lookup: ImplLookup): List<ScopeEntry> {
+    return collectResolveVariantsAsScopeEntries(path.referenceName) {
+        processPathResolveVariants(lookup, path, false, it)
+    }
+}
+
 fun resolvePath(path: RsPath, lookup: ImplLookup = ImplLookup.relativeTo(path)): List<BoundElement<RsElement>> {
     val result = collectPathResolveVariants(path.referenceName) {
         processPathResolveVariants(lookup, path, false, it)
     }
 
+    return when (result.size) {
+        0 -> emptyList()
+        1 -> listOf(instantiatePathGenerics(path, result.single(), lookup))
+        else -> result
+    }
+}
+
+fun <T: RsElement> instantiatePathGenerics(
+    path: RsPath,
+    resolved: BoundElement<T>,
+    lookup: ImplLookup
+): BoundElement<T> {
+    val (element, subst) = resolved.downcast<RsGenericDeclaration>() ?: return resolved
     val typeArguments: List<Ty>? = run {
         val inAngles = path.typeArgumentList
         val fnSugar = path.valueParameterList
@@ -80,46 +109,54 @@ fun resolvePath(path: RsPath, lookup: ImplLookup = ImplLookup.relativeTo(path)):
             else -> null
         }
     }
-
     val regionArguments: List<Region>? = path.typeArgumentList?.lifetimeList?.map { it.resolve() }
-
     val outputArg = path.retType?.typeReference?.type
 
-    return result.map { boundElement ->
-        val (element, subst) = boundElement.downcast<RsGenericDeclaration>() ?: return@map boundElement
-
-        val assocTypes = run {
-            if (element is RsTraitItem) {
-                buildMap {
-                    // Iterator<Item=T>
-                    path.typeArgumentList?.assocTypeBindingList?.forEach { binding ->
-                        // We can't just use `binding.reference.resolve()` here because
-                        // resolving of an assoc type depends on a parent path resolve,
-                        // so we coming back here and entering the infinite recursion
-                        resolveAssocTypeBinding(element, binding)?.let { assoc ->
-                            binding.typeReference?.type?.let { put(assoc, it) }
-                        }
-
+    val assocTypes = run {
+        if (element is RsTraitItem) {
+            buildMap {
+                // Iterator<Item=T>
+                path.typeArgumentList?.assocTypeBindingList?.forEach { binding ->
+                    // We can't just use `binding.reference.resolve()` here because
+                    // resolving of an assoc type depends on a parent path resolve,
+                    // so we coming back here and entering the infinite recursion
+                    resolveAssocTypeBinding(element, binding)?.let { assoc ->
+                        binding.typeReference?.type?.let { put(assoc, it) }
                     }
 
-                    // Fn() -> T
-                    val outputParam = lookup.fnOnceOutput
-                    if (outputArg != null && outputParam != null) {
-                        put(outputParam, outputArg)
-                    }
                 }
-            } else {
-                emptyMap<RsTypeAlias, Ty>()
-            }
-        }
 
-        val typeParameters = element.typeParameters.map { TyTypeParameter.named(it) }
-        val regionParameters = element.lifetimeParameters.map { ReEarlyBound(it) }
-        val typeSubst = typeParameters.zip(typeArguments ?: typeParameters).toMap()
-        val regionSubst = regionParameters.zip(regionArguments ?: regionParameters).toMap()
-        val newSubst = Substitution(typeSubst, regionSubst)
-        BoundElement(element, subst + newSubst, assocTypes)
+                // Fn() -> T
+                val outputParam = lookup.fnOnceOutput
+                if (outputArg != null && outputParam != null) {
+                    put(outputParam, outputArg)
+                }
+            }
+        } else {
+            emptyMap<RsTypeAlias, Ty>()
+        }
     }
+
+    val parent = path.parent
+    // Generic arguments are optional in expression context, e.g.
+    // `let a = Foo::<u8>::bar::<u16>();` can be written as `let a = Foo::bar();`
+    // if it is possible to infer `u8` and `u16` during type inference
+    val areOptionalArgs = parent is RsExpr || parent is RsPath && parent.parent is RsExpr
+    val typeSubst = element.typeParameters.withIndex().associate { (i, param) ->
+        val paramTy = TyTypeParameter.named(param)
+        val value = typeArguments?.getOrNull(i) ?: if (!areOptionalArgs) {
+            // Args aren't optional and aren't present, so use either default argument
+            // from a definition `struct S<T=u8>(T);` or falling back to `TyUnknown`
+            param.typeReference?.type ?: TyUnknown
+        } else {
+            paramTy
+        }
+        paramTy to value
+    }
+    val regionParameters = element.lifetimeParameters.map { ReEarlyBound(it) }
+    val regionSubst = regionParameters.zip(regionArguments ?: regionParameters).toMap()
+    val newSubst = Substitution(typeSubst, regionSubst)
+    return BoundElement(resolved.element, subst + newSubst, assocTypes)
 }
 
 private fun resolveAssocTypeBinding(trait: RsTraitItem, binding: RsAssocTypeBinding): RsTypeAlias? =
@@ -157,6 +194,8 @@ private fun resolveThroughTypeAliases(boundElement: BoundElement<RsElement>): Bo
             ?.path?.reference?.advancedResolve()
             ?: break
         if (!visited.add(resolved.element)) return null
+        // Stop at `type S<T> = T;`
+        if (resolved.element is RsTypeParameter) break
         base = resolved.substitute(base.subst)
     }
     return base

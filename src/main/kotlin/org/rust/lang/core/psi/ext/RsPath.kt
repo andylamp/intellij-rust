@@ -10,20 +10,20 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.lang.core.macros.RsExpandedElement
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
-import org.rust.lang.core.psi.RsPath
-import org.rust.lang.core.psi.RsVis
-import org.rust.lang.core.psi.tokenSetOf
+import org.rust.lang.core.resolve.*
+import org.rust.lang.core.resolve.ref.RsMacroPathReferenceImpl
 import org.rust.lang.core.resolve.ref.RsPathReference
 import org.rust.lang.core.resolve.ref.RsPathReferenceImpl
 import org.rust.lang.core.stubs.RsPathStub
 
 private val RS_PATH_KINDS = tokenSetOf(IDENTIFIER, SELF, SUPER, CSELF, CRATE)
 
-val RsPath.hasColonColon: Boolean get() = stub?.hasColonColon ?: (coloncolon != null)
+val RsPath.hasColonColon: Boolean get() = greenStub?.hasColonColon ?: (coloncolon != null)
 val RsPath.hasCself: Boolean get() = kind == PathKind.CSELF
 val RsPath.kind: PathKind get() {
-    val stub = stub
+    val stub = greenStub
     if (stub != null) return stub.kind
     val child = node.findChildByType(RS_PATH_KINDS)
     return when (child?.elementType) {
@@ -53,20 +53,47 @@ enum class PathKind {
     CRATE
 }
 
+val RsPath.qualifier: RsPath?
+    get() {
+        path?.let { return it }
+        var ctx = context
+        while (ctx is RsPath) {
+            ctx = ctx.context
+        }
+        return (ctx as? RsUseSpeck)?.qualifier
+    }
+
+fun RsPath.allowedNamespaces(isCompletion: Boolean = false): Set<Namespace> = when (val parent = context) {
+    is RsPath, is RsTypeElement, is RsTraitRef, is RsStructLiteral -> TYPES
+    is RsUseSpeck -> when {
+        // use foo::bar::{self, baz};
+        //     ~~~~~~~~
+        // use foo::bar::*;
+        //     ~~~~~~~~
+        parent.useGroup != null || parent.isStarImport -> TYPES
+        // use foo::bar;
+        //     ~~~~~~~~
+        else -> TYPES_N_VALUES_N_MACROS
+    }
+    is RsPathExpr -> if (isCompletion) TYPES_N_VALUES else VALUES
+    else -> TYPES_N_VALUES
+}
+
 abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
                                  RsPath {
     constructor(node: ASTNode) : super(node)
 
     constructor(stub: RsPathStub, nodeType: IStubElementType<*, *>) : super(stub, nodeType)
 
-    override fun getReference(): RsPathReference = RsPathReferenceImpl(this)
+    override fun getReference(): RsPathReference =
+        if (parent is RsMacroCall) RsMacroPathReferenceImpl(this) else RsPathReferenceImpl(this)
 
     override val referenceNameElement: PsiElement
         get() = checkNotNull(identifier ?: self ?: `super` ?: cself ?: crate) {
             "Path must contain identifier: $this ${this.text} at ${this.containingFile.virtualFile.path}"
         }
 
-    override val referenceName: String get() = stub?.referenceName ?: super.referenceName
+    override val referenceName: String get() = greenStub?.referenceName ?: super.referenceName
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
 

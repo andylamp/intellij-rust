@@ -78,14 +78,17 @@ fun checkReadAccessNotAllowed() {
     check(!ApplicationManager.getApplication().isReadAccessAllowed)
 }
 
+fun checkIsDispatchThread() {
+    check(ApplicationManager.getApplication().isDispatchThread) {
+        "Should be invoked on the Swing dispatch thread"
+    }
+}
+
 fun checkIsBackgroundThread() {
     check(!ApplicationManager.getApplication().isDispatchThread) {
         "Long running operation invoked on UI thread"
     }
 }
-
-fun checkIsDispatchThread() =
-    ApplicationManager.getApplication().assertIsDispatchThread()
 
 fun checkIsSmartMode(project: Project) {
     if (DumbService.getInstance(project).isDumb) throw IndexNotReadyException.create()
@@ -154,15 +157,14 @@ fun saveAllDocuments() = FileDocumentManager.getInstance().saveAllDocuments()
  * This function saves all documents "as they are" (see [FileDocumentManager.saveDocumentAsIs]), but also fires that
  * these documents should be stripped later (when [saveAllDocuments] is called).
  */
-fun saveAllDocumentsAsTheyAre() {
-    checkWriteAccessAllowed()
+fun saveAllDocumentsAsTheyAre(reformatLater: Boolean = true) {
     val documentManager = FileDocumentManager.getInstance()
     val rustfmtWatcher = RustfmtWatcher.getInstance()
     rustfmtWatcher.withoutReformatting {
         for (document in documentManager.unsavedDocuments) {
             documentManager.saveDocumentAsIs(document)
             documentManager.stripDocumentLater(document)
-            rustfmtWatcher.reformatDocumentLater(document)
+            if (reformatLater) rustfmtWatcher.reformatDocumentLater(document)
         }
     }
 }
@@ -206,8 +208,15 @@ inline fun testAssert(action: () -> Boolean, lazyMessage: () -> Any) {
 fun <T> runWithCheckCanceled(callable: () -> T): T =
     ApplicationUtil.runWithCheckCanceled(callable, ProgressManager.getInstance().progressIndicator)
 
-fun <T> Project.computeWithCancelableProgress(title: String, supplier: () -> T): T =
-    ProgressManager.getInstance().runProcessWithProgressSynchronously<T, Exception>(supplier, title, true, this)
+fun <T> Project.computeWithCancelableProgress(title: String, supplier: () -> T): T {
+    if (isUnitTestMode) {
+        return supplier()
+    }
+    return ProgressManager.getInstance().runProcessWithProgressSynchronously<T, Exception>(supplier, title, true, this)
+}
+
+inline fun <T> UserDataHolderEx.getOrPut(key: Key<T>, defaultValue: () -> T): T =
+    getUserData(key) ?: putUserDataIfAbsent(key, defaultValue())
 
 inline fun <T> UserDataHolderEx.getOrPutSoft(key: Key<SoftReference<T>>, defaultValue: () -> T): T =
     getUserData(key)?.get() ?: run {
@@ -219,10 +228,7 @@ const val PLUGIN_ID: String = "org.rust.lang"
 
 fun plugin(): IdeaPluginDescriptor = PluginManager.getPlugin(PluginId.getId(PLUGIN_ID))!!
 
-// BACKCOMPAT: 2018.3
-@Suppress("DEPRECATION")
-val String.escaped: String
-    get() = StringUtil.escapeXml(this)
+val String.escaped: String get() = StringUtil.escapeXmlEntities(this)
 
 fun <T> runReadActionInSmartMode(project: Project, action: () -> T): T {
     ProgressManager.checkCanceled()

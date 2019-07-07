@@ -13,8 +13,8 @@ import org.rust.lang.core.psi.ext.descendantsOfType
 class RenameTest : RsTestBase() {
     fun `test function`() = doTest("spam", """
         mod a {
-            mod b {
-                fn /*caret*/foo() {}
+            pub mod b {
+                pub fn /*caret*/foo() {}
 
                 fn bar() {
                     foo()
@@ -35,8 +35,8 @@ class RenameTest : RsTestBase() {
         }
     """, """
         mod a {
-            mod b {
-                fn spam() {}
+            pub mod b {
+                pub fn spam() {}
 
                 fn bar() {
                     spam()
@@ -414,6 +414,16 @@ class RenameTest : RsTestBase() {
         val file = myFixture.configureFromTempProjectFile("foo.txt")
         myFixture.renameElement(file, "foo.rs")
     }
+
+    fun `test rename reference inside a macro call`() = doTest("Spam", """
+        macro_rules! foo { ($ i:item) => { $ i }; }
+        struct Foo;
+        foo! { type T = /*caret*/Foo; }
+    """, """
+        macro_rules! foo { ($ i:item) => { $ i }; }
+        struct Spam;
+        foo! { type T = Spam; }
+    """)
 
     private fun doTest(
         newName: String,

@@ -142,13 +142,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 .filterIsInstance<RsQualifiedNamedElement>()
                 .map { QualifiedNamedItem.ExplicitItem(it) }
 
-            val reexportedItems = RsReexportIndex.findReexportsByName(project, targetName, importContext.scope)
-                .asSequence()
-                .filter { !it.isStarImport }
-                .mapNotNull {
-                    val item = it.path?.reference?.resolve() as? RsQualifiedNamedElement ?: return@mapNotNull null
-                    QualifiedNamedItem.ReexportedItem(it, item)
-                }
+            val reexportedItems = getReexportedItems(project, targetName, importContext.scope)
 
             return (explicitItems + reexportedItems)
                 .filter(itemFilter)
@@ -158,6 +152,20 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 // check that result after import can be resolved and resolved element is suitable
                 // if no, don't add it in candidate list
                 .filter { canBeResolvedToSuitableItem(importingPathText, importContext, it.info) }
+        }
+
+        private fun getReexportedItems(
+            project: Project,
+            targetName: String,
+            scope: GlobalSearchScope
+        ): Sequence<QualifiedNamedItem.ReexportedItem> {
+            return RsReexportIndex.findReexportsByName(project, targetName, scope)
+                .asSequence()
+                .filter { !it.isStarImport }
+                .mapNotNull {
+                    val item = it.path?.reference?.resolve() as? RsQualifiedNamedElement ?: return@mapNotNull null
+                    QualifiedNamedItem.ReexportedItem(it, item)
+                }
         }
 
         /**
@@ -178,9 +186,17 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             val superMods = LinkedHashSet(scope.containingMod.superMods)
             val attributes = scope.stdlibAttributes
 
+            val searchScope = RsWithMacrosScope(project, RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project)))
             return traitsToImport
                 .asSequence()
-                .flatMap { QualifiedNamedItem.ExplicitItem(it).withModuleReexports(project).asSequence() }
+                .map { QualifiedNamedItem.ExplicitItem(it) }
+                .flatMap { traitItem ->
+                    val traitName = traitItem.itemName ?: return@flatMap sequenceOf(traitItem)
+                    val reexportedItems = getReexportedItems(project, traitName, searchScope)
+                        .filter { it.item == traitItem.item }
+                    sequenceOf(traitItem) + reexportedItems
+                }
+                .flatMap { it.withModuleReexports(project).asSequence() }
                 .mapNotNull { importItem -> importItem.toImportCandidate(superMods) }
                 .filterImportCandidates(attributes)
         }
@@ -193,12 +209,11 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             resolveResults: List<MethodResolveVariant>
         ): List<RsTraitItem>? {
             val traits = resolveResults.mapNotNull { variant ->
-                val source = variant.source
-                val trait = when (source) {
+                val trait = when (val source = variant.source) {
                     is TraitImplSource.ExplicitImpl -> {
                         val impl = source.value
                         if (impl.traitRef == null) return null
-                        impl.traitRef?.resolveToTrait ?: return@mapNotNull null
+                        impl.traitRef?.resolveToTrait() ?: return@mapNotNull null
                     }
                     is TraitImplSource.Derived -> source.value
                     is TraitImplSource.Collapsed -> source.value
@@ -217,6 +232,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         // but in our case `mod` is always same and `mod` needs only to get set of its super mods
         // so we pass `superMods` instead of `mod` for optimization
         private fun QualifiedNamedItem.canBeImported(superMods: LinkedHashSet<RsMod>): ImportInfo? {
+            check(superMods.isNotEmpty())
             if (item !is RsVisible) return null
 
             val ourSuperMods = this.superMods ?: return null
@@ -250,10 +266,16 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                     needInsertExternCrateItem, depth, crateRelativePath)
                 ourSuperMods to importInfo
             } else {
+                val targetMod = superMods.first()
+                val relativePath = if (targetMod.isEdition2018) {
+                    "crate::$crateRelativePath"
+                } else {
+                    crateRelativePath
+                }
                 // if current item is direct child of some ancestor of `mod` then it can be not public
-                if (parentMod == lca) return ImportInfo.LocalImportInfo(crateRelativePath)
+                if (parentMod == lca) return ImportInfo.LocalImportInfo(relativePath)
                 if (!isPublic) return null
-                ourSuperMods.takeWhile { it != lca }.dropLast(1) to ImportInfo.LocalImportInfo(crateRelativePath)
+                ourSuperMods.takeWhile { it != lca }.dropLast(1) to ImportInfo.LocalImportInfo(relativePath)
             }
             return if (shouldBePublicMods.all { it.isPublic }) return importInfo else null
         }
@@ -487,7 +509,7 @@ fun ImportCandidate.import(context: RsElement) {
         }
     }
     val prefix = when (relativeDepth) {
-        null -> if (info is ImportInfo.LocalImportInfo && isEdition2018) "crate::" else ""
+        null -> ""
         0 -> "self::"
         else -> "super::".repeat(relativeDepth)
     }

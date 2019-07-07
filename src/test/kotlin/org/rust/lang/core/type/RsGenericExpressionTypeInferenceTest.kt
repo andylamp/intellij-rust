@@ -1559,4 +1559,120 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let _: Box<[&Bar; 1]> = (Box::new([&Foo]));
         }                         //^ Box<[&Bar; 1]>
     """)
+
+    fun `test associated constant with complex type`() = testExpr("""
+        trait Tr<A> { const C: A; }
+        struct S<T>(T);
+        impl<T: Tr<T>> Tr<T> for S<T> {
+            const C: T = T::C;
+        }
+        struct X;
+        impl Tr<X> for X {
+            const C: X = X;
+        }
+        fn main() {
+            let a = S::<X>::C;
+            a;
+        } //^ X
+    """)
+
+    fun `test select trait with use alias`() = testExpr("""
+        #[lang = "deref"]
+        trait Deref { type Target; }
+        mod foo { pub use super::Deref as DerefAlias; }
+        struct A; struct B;
+        impl foo::DerefAlias for A { type Target = B; }
+        fn main() {
+            let b = *A;
+            b;
+        } //^ B
+    """)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/4026
+    fun `test struct field with associated type`() = testExpr("""
+        struct Foo<V: Trait> {
+            input: <V as Trait>::Item,
+        }
+        trait Trait { type Item; }
+        struct S; struct X;
+        impl Trait for S {
+            type Item = X;
+        }
+        fn main() {
+            let foo1 = Foo::<S> {
+                input: X,
+            };
+
+            foo1.input;
+        }      //^ X
+    """)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/4026
+    fun `test tuple struct field with associated type`() = testExpr("""
+        struct Foo<V: Trait>(<V as Trait>::Item);
+        trait Trait { type Item; }
+        struct S; struct X;
+        impl Trait for S {
+            type Item = X;
+        }
+        fn main() {
+            let foo1 = Foo::<S>(X);
+
+            foo1.0;
+        }      //^ X
+    """)
+
+    // Issue https://github.com/intellij-rust/intellij-rust/issues/3999
+    fun `test default type argument is not used in expression context 1`() = testExpr("""
+        struct S<T = X>(T);
+        struct X;
+        fn main() {
+            let a = S(1);
+            a;
+        } //^ S<i32>
+    """)
+
+    fun `test default type argument is not used in expression context 2`() = testExpr("""
+        struct S<T = X>(T);
+        struct X;
+        impl<T> S<T> {
+            fn new(t: T) -> S<T> { S(t) }
+        }
+        fn main() {
+            let a = S::new(1);
+            a;
+        } //^ S<i32>
+    """)
+
+    fun `test default type argument is not used in pat context`() = testExpr("""
+        struct S<T = X>(T);
+        struct X;
+        fn main() {
+            let S(a) = S(1);
+            a;
+        } //^ i32
+    """)
+
+    fun `test default type argument is used in type context 1`() = testExpr("""
+        struct S<T = X>(T);
+        struct X;
+        fn foo(s: S) {
+            s;
+        } //^ S<X>
+    """)
+
+    fun `test default type argument is used in type context 2`() = testExpr("""
+        struct S<T1 = X, T2 = Y>(T1, T2);
+        struct X; struct Y;
+        fn foo(s: S<u8>) {
+            s;
+        } //^ S<u8, Y>
+    """)
+
+    fun `test type argument is unknown if not passed`() = testExpr("""
+        struct S<T1, T2>(T1, T2);
+        fn foo(s: S<u8>) {
+            s;
+        } //^ S<u8, <unknown>>
+    """)
 }

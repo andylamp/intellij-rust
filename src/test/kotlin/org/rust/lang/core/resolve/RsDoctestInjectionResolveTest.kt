@@ -36,11 +36,44 @@ class RsDoctestInjectionResolveTest : RsResolveTestBase() {
     //- lib.rs
         /// ```
         /// extern crate dep_lib_target;
-        /// use dep_lib_target::bar;
-        ///                   //^ dep-lib/lib.rs
+        /// fn main() {
+        ///     use dep_lib_target::bar;
+        ///                       //^ dep-lib/lib.rs
+        /// }
         /// ```
         pub fn foo() {}
     //- dep-lib/lib.rs
         pub fn bar() {}
+    """)
+
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test macro`() = stubOnlyResolve("""
+    //- lib.rs
+        /// ```
+        /// #[macro_use]
+        /// extern crate test_package;
+        /// fn main() {
+        ///     foo!();
+        ///   //^ lib.rs
+        /// }
+        /// ```
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test extra extern crate`() = stubOnlyResolve("""
+    //- lib.rs
+        /// ```
+        /// extern crate test_package;
+        /// fn main() {
+        ///     use test_package::foo;
+        ///     foo();
+        ///   //^ lib.rs
+        /// }
+        /// ```
+        pub fn foo() {}
     """)
 }

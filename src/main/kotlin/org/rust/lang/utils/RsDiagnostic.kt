@@ -247,24 +247,28 @@ sealed class RsDiagnostic(
     class AccessError(
         element: PsiElement,
         private val errorCode: RsErrorCode,
-        private val itemType: String
+        private val itemType: String,
+        private val fix: MakePublicFix?
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
             errorCode,
-            "$itemType `${escapeString(element.text)}` is private"
+            "$itemType `${escapeString(element.text)}` is private",
+            fixes = listOfNotNull(fix)
         )
     }
 
     class StructFieldAccessError(
         element: PsiElement,
         private val fieldName: String,
-        private val structName: String
+        private val structName: String,
+        private val fix: MakePublicFix?
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
             E0616,
-            "Field `${escapeString(fieldName)}` of struct `${escapeString(structName)}` is private"
+            "Field `${escapeString(fieldName)}` of struct `${escapeString(structName)}` is private",
+            fixes = listOfNotNull(fix)
         )
     }
 
@@ -292,6 +296,16 @@ sealed class RsDiagnostic(
             ERROR,
             E0121,
             "The type placeholder `_` is not allowed within types on item signatures"
+        )
+    }
+
+    class ImplDropForNonAdtError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0120,
+            "Drop can be only implemented by structs and enums"
         )
     }
 
@@ -363,6 +377,18 @@ sealed class RsDiagnostic(
         }
     }
 
+    class IncorrectlyPlacedInlineAttr(
+        element: PsiElement,
+        private val attr: RsAttr
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0518,
+            "Attribute should be applied to function or closure",
+            fixes = listOf(RemoveAttrFix(attr))
+        )
+    }
+
     class TraitMissingUnsafeImplAttributeError(
         element: PsiElement,
         private val attrRequiringUnsafeImpl: String
@@ -396,6 +422,16 @@ sealed class RsDiagnostic(
         }
     }
 
+    class ImplBothCopyAndDropError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0184,
+            "Cannot implement both Copy and Drop"
+        )
+    }
+
     class DeclMissingFromTraitError(
         element: PsiElement,
         private val fn: RsFunction,
@@ -425,6 +461,21 @@ sealed class RsDiagnostic(
 
         private fun errorText(): String {
             return "Method `${fn.name}` has a `${selfParameter?.canonicalDecl}` declaration in the trait, but not in the impl"
+        }
+    }
+
+    class ExplicitCallToDrop(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0040,
+            errorText(),
+            fixes = listOf(ReplaceWithStdMemDropFix(element.parent)) // e.parent: fn's name -> RsMethodCall or RsCallExpr
+        )
+
+        private fun errorText(): String {
+            return "Explicit calls to `drop` are forbidden. Use `std::mem::drop` instead"
         }
     }
 
@@ -494,6 +545,29 @@ sealed class RsDiagnostic(
         )
     }
 
+    class DuplicateEnumDiscriminant(
+        element: PsiElement,
+        private val id: Long
+    ) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            E0081,
+            "Discriminant value `$id` already exists"
+        )
+    }
+
+    class ReprForEmptyEnumError(
+        val attr: RsAttr,
+        element: PsiElement = attr.metaItem.identifier ?: attr.metaItem
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0084,
+            "Enum with no variants can't have `repr` attribute",
+            fixes = listOf(RemoveAttrFix(attr))
+        )
+    }
+
     class DuplicateFieldError(
         element: PsiElement,
         private val fieldName: String
@@ -506,6 +580,41 @@ sealed class RsDiagnostic(
 
         private fun errorText(): String {
             return "Field `$fieldName` is already declared"
+        }
+    }
+
+    sealed class InvalidStartAttrError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        class ReturnMismatch(element: PsiElement) : RsDiagnostic(element) {
+            override fun prepare() = PreparedAnnotation(
+                ERROR,
+                E0132,
+                "Functions with a `start` attribute must return `isize`"
+            )
+        }
+
+        class InvalidOwner(element: PsiElement) : RsDiagnostic(element) {
+            override fun prepare() = PreparedAnnotation(
+                ERROR,
+                E0132,
+                "Start attribute can be placed only on functions"
+            )
+        }
+
+        class InvalidParam(
+            element: PsiElement,
+            private val num: Int = -1
+        ) : RsDiagnostic(element) {
+            override fun prepare() = PreparedAnnotation(
+                ERROR,
+                E0132,
+                "Functions with a `start` attribute must have " + when (num) {
+                    0 -> "`isize` as first parameter"
+                    1 -> "`*const *const u8` as second parameter"
+                    else -> "the following signature: `fn(isize, *const *const u8) -> isize`"
+                }
+            )
         }
     }
 
@@ -664,6 +773,26 @@ sealed class RsDiagnostic(
         )
     }
 
+    class ImplSizedError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0322,
+            "Explicit impls for the `Sized` trait are not permitted"
+        )
+    }
+
+    class ImplUnsizeError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0328,
+            "Explicit impls for the `Unsize` trait are not permitted"
+        )
+    }
+
     class ConstTraitFnError(
         element: PsiElement
     ) : RsDiagnostic(element) {
@@ -697,11 +826,7 @@ sealed class RsDiagnostic(
                 ERROR,
                 E0261,
                 errorText(),
-                fixes = if (CreateLifetimeParameterFromUsageFix.isAvailable(lifetime)) {
-                    listOf(CreateLifetimeParameterFromUsageFix(lifetime))
-                } else {
-                    emptyList()
-                }
+                fixes = listOfNotNull(CreateLifetimeParameterFromUsageFix.tryCreate(lifetime))
             )
         }
 
@@ -709,6 +834,21 @@ sealed class RsDiagnostic(
             val lifetimeText = escapeString(element.text)
             return "Use of undeclared lifetime name `$lifetimeText`"
         }
+    }
+
+    class InBandAndExplicitLifetimesError(
+        val lifetime: RsLifetime
+    ) : RsDiagnostic(lifetime) {
+        override fun prepare(): PreparedAnnotation {
+            return PreparedAnnotation(
+                ERROR,
+                E0688,
+                errorText(),
+                fixes = listOfNotNull(CreateLifetimeParameterFromUsageFix.tryCreate(lifetime))
+            )
+        }
+
+        private fun errorText(): String = "Cannot mix in-band and explicit lifetime definitions"
     }
 
     class TraitItemsMissingImplError(
@@ -783,9 +923,8 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val elementType = element.elementType
             // TODO: support other cases
-            return when (elementType) {
+            return when (val elementType = element.elementType) {
                 RsElementTypes.CRATE -> "`crate` in paths can only be used in start position"
                 else -> error("Unexpected element type: `$elementType`")
             }
@@ -816,6 +955,26 @@ sealed class RsDiagnostic(
         private fun errorText(): String {
             return "Wrong number of lifetime arguments: expected $expectedLifetimes, found $actualLifetimes"
         }
+    }
+
+    class ImplForNonAdtError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0118,
+            "Can impl only `struct`s, `enum`s, `union`s and trait objects"
+        )
+    }
+
+    class InclusiveRangeWithNoEndError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0586,
+            "inclusive ranges must be bounded at the end (`..=b` or `a..=b`)"
+        )
     }
 
     class CannotAssignToImmutable(
@@ -862,7 +1021,7 @@ sealed class RsDiagnostic(
             UNKNOWN_SYMBOL,
             E0583,
             "File not found for module `${modDecl.name}`",
-            fixes = listOf(AddModuleFileFix(modDecl, expandModuleFirst = false))
+            fixes = AddModuleFileFix.createFixes(modDecl, expandModuleFirst = false)
         )
     }
 
@@ -895,17 +1054,25 @@ sealed class RsDiagnostic(
             )
         }
     }
+
+    class ReprIntRequired(element: PsiElement) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0732,
+            "`#[repr(inttype)]` must be specified"
+        )
+    }
 }
 
 enum class RsErrorCode {
-    E0004, E0046, E0050, E0060, E0061, E0069,
-    E0106, E0107, E0121, E0124, E0133, E0185, E0186, E0198, E0199,
+    E0004, E0040, E0046, E0050, E0060, E0061, E0069, E0081, E0084,
+    E0106, E0107, E0118, E0120, E0121, E0124, E0132, E0133, E0184, E0185, E0186, E0198, E0199,
     E0200, E0201, E0202, E0261, E0262, E0263, E0277,
-    E0308, E0379, E0384,
+    E0308, E0322, E0328, E0379, E0384,
     E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0449, E0463,
-    E0569, E0583, E0594,
-    E0603, E0614, E0616, E0618, E0624, E0658, E0695,
-    E0704;
+    E0518, E0569, E0583, E0586, E0594,
+    E0603, E0614, E0616, E0618, E0624, E0658, E0688, E0695,
+    E0704, E0732;
 
     val code: String
         get() = toString()
