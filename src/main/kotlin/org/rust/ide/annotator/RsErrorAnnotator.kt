@@ -28,12 +28,15 @@ import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.resolve.namespaces
 import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.types.TraitRef
+import org.rust.lang.core.types.asTy
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.lang.utils.RsDiagnostic
 import org.rust.lang.utils.RsErrorCode
 import org.rust.lang.utils.addToHolder
+import org.rust.lang.utils.evaluation.ExprValue
+import org.rust.lang.utils.evaluation.RsConstExprEvaluator
 
 class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     override fun isForceHighlightParents(file: PsiFile): Boolean = file is RsFile
@@ -81,9 +84,45 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitContExpr(o: RsContExpr) = checkContExpr(holder, o)
             override fun visitAttr(o: RsAttr) = checkAttr(holder, o)
             override fun visitRangeExpr(o: RsRangeExpr) = checkRangeExpr(holder, o)
+            override fun visitTraitType(o: RsTraitType) = checkTraitType(holder, o)
         }
 
         element.accept(visitor)
+    }
+
+
+    private fun checkTraitType(holder: AnnotationHolder, traitType: RsTraitType) {
+        if (!traitType.isImpl) return
+        val invalidContext = traitType
+            .ancestors
+            .firstOrNull {
+                it !is RsTypeArgumentList && it.parent is RsPath ||
+                    it !is RsMembers && it.parent is RsImplItem ||
+                    it is RsFnPointerType ||
+                    it is RsWhereClause ||
+                    it is RsTypeParameterList ||
+                    it is RsFieldsOwner ||
+                    it is RsForeignModItem ||
+                    it is RsRetType && it.ancestorStrict<RsTraitOrImpl>()?.implementedTrait != null
+                // type alias and let expr are not included because
+                // they are planned to be allowed soon
+            }
+
+        if (invalidContext is RsTypeQual) {
+            RsDiagnostic.ImplTraitNotAllowedInPathParams(traitType).addToHolder(holder)
+        } else if (invalidContext != null) {
+            RsDiagnostic.ImplTraitNotAllowedHere(traitType).addToHolder(holder)
+        }
+
+        val outerImplOrStop = traitType
+            .ancestors
+            .drop(1)
+            .firstOrNull { (it is RsTraitType && it.isImpl) || it is RsAssocTypeBinding || it is RsExpr }
+
+        if (outerImplOrStop is RsTraitType) {
+            RsDiagnostic.NestedImplTraitNotAllowed(traitType).addToHolder(holder)
+        }
+
     }
 
     private fun checkEnumItem(holder: AnnotationHolder, o: RsEnumItem) {
@@ -119,10 +158,16 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         data class VariantInfo(val variant: RsEnumVariant, val alreadyReported: Boolean)
 
         var discrCounter = 0L
+        val reprType = (o.parent as? RsEnumItem)?.reprType ?: return
         val indexToVariantMap = hashMapOf<Long, VariantInfo>()
         for (variant in o.enumVariantList) {
-            val literal = variant.variantDiscriminant?.expr as? RsLitExpr
-            val int = literal?.integerValue
+            val expr = variant.variantDiscriminant?.expr
+            val int = if (expr != null) {
+                val result = RsConstExprEvaluator.evaluate(expr, reprType) as? ExprValue.Integer
+                result?.value ?: return
+            } else {
+                null
+            }
             val idx = int ?: discrCounter
             discrCounter = idx + 1
 
@@ -144,7 +189,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         checkNotCallingDrop(o, holder)
         val deepResolve = path.reference.deepResolve()
         val owner = deepResolve as? RsFieldsOwner ?: return
-        if (owner.tupleFields == null) {
+        if (owner.tupleFields == null && !owner.implLookup.isAnyFn(owner.asTy())) {
             RsDiagnostic.ExpectedFunction(o).addToHolder(holder)
         }
     }
@@ -663,10 +708,12 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
     private fun checkBreakExpr(holder: AnnotationHolder, expr: RsBreakExpr) {
         checkLabelReferenceOwner(holder, expr)
+        checkLabelRefOwnerPlacementCorrectness(holder, expr)
     }
 
     private fun checkContExpr(holder: AnnotationHolder, expr: RsContExpr) {
         checkLabelReferenceOwner(holder, expr)
+        checkLabelRefOwnerPlacementCorrectness(holder, expr)
     }
 
     private fun checkLabelReferenceOwner(holder: AnnotationHolder, expr: RsLabelReferenceOwner) {
@@ -683,6 +730,23 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         }
     }
 
+    // Detect E0267, E0268: break/continue used outside of loop
+    private fun checkLabelRefOwnerPlacementCorrectness(holder: AnnotationHolder, expr: RsLabelReferenceOwner) {
+        for (ancestor in expr.ancestors) {
+            // We are inside a loop, all is good
+            if (ancestor is RsLooplikeExpr) return
+            // let x = 'foo: { break 'foo: 1; }; is allowed (notice `'foo` label, without it would be invalid)
+            if (ancestor is RsBlockExpr && ancestor.labelDecl != null) return
+            // Reached the function definition - can't be in a loop
+            if (ancestor is RsFunction) break
+            if (ancestor is RsLambdaExpr) {
+                RsDiagnostic.LoopOnlyKeywordUsedInClosureError(expr.operator).addToHolder(holder)
+                return
+            }
+        }
+        // If we got here, we aren't inside a loop expr so emit an error
+        RsDiagnostic.LoopOnlyKeywordUsedOutsideOfLoopError(expr.operator).addToHolder(holder)
+    }
 
     private fun isInTraitImpl(o: RsVis): Boolean {
         val impl = o.parent?.parent?.parent

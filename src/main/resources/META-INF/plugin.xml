@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/06/20/changelog-100.html">
-                 https://intellij-rust.github.io/2019/06/20/changelog-100.html
+        <a href="https://intellij-rust.github.io/2019/07/08/changelog-101.html">
+                 https://intellij-rust.github.io/2019/07/08/changelog-101.html
     ]]>
     </change-notes>
 
@@ -26,6 +26,7 @@
     <depends optional="true" config-file="toml-only.xml">org.toml.lang</depends>
     <depends optional="true" config-file="copyright-only.xml">com.intellij.copyright</depends>
     <depends optional="true" config-file="duplicates-only.xml">com.intellij.modules.duplicatesDetector</depends>
+    <depends optional="true" config-file="coverage-only.xml">Coverage</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- although Rust module type is only created by IDEA, we need it in other IDEs as well
@@ -279,6 +280,11 @@
 
         <lang.inspectionSuppressor language="Rust"
                                    implementationClass="org.rust.ide.inspections.RsInspectionSuppressor"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="dyn keyword for trait object"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="org.rust.ide.inspections.RsTraitObjectInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Deprecated element"
@@ -546,6 +552,10 @@
         <!-- Intentions -->
 
         <intentionAction>
+            <className>org.rust.ide.intentions.ImplTraitToTypeParamIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
             <className>org.rust.ide.intentions.ExtractInlineModuleIntention</className>
             <category>Rust</category>
         </intentionAction>
@@ -701,7 +711,14 @@
             <className>org.rust.ide.intentions.addFmtStringArgument.AddFmtStringArgumentIntention</className>
             <category>Rust</category>
         </intentionAction>
-
+        <intentionAction>
+            <className>org.rust.ide.intentions.ConvertToStructIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ConvertToTupleIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -756,6 +773,7 @@
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsNamedElementIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsGotoClassIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsReexportIndex"/>
+        <stubIndex implementation="org.rust.lang.core.stubs.index.RsExternCrateReexportIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsFeatureIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsIncludeMacroIndex"/>
 
@@ -974,6 +992,9 @@
                 class="org.rust.lang.core.macros.ReexpandMacrosAction"
                 text="Re-expand all Rust macros">
         </action>
+
+        <action id="Rust.CreateNewGithubIssue"
+                class="org.rust.ide.actions.diagnostic.CreateNewGithubIssue"/>
     </actions>
 
 </idea-plugin>

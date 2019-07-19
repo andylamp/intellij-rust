@@ -49,7 +49,7 @@ interface RsInferenceData {
     fun getExpectedPathExprType(expr: RsPathExpr): Ty
     fun getExpectedDotExprType(expr: RsDotExpr): Ty
     fun getPatType(pat: RsPat): Ty
-    fun getResolvedPaths(expr: RsPathExpr): List<RsElement>
+    fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath>
 }
 
 /**
@@ -62,7 +62,7 @@ class RsInferenceResult(
     val patFieldTypes: MutableMap<RsPatField, Ty>,
     private val expectedPathExprTypes: Map<RsPathExpr, Ty>,
     private val expectedDotExprTypes: Map<RsDotExpr, Ty>,
-    private val resolvedPaths: Map<RsPathExpr, List<RsElement>>,
+    private val resolvedPaths: Map<RsPathExpr, List<ResolvedPath>>,
     private val resolvedMethods: Map<RsMethodCall, List<MethodResolveVariant>>,
     private val resolvedFields: Map<RsFieldLookup, List<RsElement>>,
     private val adjustments: Map<RsExpr, List<Adjustment>>,
@@ -92,7 +92,7 @@ class RsInferenceResult(
     override fun getExpectedDotExprType(expr: RsDotExpr): Ty =
         expectedDotExprTypes[expr] ?: TyUnknown
 
-    override fun getResolvedPaths(expr: RsPathExpr): List<RsElement> =
+    override fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath> =
         resolvedPaths[expr] ?: emptyList()
 
     fun getResolvedMethod(call: RsMethodCall): List<MethodResolveVariant> =
@@ -122,7 +122,7 @@ class RsInferenceContext(
     private val patFieldTypes: MutableMap<RsPatField, Ty> = hashMapOf()
     private val expectedPathExprTypes: MutableMap<RsPathExpr, Ty> = hashMapOf()
     private val expectedDotExprTypes: MutableMap<RsDotExpr, Ty> = hashMapOf()
-    private val resolvedPaths: MutableMap<RsPathExpr, List<RsElement>> = hashMapOf()
+    private val resolvedPaths: MutableMap<RsPathExpr, List<ResolvedPath>> = hashMapOf()
     private val resolvedMethods: MutableMap<RsMethodCall, List<MethodResolveVariant>> = hashMapOf()
     private val resolvedFields: MutableMap<RsFieldLookup, List<RsElement>> = hashMapOf()
     private val pathRefinements: MutableList<Pair<RsPathExpr, TraitRef>> = mutableListOf()
@@ -168,16 +168,8 @@ class RsInferenceContext(
                 is RsConstant -> element.typeReference?.type to element.expr
                 is RsArrayType -> TyInteger.USize to element.expr
                 is RsVariantDiscriminant -> {
-                    // A repr attribute like #[repr(u16)] changes the discriminant type of an enum
-                    // https://doc.rust-lang.org/nomicon/other-reprs.html#repru-repri
                     val enum = element.ancestorStrict<RsEnumItem>()
-                    val reprType = enum?.queryAttributes?.reprAttributes
-                        ?.flatMap { it.metaItemArgs?.metaItemList?.asSequence() ?: emptySequence() }
-                        ?.mapNotNull { it.name?.let { TyInteger.fromName(it) } }
-                        ?.lastOrNull()
-                        ?: TyInteger.ISize
-
-                    reprType to element.expr
+                    enum?.reprType to element.expr
                 }
                 is RsExpressionCodeFragment -> {
                     element.context?.inference?.let {
@@ -247,10 +239,11 @@ class RsInferenceContext(
 
     private fun performPathsRefinement(lookup: ImplLookup) {
         for ((path, traitRef) in pathRefinements) {
-            val fnName = resolvedPaths[path]?.firstOrNull()?.let { (it as? RsFunction)?.name }
-            lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()
-                ?.impl?.members?.functionList?.find { it.name == fnName }
-                ?.let { resolvedPaths[path] = listOf(it) }
+            val variant = resolvedPaths[path]?.firstOrNull() ?: continue
+            val fnName = (variant.element as? RsFunction)?.name
+            val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
+            val fn = impl.members?.functionList?.find { it.name == fnName } ?: continue
+            resolvedPaths[path] = listOf(ResolvedPath.AssocItem(fn, TraitImplSource.ExplicitImpl(impl)))
         }
         for ((call, traitRef) in methodRefinements) {
             val variant = resolvedMethods[call]?.firstOrNull() ?: continue
@@ -287,7 +280,7 @@ class RsInferenceContext(
         return expectedDotExprTypes[expr] ?: TyUnknown
     }
 
-    override fun getResolvedPaths(expr: RsPathExpr): List<RsElement> {
+    override fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath> {
         return resolvedPaths[expr] ?: emptyList()
     }
 
@@ -315,7 +308,7 @@ class RsInferenceContext(
         expectedDotExprTypes[psi] = ty
     }
 
-    fun writePath(path: RsPathExpr, resolved: List<RsElement>) {
+    fun writePath(path: RsPathExpr, resolved: List<ResolvedPath>) {
         resolvedPaths[path] = resolved
     }
 
@@ -725,6 +718,30 @@ fun Ty.lookupFutureOutputTy(lookup: ImplLookup): Ty {
         futureTrait,
         outputType
     ) ?: TyUnknown
+}
+
+sealed class ResolvedPath {
+    abstract val element: RsElement
+
+    class Item(override val element: RsElement) : ResolvedPath()
+
+    class AssocItem(
+        override val element: RsAbstractable,
+        val source: TraitImplSource
+    ) : ResolvedPath()
+
+    companion object {
+        fun from(entry: ScopeEntry): ResolvedPath? {
+            return if (entry is AssocItemScopeEntry) {
+                AssocItem(entry.element, entry.source)
+            } else {
+                entry.element?.let { Item(it) }
+            }
+        }
+
+        fun from(entry: AssocItemScopeEntry): ResolvedPath =
+            AssocItem(entry.element, entry.source)
+    }
 }
 
 object TypeInferenceMarks {

@@ -18,6 +18,7 @@ import org.rust.lang.core.stubs.index.*
 
 fun IndexSink.indexExternCrate(stub: RsExternCrateItemStub) {
     indexNamedStub(stub)
+    RsExternCrateReexportIndex.index(stub, this)
 }
 
 fun IndexSink.indexStructItem(stub: RsStructItemStub) {
@@ -52,6 +53,12 @@ fun IndexSink.indexTraitItem(stub: RsTraitItemStub) {
 
 fun IndexSink.indexImplItem(stub: RsImplItemStub) {
     RsImplIndex.index(stub, this)
+}
+
+fun IndexSink.indexTraitAlias(stub: RsTraitAliasStub) {
+    indexNamedStub(stub)
+    indexGotoClass(stub)
+    RsLangItemIndex.index(stub.psi, this)
 }
 
 fun IndexSink.indexFunction(stub: RsFunctionStub) {

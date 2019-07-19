@@ -13,12 +13,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.search.GlobalSearchScope
-import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates
 import org.rust.ide.injected.isDoctestInjection
-import org.rust.ide.search.RsCargoProjectScope
 import org.rust.ide.search.RsWithMacrosScope
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -29,6 +27,7 @@ import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
+import org.rust.lang.core.types.infer.ResolvedPath
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.TyPrimitive
 import org.rust.openapiext.Testmark
@@ -87,8 +86,17 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
 
         fun findApplicableContext(project: Project, path: RsPath): Context<RsPath>? {
             val basePath = path.basePath()
-            if (TyPrimitive.fromPath(basePath) != null) return null
-            if (basePath.reference.multiResolve().isNotEmpty()) return null
+
+            val isBasePathResolved = TyPrimitive.fromPath(basePath) != null ||
+                basePath.reference.multiResolve().isNotEmpty()
+
+            if (isBasePathResolved) {
+                // Despite the fact that path is (multi)resolved by our resolve engine, it can be unresolved from
+                // the view of the rust compiler. Specifically we resolve associated items even if corresponding
+                // trait is not in the scope, so here we suggest importing such traits
+
+                return findApplicableContextForAssocItemPath(path, project)
+            }
 
             if (path.ancestorStrict<RsUseSpeck>() != null) {
                 // Don't try to import path in use item
@@ -117,6 +125,18 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             if (results.isEmpty()) return Context(Unit, emptyList())
             val candidates = getImportCandidates(project, methodCall, results)?.toList() ?: return null
             return Context(Unit, candidates)
+        }
+
+        /** Import traits for type-related UFCS method calls and assoc items */
+        private fun findApplicableContextForAssocItemPath(path: RsPath, project: Project): Context<RsPath>? {
+            val parent = path.parent as? RsPathExpr ?: return null
+            val resolved = path.inference?.getResolvedPath(parent) ?: return null
+            val sources = resolved.map {
+                if (it !is ResolvedPath.AssocItem) return null
+                it.source
+            }
+            val candidates = getTraitImportCandidates(project, path, sources)?.toList() ?: return null
+            return Context(path, candidates)
         }
 
         /**
@@ -164,7 +184,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 .filter { !it.isStarImport }
                 .mapNotNull {
                     val item = it.path?.reference?.resolve() as? RsQualifiedNamedElement ?: return@mapNotNull null
-                    QualifiedNamedItem.ReexportedItem(it, item)
+                    QualifiedNamedItem.ReexportedItem.from(it, item)
                 }
         }
 
@@ -181,12 +201,19 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             scope: RsElement,
             resolvedMethods: List<MethodResolveVariant>
         ): Sequence<ImportCandidate>? {
-            val traitsToImport = collectTraitsToImport(scope, resolvedMethods) ?: return null
+            return getTraitImportCandidates(project, scope, resolvedMethods.map { it.source })
+        }
 
+        private fun getTraitImportCandidates(
+            project: Project,
+            scope: RsElement,
+            sources: List<TraitImplSource>
+        ): Sequence<ImportCandidate>? {
+            val traitsToImport = collectTraitsToImport(scope, sources) ?: return null
             val superMods = LinkedHashSet(scope.containingMod.superMods)
             val attributes = scope.stdlibAttributes
 
-            val searchScope = RsWithMacrosScope(project, RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project)))
+            val searchScope = RsWithMacrosScope(project, GlobalSearchScope.allScope(project))
             return traitsToImport
                 .asSequence()
                 .map { QualifiedNamedItem.ExplicitItem(it) }
@@ -206,14 +233,14 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
 
         private fun collectTraitsToImport(
             scope: RsElement,
-            resolveResults: List<MethodResolveVariant>
+            sources: List<TraitImplSource>
         ): List<RsTraitItem>? {
-            val traits = resolveResults.mapNotNull { variant ->
-                val trait = when (val source = variant.source) {
+            val traits = sources.mapNotNull { source ->
+                val trait = when (source) {
                     is TraitImplSource.ExplicitImpl -> {
                         val impl = source.value
-                        if (impl.traitRef == null) return null
-                        impl.traitRef?.resolveToTrait() ?: return@mapNotNull null
+                        val traitRef = impl.traitRef ?: return null
+                        traitRef.resolveToTrait() ?: return@mapNotNull null
                     }
                     is TraitImplSource.Derived -> source.value
                     is TraitImplSource.Collapsed -> source.value
@@ -234,19 +261,21 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         private fun QualifiedNamedItem.canBeImported(superMods: LinkedHashSet<RsMod>): ImportInfo? {
             check(superMods.isNotEmpty())
             if (item !is RsVisible) return null
+            val target = containingCargoTarget ?: return null
+            // filter out transitive dependencies
+            if (target.pkg.origin == PackageOrigin.TRANSITIVE_DEPENDENCY) return null
 
             val ourSuperMods = this.superMods ?: return null
             val parentMod = ourSuperMods.getOrNull(0) ?: return null
 
             // try to find latest common ancestor module of `parentMod` and `mod` in module tree
             // we need to do it because we can use direct child items of any super mod with any visibility
-            val lca = ourSuperMods.find { it in superMods }
+            val lca = ourSuperMods.find { it.modItem in superMods }
             val crateRelativePath = crateRelativePath ?: return null
 
             val (shouldBePublicMods, importInfo) = if (lca == null) {
                 if (!isPublic) return null
-                val target = containingCargoTarget ?: return null
-                val externCrateMod = ourSuperMods.last()
+                val externCrateMod = ourSuperMods.last().modItem
 
                 val externCrateWithDepth = superMods.withIndex().mapNotNull { (index, superMod) ->
                     val externCrateItem = superMod.stubChildrenOfType<RsExternCrateItem>()
@@ -277,7 +306,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 if (!isPublic) return null
                 ourSuperMods.takeWhile { it != lca }.dropLast(1) to ImportInfo.LocalImportInfo(relativePath)
             }
-            return if (shouldBePublicMods.all { it.isPublic }) return importInfo else null
+            return if (shouldBePublicMods.all { it.modItem.isPublic }) return importInfo else null
         }
 
         private fun canBeResolvedToSuitableItem(
@@ -618,7 +647,7 @@ data class ImportContext private constructor(
             project = project,
             mod = path.containingMod,
             superMods = LinkedHashSet(path.containingMod.superMods),
-            scope = RsWithMacrosScope(project, RsCargoProjectScope(project.cargoProjects, GlobalSearchScope.allScope(project))),
+            scope = RsWithMacrosScope(project, GlobalSearchScope.allScope(project)),
             ns = path.pathNamespace,
             attributes = path.stdlibAttributes,
             namespaceFilter = path.namespaceFilter(isCompletion)

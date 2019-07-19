@@ -546,9 +546,9 @@ sealed class RsDiagnostic(
     }
 
     class DuplicateEnumDiscriminant(
-        element: PsiElement,
+        variant: RsEnumVariant,
         private val id: Long
-    ) : RsDiagnostic(element) {
+    ) : RsDiagnostic(variant.variantDiscriminant?.expr ?: variant) {
         override fun prepare(): PreparedAnnotation = PreparedAnnotation(
             ERROR,
             E0081,
@@ -664,6 +664,26 @@ sealed class RsDiagnostic(
             val name = escapeString(fieldName)
             return "Lifetime name `$name` declared twice in the same scope"
         }
+    }
+
+    class LoopOnlyKeywordUsedInClosureError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0267,
+            "`${element.text}` cannot be used in closures, only inside `loop` and `while` blocks"
+        )
+    }
+
+    class LoopOnlyKeywordUsedOutsideOfLoopError(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0268,
+            "`${element.text}` may only be used inside `loop` and `while` blocks"
+        )
     }
 
     class DuplicateBindingError(
@@ -1062,16 +1082,43 @@ sealed class RsDiagnostic(
             "`#[repr(inttype)]` must be specified"
         )
     }
+
+    class ImplTraitNotAllowedHere(traitType: RsTraitType) : RsDiagnostic(traitType) {
+        override fun prepare(): PreparedAnnotation =
+            PreparedAnnotation(
+                ERROR,
+                E0562,
+                "`impl Trait` not allowed outside of function and inherent method return types"
+            )
+    }
+
+    class ImplTraitNotAllowedInPathParams(traitType: RsTraitType) : RsDiagnostic(traitType) {
+        override fun prepare(): PreparedAnnotation =
+            PreparedAnnotation(
+                ERROR,
+                E0667,
+                "`impl Trait` is not allowed in path parameters"
+            )
+    }
+
+    class NestedImplTraitNotAllowed(traitType: RsTraitType) : RsDiagnostic(traitType) {
+        override fun prepare(): PreparedAnnotation =
+            PreparedAnnotation(
+                ERROR,
+                E0666,
+                "nested `impl Trait` is not allowed"
+            )
+    }
 }
 
 enum class RsErrorCode {
     E0004, E0040, E0046, E0050, E0060, E0061, E0069, E0081, E0084,
     E0106, E0107, E0118, E0120, E0121, E0124, E0132, E0133, E0184, E0185, E0186, E0198, E0199,
-    E0200, E0201, E0202, E0261, E0262, E0263, E0277,
+    E0200, E0201, E0202, E0261, E0262, E0263, E0267, E0268, E0277,
     E0308, E0322, E0328, E0379, E0384,
     E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0449, E0463,
-    E0518, E0569, E0583, E0586, E0594,
-    E0603, E0614, E0616, E0618, E0624, E0658, E0688, E0695,
+    E0518, E0562, E0569, E0583, E0586, E0594,
+    E0603, E0614, E0616, E0618, E0624, E0658, E0666, E0667, E0688, E0695,
     E0704, E0732;
 
     val code: String

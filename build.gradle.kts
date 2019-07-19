@@ -35,8 +35,8 @@ val isAtLeast192 = platformVersion.toInt() >= 192
 
 plugins {
     idea
-    kotlin("jvm") version "1.3.30"
-    id("org.jetbrains.intellij") version "0.4.8"
+    kotlin("jvm") version "1.3.41"
+    id("org.jetbrains.intellij") version "0.4.9"
     id("org.jetbrains.grammarkit") version "2018.2.2"
     id("de.undercouch.download") version "3.4.3"
     id("net.saliman.properties") version "1.4.6"
@@ -139,6 +139,9 @@ allprojects {
                 // https://youtrack.jetbrains.com/issue/TW-16784
                 ignoreFailures = true
             }
+            if (hasProp("excludeTests")) {
+                exclude(prop("excludeTests"))
+            }
         }
     }
 }
@@ -167,6 +170,7 @@ project(":") {
         val plugins = mutableListOf(project(":intellij-toml"), "IntelliLang")
         if (baseIDE == "idea") {
             plugins += "copyright"
+            plugins += "coverage"
             if (isAtLeast192) {
                 plugins += "java"
             }
@@ -343,6 +347,17 @@ project(":duplicates") {
         if (isAtLeast192 && baseIDE == "idea") {
             setPlugins("java")
         }
+    }
+    dependencies {
+        compile(project(":"))
+        testCompile(project(":", "testOutput"))
+    }
+}
+
+project(":coverage") {
+    intellij {
+        version = ideaVersion
+        setPlugins("coverage")
     }
     dependencies {
         compile(project(":"))

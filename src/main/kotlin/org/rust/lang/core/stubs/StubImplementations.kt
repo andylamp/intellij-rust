@@ -36,7 +36,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 172
+        override fun getStubVersion(): Int = 174
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -87,6 +87,8 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "TRAIT_ITEM" -> RsTraitItemStub.Type
     "IMPL_ITEM" -> RsImplItemStub.Type
     "MEMBERS" -> RsPlaceholderStub.Type("MEMBERS", ::RsMembersImpl)
+    "TRAIT_ALIAS" -> RsTraitAliasStub.Type
+    "TRAIT_ALIAS_BOUNDS" -> RsPlaceholderStub.Type("TRAIT_ALIAS_BOUNDS", ::RsTraitAliasBoundsImpl)
 
     "FUNCTION" -> RsFunctionStub.Type
     "CONSTANT" -> RsConstantStub.Type
@@ -487,6 +489,30 @@ class RsImplItemStub(
             RsImplItemStub(parentStub, this)
 
         override fun indexStub(stub: RsImplItemStub, sink: IndexSink) = sink.indexImplItem(stub)
+    }
+}
+
+
+class RsTraitAliasStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    override val name: String?
+) : RsElementStub<RsTraitAlias>(parent, elementType), RsNamedStub {
+
+    object Type : RsStubElementType<RsTraitAliasStub, RsTraitAlias>("TRAIT_ALIAS") {
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
+            RsTraitAliasStub(parentStub, this, dataStream.readNameAsString())
+
+        override fun serialize(stub: RsTraitAliasStub, dataStream: StubOutputStream) {
+        }
+
+        override fun createPsi(stub: RsTraitAliasStub): RsTraitAlias =
+            RsTraitAliasImpl(stub, this)
+
+        override fun createStub(psi: RsTraitAlias, parentStub: StubElement<*>?) =
+            RsTraitAliasStub(parentStub, this, psi.name)
+
+        override fun indexStub(stub: RsTraitAliasStub, sink: IndexSink) = sink.indexTraitAlias(stub)
     }
 }
 
@@ -1149,8 +1175,7 @@ class RsExprStubType<PsiT : RsElement>(
     debugName: String,
     psiCtor: (RsPlaceholderStub, IStubElementType<*, *>) -> PsiT
 ) : RsPlaceholderStub.Type<PsiT>(debugName, psiCtor) {
-    override fun shouldCreateStub(node: ASTNode): Boolean =
-        shouldCreateExprStub(node)
+    override fun shouldCreateStub(node: ASTNode): Boolean = shouldCreateExprStub(node)
 }
 
 class RsLitExprStub(
@@ -1159,8 +1184,7 @@ class RsLitExprStub(
 ) : RsPlaceholderStub(parent, elementType) {
     object Type : RsStubElementType<RsLitExprStub, RsLitExpr>("LIT_EXPR") {
 
-        override fun shouldCreateStub(node: ASTNode): Boolean =
-            shouldCreateExprStub(node)
+        override fun shouldCreateStub(node: ASTNode): Boolean = shouldCreateExprStub(node)
 
         override fun serialize(stub: RsLitExprStub, dataStream: StubOutputStream) {
             stub.kind.serialize(dataStream)
@@ -1176,8 +1200,14 @@ class RsLitExprStub(
     }
 }
 
-private fun shouldCreateExprStub(node: ASTNode): Boolean =
-    createStubIfParentIsStub(node) && node.psi.ancestors.none { it is RsBlock && it.parent is RsFunction }
+private fun shouldCreateExprStub(node: ASTNode): Boolean {
+    if (!createStubIfParentIsStub(node)) return false
+    val element = node.psi.ancestors.firstOrNull {
+        val parent = it.parent
+        parent is RsItemElement || parent is RsMod
+    }
+    return element != null && !(element is RsBlock && element.parent is RsFunction)
+}
 
 class RsUnaryExprStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
@@ -1185,8 +1215,7 @@ class RsUnaryExprStub(
 ) : RsPlaceholderStub(parent, elementType) {
     object Type : RsStubElementType<RsUnaryExprStub, RsUnaryExpr>("UNARY_EXPR") {
 
-        override fun shouldCreateStub(node: ASTNode): Boolean =
-            createStubIfParentIsStub(node) && node.psi.parent?.parent !is RsFunction
+        override fun shouldCreateStub(node: ASTNode): Boolean = shouldCreateExprStub(node)
 
         override fun serialize(stub: RsUnaryExprStub, dataStream: StubOutputStream) {
             dataStream.writeEnum(stub.operatorType)

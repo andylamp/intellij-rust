@@ -62,6 +62,8 @@ data class RustToolchain(val location: Path) {
 
     fun rustfmt(): Rustfmt = Rustfmt(pathToExecutable(RUSTFMT))
 
+    fun grcov(): Grcov? = if (hasExecutable(GRCOV)) Grcov(pathToExecutable(GRCOV)) else null
+
     val isRustupAvailable: Boolean get() = hasExecutable(RUSTUP)
 
     val presentableLocation: String = pathToExecutable(CARGO).toString()
@@ -84,6 +86,7 @@ data class RustToolchain(val location: Path) {
         private const val CARGO = "cargo"
         private const val RUSTUP = "rustup"
         private const val XARGO = "xargo"
+        private const val GRCOV = "grcov"
 
         const val CARGO_TOML = "Cargo.toml"
         const val CARGO_LOCK = "Cargo.lock"
@@ -100,7 +103,8 @@ data class RustcVersion(
     val semver: SemVer,
     val host: String,
     val channel: RustChannel,
-    val commitHash: String?
+    val commitHash: String? = null,
+    val commitDate: String? = null
 )
 
 private fun scrapeRustcVersion(rustc: Path): RustcVersion? {
@@ -123,12 +127,14 @@ private fun scrapeRustcVersion(rustc: Path): RustcVersion? {
     val releaseRe = """release: (\d+\.\d+\.\d+)(.*)""".toRegex()
     val hostRe = "host: (.*)".toRegex()
     val commitHashRe = "commit-hash: ([A-Fa-f0-9]{40})".toRegex()
+    val commitDateRe = """commit-date: (\d{4}-\d{2}-\d{2})""".toRegex()
     val find = { re: Regex -> lines.mapNotNull { re.matchEntire(it) }.firstOrNull() }
 
     val releaseMatch = find(releaseRe) ?: return null
     val hostText = find(hostRe)?.groups?.get(1)?.value ?: return null
     val versionText = releaseMatch.groups[1]?.value ?: return null
     val commitHash = find(commitHashRe)?.groups?.get(1)?.value
+    val commitDate = find(commitDateRe)?.groups?.get(1)?.value
 
     val semVer = SemVer.parseFromText(versionText) ?: return null
 
@@ -139,7 +145,7 @@ private fun scrapeRustcVersion(rustc: Path): RustcVersion? {
         releaseSuffix.startsWith("-nightly") -> RustChannel.NIGHTLY
         else -> RustChannel.DEFAULT
     }
-    return RustcVersion(semVer, hostText, channel, commitHash)
+    return RustcVersion(semVer, hostText, channel, commitHash, commitDate)
 }
 
 private object Suggestions {

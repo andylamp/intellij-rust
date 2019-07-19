@@ -1644,6 +1644,73 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         }
     """)
 
+    fun `test expected function on a impl NotFn E0618`() = checkErrors("""
+        struct Foo;
+        trait NotFn<Args> {
+            type Output;
+            fn call(&self, args: Args) -> Self::Output;
+        }
+        impl NotFn<()> for Foo {
+            type Output = ();
+            fn call(&self, (): ()) {}
+        }
+        
+        fn bar() {
+            <error descr="Expected function, found `Foo` [E0618]">Foo</error>();
+        }
+    """)
+
+    fun `test expected function on a impl FnOnce E0618`() = checkErrors("""
+        struct Foo;
+        #[lang = "fn_once"]
+        trait FnOnce<Args> {
+            type Output;
+            fn call_once(self, args: Args) -> Self::Output;
+        }
+        impl FnOnce<()> for Foo {
+            type Output = ();
+            fn call_once(self, (): ()) {}
+        }
+        
+        fn bar() {
+            Foo();
+        }
+    """)
+
+    fun `test expected function on a impl FnMut E0618`() = checkErrors("""
+        struct Foo;
+        #[lang = "fn_mut"]
+        trait FnMut<Args> {
+            type Output;
+            fn call(&mut self, args: Args) -> Self::Output;
+        }
+        impl FnMut<()> for Foo {
+            type Output = ();
+            fn call(&mut self, (): ()) {}
+        }
+        
+        fn bar() {
+            Foo();
+        }
+    """)
+
+    fun `test expected function on a impl Fn E0618`() = checkErrors("""
+        struct Foo;
+        #[lang = "fn"]
+        trait Fn<Args> {
+            type Output;
+            fn call(&self, args: Args) -> Self::Output;
+        }
+        impl Fn<()> for Foo {
+            type Output = ();
+            fn call(&self, (): ()) {}
+        }
+        
+        fn bar() {
+            Foo();
+        }
+    """)
+
     @MockRustcVersion("1.34.0")
     fun `test label_break_value 1`() = checkErrors("""
         fn main() {
@@ -1693,24 +1760,24 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
     fun `test duplicate enum discriminant #1 E0081`() = checkErrors("""
         enum Bad {
             <error descr="Discriminant value `0` already exists [E0081]">X</error>,
-            <error descr="Discriminant value `0` already exists [E0081]">Y = 0</error>,
+            Y = <error descr="Discriminant value `0` already exists [E0081]">0</error>,
         }
     """)
 
     fun `test duplicate enum discriminant #2 E0081`() = checkErrors("""
         enum Bad {
-            <error descr="Discriminant value `3` already exists [E0081]">P = 3</error>,
+            P = <error descr="Discriminant value `3` already exists [E0081]">3</error>,
             Y = 0,
-            <error descr="Discriminant value `3` already exists [E0081]">X = 3</error>,
+            X = <error descr="Discriminant value `3` already exists [E0081]">3</error>,
         }
     """)
 
     fun `test duplicate enum discriminant #3 E0081`() = checkErrors("""
         enum Bad {
-            <error descr="Discriminant value `0` already exists [E0081]">X = 0</error>,
-            <error descr="Discriminant value `0` already exists [E0081]">Y = 0</error>,
-            <error descr="Discriminant value `0` already exists [E0081]">Z = 0</error>,
-            <error descr="Discriminant value `0` already exists [E0081]">W = 0</error>,
+            X = <error descr="Discriminant value `0` already exists [E0081]">0</error>,
+            Y = <error descr="Discriminant value `0` already exists [E0081]">0</error>,
+            Z = <error descr="Discriminant value `0` already exists [E0081]">0</error>,
+            W = <error descr="Discriminant value `0` already exists [E0081]">0</error>,
         }
     """)
 
@@ -1744,6 +1811,37 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
             X,
             Y = 2,
             Z
+        }
+    """)
+
+    fun `test duplicate enum discriminant const expr E0081`() = checkErrors("""
+                enum Bad {
+            X = <error descr="Discriminant value `3` already exists [E0081]">1 + 5 - 3</error>,
+            Y = <error descr="Discriminant value `3` already exists [E0081]">1 + 2</error>
+        }
+    """)
+
+    fun `test duplicate enum discriminant non-const expr E0081`() = checkErrors("""
+        fn foo() -> isize { 0 }
+        enum Good {
+            X = foo(),
+            Y = 0
+        }
+    """)
+
+    fun `test duplicate enum discriminant repr type valid range E0081`() = checkErrors("""
+        #[repr(i8)]
+        enum Bad {
+            X = <error descr="Discriminant value `-1` already exists [E0081]">-1</error>,
+            Y = <error descr="Discriminant value `-1` already exists [E0081]">-1</error>
+        }
+    """)
+
+    fun `test duplicate enum discriminant repr type invalid range E0081`() = checkErrors("""
+        #[repr(u8)]
+        enum Good {
+            X = -1,
+            Y = -1
         }
     """)
 
@@ -2110,6 +2208,211 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         impl <error descr="Explicit impls for the `Unsize` trait are not permitted [E0328]">Unsize</error> for Foo {}
     """)
 
+    fun `test nested impl Trait not allowed E0666`() = checkErrors("""
+        impl Trait<T>{}
+        
+        fn nested_in_return_bad() -> impl Trait<<error descr="nested `impl Trait` is not allowed [E0666]">impl Debug</error>> { panic!() }
+        
+        fn nested_in_argument_bad(arg: impl Trait<<error descr="nested `impl Trait` is not allowed [E0666]">impl Debug</error>>) {panic!()}
+        
+        fn allowed_in_assoc_type() -> impl Iterator<Item=impl Fn()> {
+            vec![|| println!("woot")].into_iter()
+        }
+    """)
+
+    fun `test impl Trait not allowed in path params E667`() = checkErrors("""
+        use std::fmt::Debug;
+        use std::option;
+        
+        fn parametrized_type_is_allowed() -> Option<impl Debug> {
+            Some(5i32)
+        }
+        
+        fn path_parametrized_type_is_allowed() -> option::Option<impl Debug> {
+            Some(5i32)
+        }
+        
+        fn projection_is_disallowed(x: impl Iterator) -> <<error descr="`impl Trait` is not allowed in path parameters [E0667]">impl Iterator</error>>::Item {
+        //~^ ERROR `impl Trait` is not allowed in path parameters
+            x.next().unwrap()
+        }
+        
+        fn projection_with_named_trait_is_disallowed(x: impl Iterator)
+            -> <<error descr="`impl Trait` is not allowed in path parameters [E0667]">impl Iterator</error> as Iterator>::Item
+        //~^ ERROR `impl Trait` is not allowed in path parameters
+        {
+            x.next().unwrap()
+        }
+        
+        fn projection_with_named_trait_inside_path_is_disallowed()
+            -> <::std::ops::Range<<error descr="`impl Trait` is not allowed in path parameters [E0667]">impl Debug</error>> as Iterator>::Item
+        //~^ ERROR `impl Trait` is not allowed in path parameters
+        {
+            (1i32..100).next().unwrap()
+        }
+        
+        fn projection_from_impl_trait_inside_dyn_trait_is_disallowed()
+            -> <dyn Iterator<Item = <error descr="`impl Trait` is not allowed in path parameters [E0667]">impl Debug</error>> as Iterator>::Item
+        //~^ ERROR `impl Trait` is not allowed in path parameters
+        {
+            panic!()
+        }
+        
+        fn main() {}
+            """)
+
+    fun `test impl Trait not allowed E0562`() = checkErrors("""
+        trait Debug{}
+        // Allowed
+        fn in_parameters(_: impl Debug) { panic!() }
+        
+        // Allowed
+        fn in_return() -> impl Debug { panic!() }
+        
+        // Allowed
+        fn in_adt_in_parameters(_: Vec<impl Debug>) { panic!() }
+        
+        // Allowed
+        fn in_adt_in_return() -> Vec<impl Debug> { panic!() }
+        
+        fn in_fn_parameter_in_parameters(_: fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>)) { panic!() }
+        
+        fn in_fn_return_in_parameters(_: fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>) { panic!() }
+        
+        fn in_fn_parameter_in_return() -> fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>) { panic!() }
+        
+        fn in_fn_return_in_return() -> fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> { panic!() }
+        
+        fn in_dyn_Fn_parameter_in_parameters(_: &dyn Fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>)) { panic!() }
+        
+        fn in_dyn_Fn_return_in_parameters(_: &dyn Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>) { panic!() }
+        
+        fn in_dyn_Fn_parameter_in_return() -> &'static dyn Fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>) { panic!() }
+        
+        fn in_dyn_Fn_return_in_return() -> &'static dyn Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> { panic!() }
+
+        fn in_impl_Fn_return_in_parameters(_: &impl Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]"><error descr="nested `impl Trait` is not allowed [E0666]">impl Debug</error></error>) { panic!() }
+        
+        fn in_impl_Fn_return_in_return() -> &'static impl Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]"><error descr="nested `impl Trait` is not allowed [E0666]">impl Debug</error></error> { panic!() }
+        
+        fn in_Fn_parameter_in_generics<F: Fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>)> (_: F) { panic!() }
+        
+        fn in_Fn_return_in_generics<F: Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>> (_: F) { panic!() }
+         
+        // Allowed
+        fn in_impl_Trait_in_parameters(_: impl Iterator<Item = impl Iterator>) { panic!() }
+        
+        // Allowed
+        fn in_impl_Trait_in_return() -> impl IntoIterator<Item = impl IntoIterator> {
+            vec![vec![0; 10], vec![12; 7], vec![8; 3]]
+        }
+        
+        struct InBraceStructField { x: <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> }
+        
+        struct InAdtInBraceStructField { x: Vec<<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>> }
+        
+        struct InTupleStructField(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>);
+        
+        enum InEnum {
+            InBraceVariant { x: <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> },
+            InTupleVariant(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>),
+        }
+        
+        // Allowed
+        trait InTraitDefnParameters {
+            fn in_parameters(_: impl Debug);
+        }
+        
+        trait InTraitDefnReturn {
+            fn in_return() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>;
+        }
+        
+        // Allowed and disallowed in trait impls
+        trait DummyTrait {
+//            type Out;
+            fn in_trait_impl_parameter(_: impl Debug);
+            fn in_trait_impl_return() -> Self::Out;
+        }
+        impl DummyTrait for () {
+//            type Out = impl Debug;
+            //~^ ERROR `impl Trait` not allowed outside of function and inherent method return types
+        
+            fn in_trait_impl_parameter(_: impl Debug) { }
+            // Allowed
+        
+            fn in_trait_impl_return() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> { () }
+            //~^ ERROR `impl Trait` not allowed outside of function and inherent method return types
+        }
+        
+        // Allowed
+        struct DummyType;
+        impl DummyType {
+            fn in_inherent_impl_parameters(_: impl Debug) { }
+            fn in_inherent_impl_return() -> impl Debug { () }
+        }
+        
+        // Disallowed
+        extern "C" {
+            fn in_foreign_parameters(_: <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>);
+        
+            fn in_foreign_return() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>;
+        }
+        
+        // Allowed
+        extern "C" fn in_extern_fn_parameters(_: impl Debug) {
+        }
+        
+        // Allowed
+        extern "C" fn in_extern_fn_return() -> impl Debug {
+            22
+        }
+        
+//        type InTypeAlias<R> = impl Debug;
+        //~^ ERROR `impl Trait` not allowed outside of function and inherent method return types
+        
+//        type InReturnInTypeAlias<R> = fn() -> impl Debug;
+        //~^ ERROR `impl Trait` not allowed outside of function and inherent method return types
+        
+        impl PartialEq<<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>> for () {
+        }
+        
+        impl PartialEq<()> for <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> {
+        }
+        
+        impl <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> {
+        }
+        
+        struct InInherentImplAdt<T> { t: T }
+        impl InInherentImplAdt<<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>> {
+        }
+        
+        fn in_fn_where_clause()
+            where <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>: Debug{
+        }
+        
+        fn in_adt_in_fn_where_clause()
+            where Vec<<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>>: Debug{
+        }
+        
+        fn in_trait_parameter_in_fn_where_clause<T>()
+            where T: PartialEq<<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>>{
+        }
+        
+        fn in_Fn_parameter_in_fn_where_clause<T>()
+            where T: Fn(<error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error>){
+        }
+        
+        fn in_Fn_return_in_fn_where_clause<T>()
+            where T: Fn() -> <error descr="`impl Trait` not allowed outside of function and inherent method return types [E0562]">impl Debug</error> {
+        }
+        
+        fn main() {
+//            let _in_local_variable: impl Fn() = || {};
+            //~^ ERROR `impl Trait` not allowed outside of function and inherent method return types
+            let _in_return_in_local_variable = || -> impl Fn() { || {} };
+        }
+    """)
+
     @MockRustcVersion("1.34.0")
     fun `test const generics E0658 1`() = checkErrors("""
         fn f<<error descr="const generics is experimental [E0658]">const C: i32</error>>() {}
@@ -2279,4 +2582,143 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         } 
     """)
 
+
+    fun `test break in closure E0267`() = checkErrors("""
+        fn foo() {
+            let x = || { <error descr="`break` cannot be used in closures, only inside `loop` and `while` blocks [E0267]">break</error>; };
+        }
+    """)
+
+    fun `test continue in closure E0267`() = checkErrors("""
+        fn foo() {
+            let x = || { <error descr="`continue` cannot be used in closures, only inside `loop` and `while` blocks [E0267]">continue</error>; };
+        }
+    """)
+
+    fun `test break without loop E0268`() = checkErrors("""
+        fn foo() {
+            <error descr="`break` may only be used inside `loop` and `while` blocks [E0268]">break</error>;
+        }
+    """)
+
+    fun `test continue without loop E0268`() = checkErrors("""
+        fn foo() {
+            <error descr="`continue` may only be used inside `loop` and `while` blocks [E0268]">continue</error>;
+        }
+    """)
+
+
+    fun `test break in loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            loop {
+                break;
+            }
+        }
+    """)
+
+    fun `test break in while loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            while true {
+                break;
+            }
+        }
+    """)
+
+    fun `test break in for loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            for _ in 0..3 {
+                break;
+            }
+        }
+    """)
+
+
+    fun `test continue in loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            loop {
+                continue;
+            }
+        }
+    """)
+
+    fun `test continue in while loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            while true {
+                continue;
+            }
+        }
+    """)
+
+    fun `test continue in for loop E0267, E0268`() = checkErrors("""
+        fn foo() {
+            for _ in 0..3 {
+                continue;
+            }
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test break in block with label E0268`() = checkErrors("""
+        #![feature(label_break_value)]
+        fn main() {
+            let a = 'foo: {
+                break 'foo 1;
+            };
+            println!("{}", a);
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test continue in block with label E0268`() = checkErrors("""
+        #![feature(label_break_value)]
+        fn main() {
+            let a = 'foo: {
+                continue 'foo; // This test should not report E0268; compiler reports E0696 instead
+            };
+            println!("{}", a);
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test nested blocks E0268`() = checkErrors("""
+       #![feature(label_break_value)]
+
+        fn main() {
+            let a = 'a: {
+                let b = {
+                    if true {
+                        break 'a 123
+                    } else {
+                        123
+                    }
+                };
+                b
+            };
+        } 
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test closure inside loop E0268`() = checkErrors("""
+        #![feature(label_break_value)]
+    
+        fn main() {
+            for i in 1..10 {        
+                let a = |x: i32| <error descr="`break` cannot be used in closures, only inside `loop` and `while` blocks [E0267]">break</error>;
+                1
+            };
+        }
+    """)
+
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test loop inside closure E0268`() = checkErrors("""
+        #![feature(label_break_value)]
+    
+        fn main() {
+            || {
+                for i in 1..10 {
+                    break;
+                }
+            };
+        }
+    """)
 }
