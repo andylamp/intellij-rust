@@ -146,6 +146,58 @@ class RsPathCompletionFromIndexTest : RsCompletionTestBase() {
         }
     """)
 
+    fun `test enum variant completion`() = doTestByText("""
+        enum Enum { V1 }
+
+        fn main() {
+            let a = V/*caret*/
+        }
+    """, """
+        use Enum::V1;
+
+        enum Enum { V1 }
+
+        fn main() {
+            let a = V1/*caret*/
+        }
+    """)
+
+    fun `test completion inside inline module`() = doTestByText("""
+        mod foo {
+            pub struct Bar;
+        }
+        mod baz {
+            fn x(x: Ba/*caret*/) {}
+        }
+    """, """
+        mod foo {
+            pub struct Bar;
+        }
+        mod baz {
+            use foo::Bar;
+
+            fn x(x: Bar/*caret*/) {}
+        }
+    """)
+
+    fun `test completion inside pub inline module`() = doTestByText("""
+        mod foo {
+            pub struct Bar;
+        }
+        pub mod baz {
+            fn x(x: Ba/*caret*/) {}
+        }
+    """, """
+        mod foo {
+            pub struct Bar;
+        }
+        pub mod baz {
+            use foo::Bar;
+
+            fn x(x: Bar/*caret*/) {}
+        }
+    """)
+
     fun `test insert handler`() = doTestByText("""
         mod foo {
             pub fn bar(x: i32) {}

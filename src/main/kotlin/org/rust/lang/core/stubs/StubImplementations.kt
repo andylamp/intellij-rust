@@ -36,7 +36,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 174
+        override fun getStubVersion(): Int = 179
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -144,6 +144,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "MACRO_CALL" -> RsMacroCallStub.Type
 
     "INCLUDE_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("INCLUDE_MACRO_ARGUMENT", ::RsIncludeMacroArgumentImpl)
+    "CONCAT_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("CONCAT_MACRO_ARGUMENT", ::RsConcatMacroArgumentImpl)
 
     "INNER_ATTR" -> RsInnerAttrStub.Type
     "OUTER_ATTR" -> RsPlaceholderStub.Type("OUTER_ATTR", ::RsOuterAttrImpl)
@@ -504,6 +505,9 @@ class RsTraitAliasStub(
             RsTraitAliasStub(parentStub, this, dataStream.readNameAsString())
 
         override fun serialize(stub: RsTraitAliasStub, dataStream: StubOutputStream) {
+            with(dataStream) {
+                writeName(stub.name)
+            }
         }
 
         override fun createPsi(stub: RsTraitAliasStub): RsTraitAlias =
@@ -534,6 +538,8 @@ class RsFunctionStub(
     val isExtern: Boolean get() = BitUtil.isSet(flags, EXTERN_MASK)
     val isVariadic: Boolean get() = BitUtil.isSet(flags, VARIADIC_MASK)
     val isAsync: Boolean get() = BitUtil.isSet(flags, ASYNC_MASK)
+    // Method resolve optimization: stub field access is much faster than PSI traversing
+    val hasSelfParameters: Boolean get() = BitUtil.isSet(flags, HAS_SELF_PARAMETER_MASK)
 
     object Type : RsStubElementType<RsFunctionStub, RsFunction>("FUNCTION") {
 
@@ -565,6 +571,7 @@ class RsFunctionStub(
             flags = BitUtil.set(flags, EXTERN_MASK, psi.isExtern)
             flags = BitUtil.set(flags, VARIADIC_MASK, psi.isVariadic)
             flags = BitUtil.set(flags, ASYNC_MASK, psi.isAsync)
+            flags = BitUtil.set(flags, HAS_SELF_PARAMETER_MASK, psi.hasSelfParameters)
             return RsFunctionStub(parentStub, this,
                 name = psi.name,
                 abiName = psi.abiName,
@@ -585,6 +592,7 @@ class RsFunctionStub(
         private val EXTERN_MASK: Int = makeBitMask(6)
         private val VARIADIC_MASK: Int = makeBitMask(7)
         private val ASYNC_MASK: Int = makeBitMask(8)
+        private val HAS_SELF_PARAMETER_MASK: Int = makeBitMask(9)
     }
 }
 
@@ -1076,7 +1084,7 @@ class RsMacroCallStub(
     object Type : RsStubElementType<RsMacroCallStub, RsMacroCall>("MACRO_CALL") {
         override fun shouldCreateStub(node: ASTNode): Boolean {
             val parent = node.psi.parent
-            return parent is RsMod || parent is RsMembers
+            return parent is RsMod || parent is RsMembers || parent is RsMacroExpr && createStubIfParentIsStub(node)
         }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =

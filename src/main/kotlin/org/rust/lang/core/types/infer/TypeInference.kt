@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.types.infer
 
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
@@ -26,7 +27,7 @@ import org.rust.stdext.zipValues
 fun inferTypesIn(element: RsInferenceContextOwner): RsInferenceResult {
     val items = element.knownItems
     val paramEnv = if (element is RsGenericDeclaration) ParamEnv.buildFor(element) else ParamEnv.EMPTY
-    val lookup = ImplLookup(element.project, items, paramEnv)
+    val lookup = ImplLookup(element.project, element.cargoProject, items, paramEnv)
     return recursionGuard(element, Computable { lookup.ctx.infer(element) })
         ?: error("Can not run nested type inference")
 }
@@ -45,11 +46,17 @@ sealed class Adjustment(val target: Ty) {
 interface RsInferenceData {
     fun getExprAdjustments(expr: RsExpr): List<Adjustment>
     fun getExprType(expr: RsExpr): Ty
-    fun getBindingType(binding: RsPatBinding): Ty
     fun getExpectedPathExprType(expr: RsPathExpr): Ty
     fun getExpectedDotExprType(expr: RsDotExpr): Ty
     fun getPatType(pat: RsPat): Ty
+    fun getPatFieldType(patField: RsPatField): Ty
     fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath>
+    fun getBindingType(binding: RsPatBinding): Ty =
+        when (val parent = binding.parent) {
+            is RsPat -> getPatType(parent)
+            is RsPatField -> getPatFieldType(parent)
+            else -> TyUnknown // impossible
+        }
 }
 
 /**
@@ -76,15 +83,11 @@ class RsInferenceResult(
     override fun getExprType(expr: RsExpr): Ty =
         exprTypes[expr] ?: TyUnknown
 
-    override fun getBindingType(binding: RsPatBinding): Ty =
-        when (val parent = binding.parent) {
-            is RsPat -> patTypes[parent]
-            is RsPatField -> patFieldTypes[parent]
-            else -> TyUnknown // impossible
-        } ?: TyUnknown
-
     override fun getPatType(pat: RsPat): Ty =
         patTypes[pat] ?: TyUnknown
+
+    override fun getPatFieldType(patField: RsPatField): Ty =
+        patFieldTypes[patField] ?: TyUnknown
 
     override fun getExpectedPathExprType(expr: RsPathExpr): Ty =
         expectedPathExprTypes[expr] ?: TyUnknown
@@ -113,6 +116,7 @@ class RsInferenceResult(
  * A mutable object, which is filled while we walk function body top down.
  */
 class RsInferenceContext(
+    val project: Project,
     val lookup: ImplLookup,
     val items: KnownItems
 ) : RsInferenceData {
@@ -151,7 +155,7 @@ class RsInferenceContext(
         }
     }
 
-    inline fun <T: Any> commitIfNotNull(action: () -> T?): T? {
+    inline fun <T : Any> commitIfNotNull(action: () -> T?): T? {
         val snapshot = startSnapshot()
         val result = action()
         if (result == null) snapshot.rollback() else snapshot.commit()
@@ -243,13 +247,15 @@ class RsInferenceContext(
             val fnName = (variant.element as? RsFunction)?.name
             val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
             val fn = impl.members?.functionList?.find { it.name == fnName } ?: continue
-            resolvedPaths[path] = listOf(ResolvedPath.AssocItem(fn, TraitImplSource.ExplicitImpl(impl)))
+            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(project, impl))
+            resolvedPaths[path] = listOf(ResolvedPath.AssocItem(fn, source))
         }
         for ((call, traitRef) in methodRefinements) {
             val variant = resolvedMethods[call]?.firstOrNull() ?: continue
             val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
             val fn = impl.members?.functionList?.find { it.name == variant.name } ?: continue
-            resolvedMethods[call] = listOf(variant.copy(element = fn, source = TraitImplSource.ExplicitImpl(impl)))
+            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(project, impl))
+            resolvedMethods[call] = listOf(variant.copy(element = fn, source = source))
         }
     }
 
@@ -261,15 +267,12 @@ class RsInferenceContext(
         return exprTypes[expr] ?: TyUnknown
     }
 
-    override fun getBindingType(binding: RsPatBinding): Ty =
-        when (val parent = binding.parent) {
-            is RsPat -> patTypes[parent]
-            is RsPatField -> patFieldTypes[parent]
-            else -> TyUnknown // impossible
-        } ?: TyUnknown
-
     override fun getPatType(pat: RsPat): Ty {
         return patTypes[pat] ?: TyUnknown
+    }
+
+    override fun getPatFieldType(patField: RsPatField): Ty {
+        return patFieldTypes[patField] ?: TyUnknown
     }
 
     override fun getExpectedPathExprType(expr: RsPathExpr): Ty {
@@ -658,18 +661,76 @@ class RsInferenceContext(
             .flatMap { it.obligations.asSequence() + Obligation(recursionDepth, Predicate.Trait(it.value)) }
     }
 
+    fun instantiateBounds(
+        element: RsGenericDeclaration,
+        selfTy: Ty? = null,
+        typeParameters: Substitution = emptySubstitution
+    ): Substitution {
+        val map = run {
+            val map = element
+                .generics
+                .associateWith { typeVarForParam(it) }
+                .let { if (selfTy != null) it + (TyTypeParameter.self() to selfTy) else it }
+            typeParameters + map.toTypeSubst()
+        }
+        instantiateBounds(element.bounds, map).forEach(fulfill::registerPredicateObligation)
+        return map
+    }
+
     /** Checks that [selfTy] satisfies all trait bounds of the [impl] */
     fun canEvaluateBounds(impl: RsImplItem, selfTy: Ty): Boolean {
         val ff = FulfillmentContext(this, lookup)
-        val subst = impl.generics.associate { it to typeVarForParam(it) }.toTypeSubst()
+        val subst = impl.generics.associateWith { typeVarForParam(it) }.toTypeSubst()
         return probe {
             instantiateBounds(impl.bounds, subst).forEach(ff::registerPredicateObligation)
             impl.typeReference?.type?.substitute(subst)?.let { combineTypes(selfTy, it) }
             ff.selectUntilError()
         }
     }
-}
 
+    fun instantiateMethodOwnerSubstitution(
+        callee: AssocItemScopeEntryBase<*>,
+        methodCall: RsMethodCall? = null
+    ): Substitution = when (val source = callee.source) {
+        is TraitImplSource.ExplicitImpl -> {
+            val impl = source.value
+            val typeParameters = instantiateBounds(impl)
+            source.type?.substitute(typeParameters)?.let { combineTypes(callee.selfTy, it) }
+            if (callee.element.owner is RsAbstractableOwner.Trait) {
+                source.implementedTrait?.substitute(typeParameters)?.subst ?: emptySubstitution
+            } else {
+                typeParameters
+            }
+        }
+        is TraitImplSource.TraitBound -> lookup.getEnvBoundTransitivelyFor(callee.selfTy)
+            .find { it.element == source.value }?.subst ?: emptySubstitution
+
+        is TraitImplSource.Derived -> emptySubstitution
+
+        is TraitImplSource.Object -> when (val selfTy = callee.selfTy) {
+            is TyAnon -> selfTy.getTraitBoundsTransitively()
+                .find { it.element == source.value }?.subst ?: emptySubstitution
+            is TyTraitObject -> selfTy.trait.flattenHierarchy
+                .find { it.element == source.value }?.subst ?: emptySubstitution
+            else -> emptySubstitution
+        }
+        is TraitImplSource.Collapsed, is TraitImplSource.Hardcoded -> {
+            // Method has been resolved to a trait, so we should add a predicate
+            // `Self : Trait<Args>` to select args and also refine method path if possible.
+            // Method path refinement needed if there are multiple impls of the same trait to the same type
+            val trait = source.value as RsTraitItem
+            val typeParameters = instantiateBounds(trait)
+            val subst = trait.generics.associateBy { it }.toTypeSubst()
+            val boundTrait = BoundElement(trait, subst).substitute(typeParameters)
+            val traitRef = TraitRef(callee.selfTy, boundTrait)
+            fulfill.registerPredicateObligation(Obligation(Predicate.Trait(traitRef)))
+            if (methodCall != null) {
+                registerMethodRefinement(methodCall, traitRef)
+            }
+            typeParameters
+        }
+    }
+}
 
 val RsGenericDeclaration.generics: List<TyTypeParameter>
     get() = typeParameters.map { TyTypeParameter.named(it) }

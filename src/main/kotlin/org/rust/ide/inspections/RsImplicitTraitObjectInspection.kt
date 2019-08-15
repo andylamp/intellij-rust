@@ -18,31 +18,34 @@ import org.rust.lang.core.psi.ext.dyn
 import org.rust.lang.core.psi.ext.isEdition2018
 import org.rust.lang.core.resolve.ref.deepResolve
 
-class RsTraitObjectInspection : RsLocalInspectionTool() {
-    override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor = object : RsVisitor() {
-        override fun visitTypeReference(typeReference: RsTypeReference) {
-            if (!typeReference.isEdition2018) return
+class RsImplicitTraitObjectInspection : RsLocalInspectionTool() {
+    override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor =
+        object : RsVisitor() {
+            override fun visitTypeReference(typeReference: RsTypeReference) {
+                if (!typeReference.isEdition2018) return
 
-            if (typeReference.baseType?.path?.reference?.deepResolve() is RsTraitItem
-                || typeReference.traitType?.run { dyn == null && impl == null } == true
-            ) {
+                val traitType = typeReference.traitType
+                val baseTypePath = typeReference.baseType?.path
+                val isTraitType = traitType != null || baseTypePath?.reference?.deepResolve() is RsTraitItem
+                val isSelf = baseTypePath?.cself != null
+                val hasDyn = traitType?.dyn != null
+                val hasImpl = traitType?.impl != null
+                if (!isTraitType || isSelf || hasDyn || hasImpl) return
+
                 holder.registerProblem(
                     typeReference,
-                    "Trait objects without explicit 'dyn' are deprecated",
-//                    ProblemHighlightType.WEAK_WARNING,
+                    "Trait objects without an explicit 'dyn' are deprecated",
                     object : LocalQuickFix {
-                        override fun getFamilyName(): String = "Add dyn keyword to trait object"
+                        override fun getFamilyName(): String = "Add 'dyn' keyword to trait object"
 
                         override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
                             val target = descriptor.psiElement as RsTypeReference
-                            val traitText = target.baseType?.path?.text
-                                ?: target.traitType!!.text
+                            val traitText = target.baseType?.path?.text ?: target.traitType!!.text
                             val new = RsPsiFactory(project).createDynTraitType(traitText)
                             target.firstChild.replace(new)
                         }
-                    })
-
+                    }
+                )
             }
         }
-    }
 }

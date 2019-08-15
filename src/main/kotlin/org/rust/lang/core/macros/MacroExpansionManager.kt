@@ -620,9 +620,10 @@ private class MacroExpansionServiceImplInner(
 
     fun getExpandedFrom(element: RsExpandedElement): RsMacroCall? {
         checkReadAccessAllowed()
-        if (element.stubParent is RsFile /*TODO*/) {
-            val file = element.containingFile.virtualFile ?: return null
-            if (isExpansionFile(file)) {
+        val parent = element.stubParent
+        if (parent is RsFile) {
+            val file = parent.virtualFile ?: return null
+            if (file is VirtualFileWithId) {
                 return storage.getInfoForExpandedFile(file)?.getMacroCall()
             }
         }
@@ -726,12 +727,8 @@ private class MacroExpansionTaskQueue(val project: Project) {
             }
 
             val indicator = when {
-                ApplicationManager.getApplication().isHeadlessEnvironment ->
-                    EmptyProgressIndicator()
-
-                task is MacroExpansionTaskBase && task.isProgressBarDelayed ->
-                    DelayedBackgroundableProcessIndicator(task, 2000)
-
+                isHeadlessEnvironment -> EmptyProgressIndicator()
+                task is MacroExpansionTaskBase && task.isProgressBarDelayed -> DelayedBackgroundableProcessIndicator(task, 2000)
                 else -> BackgroundableProcessIndicator(task)
             }
 

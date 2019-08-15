@@ -45,10 +45,7 @@ import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.foldTyTypeParameterWith
 import org.rust.lang.core.types.infer.substitute
 import org.rust.lang.core.types.ty.*
-import org.rust.openapiext.Testmark
-import org.rust.openapiext.hitOnFalse
-import org.rust.openapiext.isUnitTestMode
-import org.rust.openapiext.toPsiFile
+import org.rust.openapiext.*
 import org.rust.stdext.buildList
 
 // IntelliJ Rust name resolution algorithm.
@@ -461,7 +458,7 @@ private fun processUnqualifiedPathResolveVariants(
     }
 
     val containingMod = path.containingMod
-    val crateRoot = path.crateRoot
+    val crateRoot = containingMod.crateRoot
     /** Path starts with `::` */
     val hasColonColon = path.hasColonColon
     if (!hasColonColon) {
@@ -471,7 +468,7 @@ private fun processUnqualifiedPathResolveVariants(
             if (referenceName.startsWith(MACRO_CRATE_IDENTIFIER_PREFIX) && path.isExpandedFromMacro) {
                 val crate = referenceName.removePrefix(MACRO_CRATE_IDENTIFIER_PREFIX)
                 val result = if (crate == "self") {
-                    processor.lazy(referenceName) { path.crateRoot }
+                    if (crateRoot != null) processor(referenceName, crateRoot) else false
                 } else {
                     processExternCrateResolveVariants(path, false) {
                         if (it.name == crate) processor.lazy(referenceName) { it.element } else false
@@ -488,6 +485,8 @@ private fun processUnqualifiedPathResolveVariants(
         }
     }
 
+    val isEdition2018 = (crateRoot ?: containingMod).isEdition2018
+
     // In 2015 edition a path is crate-relative (global) if it's inside use item,
     // inside "visibility restriction" or if it starts with `::`
     // ```rust, edition2015
@@ -499,7 +498,6 @@ private fun processUnqualifiedPathResolveVariants(
     // In 2018 edition a path is crate-relative if it starts with `crate::` (handled above)
     // or if it's inside "visibility restriction". `::`-qualified path on 2018 edition means that
     // such path is a name of some dependency crate (that should be resolved without `extern crate`)
-    val isEdition2018 = path.isEdition2018
     val isCrateRelative = !isEdition2018 && (hasColonColon || path.contextStrict<RsUseItem>() != null)
         || path.contextStrict<RsVisRestriction>() != null
     // see https://doc.rust-lang.org/edition-guide/rust-2018/module-system/path-clarity.html#the-crate-keyword-refers-to-the-current-crate
@@ -528,7 +526,7 @@ private fun processTypeQualifiedPathResolveVariants(
         fun(e: AssocItemScopeEntry): Boolean {
             if (e.element !is RsTypeAlias) return processor(e)
 
-            val implementedTrait = e.source.value.implementedTrait
+            val implementedTrait = e.source.implementedTrait
                 ?.foldTyTypeParameterWith { TyInfer.TyVar(it) }
                 ?: return processor(e)
 
@@ -1092,7 +1090,11 @@ private fun processFieldDeclarations(struct: RsFieldsOwner, processor: RsResolve
 private fun processMethodDeclarationsWithDeref(lookup: ImplLookup, receiver: Ty, processor: RsMethodResolveProcessor): Boolean {
     return lookup.coercionSequence(receiver).withIndex().any { (i, ty) ->
         val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, _, source) ->
-            element is RsFunction && element.isMethod && processor(MethodResolveVariant(name, element, ty, i, source))
+            // We intentionally use `hasSelfParameters` instead of `isMethod` because we already know that
+            // it is an associated item and so if it is a function with self parameter - it is a method.
+            // Also, this place is very hot and `hasSelfParameters` is cheaper than `isMethod`
+            element is RsFunction && element.hasSelfParameters &&
+                processor(MethodResolveVariant(name, element, ty, i, source))
         }
         processAssociatedItems(lookup, ty, VALUES, methodProcessor)
     }
@@ -1129,12 +1131,12 @@ private fun processAssociatedItems(
          * which are not implemented.
          */
         fun processMembersWithDefaults(accessor: (RsMembers) -> List<RsAbstractable>): Boolean {
-            val directlyImplemented = traitOrImpl.value.members?.let { accessor(it) }.orEmpty()
+            val directlyImplemented = traitOrImpl.members?.let { accessor(it) }.orEmpty()
             if (directlyImplemented.any { inherentProcessor(it) }) return true
 
             if (traitOrImpl is TraitImplSource.ExplicitImpl) {
                 val direct = directlyImplemented.map { it.name }.toSet()
-                val membersFromTrait = traitOrImpl.value.implementedTrait?.element?.members ?: return false
+                val membersFromTrait = traitOrImpl.implementedTrait?.element?.members ?: return false
                 for (member in accessor(membersFromTrait)) {
                     if (member.name !in direct && inherentProcessor(member)) return true
                 }
@@ -1152,7 +1154,7 @@ private fun processAssociatedItems(
         return false
     }
 
-    val (inherent, traits) = lookup.findImplsAndTraits(type).partition { it is TraitImplSource.ExplicitImpl && it.value.traitRef == null }
+    val (inherent, traits) = lookup.findImplsAndTraits(type).partition { it is TraitImplSource.ExplicitImpl && it.isInherent }
     if (inherent.any { processTraitOrImpl(it, true) }) return true
     if (traits.any { processTraitOrImpl(it, false) }) return true
     return false
@@ -1177,7 +1179,7 @@ private fun processLexicalDeclarations(
     ipm: ItemProcessingMode,
     processor: RsResolveProcessor
 ): Boolean {
-    check(cameFrom.context == scope)
+    testAssert { cameFrom.context == scope }
 
     fun processPattern(pattern: RsPat, processor: RsResolveProcessor): Boolean {
         val boundNames = PsiTreeUtil.findChildrenOfType(pattern, RsPatBinding::class.java)
@@ -1211,7 +1213,7 @@ private fun processLexicalDeclarations(
 
         is RsTypeAlias -> {
             if (processAll(scope.typeParameters, processor)) return true
-            if (processAll(scope.constParameters, processor)) return true
+            if (Namespace.Values in ns && processAll(scope.constParameters, processor)) return true
         }
 
         is RsStructItem,
@@ -1219,7 +1221,7 @@ private fun processLexicalDeclarations(
         is RsTraitOrImpl -> {
             scope as RsGenericDeclaration
             if (processAll(scope.typeParameters, processor)) return true
-            if (processAll(scope.constParameters, processor)) return true
+            if (Namespace.Values in ns && processAll(scope.constParameters, processor)) return true
             if (processor("Self", scope)) return true
             if (scope is RsImplItem) {
                 scope.traitRef?.let { traitRef ->
@@ -1334,7 +1336,9 @@ fun processNestedScopesUpwards(
 
     val prelude = findPrelude(scopeStart)
     if (prelude != null) {
-        val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
+        // XXX: fix prelude items resolve on the nightly. Revert it to `v -> v.name !in prevScope`
+        //   after cfg attrs support or when `#[cfg(bootstrap)]` will be removed from the prelude
+        val preludeProcessor: (ScopeEntry) -> Boolean = { v -> prevScope.add(v.name) && processor(v) }
         return processItemDeclarationsWithCache(prelude, ns, preludeProcessor, ItemProcessingMode.WITHOUT_PRIVATE_IMPORTS)
     }
 

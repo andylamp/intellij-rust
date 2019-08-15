@@ -7,26 +7,19 @@ package org.rust.lang.core.psi.ext
 
 import com.intellij.extapi.psi.ASTWrapperPsiElement
 import com.intellij.extapi.psi.StubBasedPsiElementBase
-import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.ASTNode
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiFileSystemItem
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
-import org.rust.ide.injected.isDoctestInjection
 import org.rust.lang.core.completion.getOriginalOrSelf
 import org.rust.lang.core.psi.RsConstant
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.rustFile
-import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.VALUES
 import org.rust.lang.core.resolve.processNestedScopesUpwards
 import org.rust.openapiext.toPsiFile
@@ -40,52 +33,31 @@ interface RsElement : PsiElement {
     val crateRoot: RsMod?
 }
 
-val CARGO_WORKSPACE = Key.create<CargoWorkspace>("CARGO_WORKSPACE")
-
 val RsElement.cargoProject: CargoProject?
-    get() = contextualFile.originalFile.findCargoProject()
+    get() = (contextualFile.originalFile as? RsFile)?.cargoProject
 
 val RsElement.cargoWorkspace: CargoWorkspace?
-    get() {
-        val psiFile = contextualFile.originalFile
-        psiFile.virtualFile?.getInjectedFromIfDoctestInjection(project)?.cargoWorkspace?.let { return it }
-        psiFile.getUserData(CARGO_WORKSPACE)?.let { return it }
-        return psiFile.findCargoProject()?.workspace
-    }
+    get() = (contextualFile.originalFile as? RsFile)?.cargoWorkspace
 
 fun PsiFileSystemItem.findCargoProject(): CargoProject? {
+    if (this is RsFile) return this.cargoProject
     val vFile = virtualFile ?: return null
-    vFile.getInjectedFromIfDoctestInjection(project)?.let { return (it as? PsiFile)?.findCargoProject() }
     return project.cargoProjects.findProjectForFile(vFile)
 }
 
 fun PsiFileSystemItem.findCargoPackage(): CargoWorkspace.Package? {
+    if (this is RsFile) return this.cargoTarget?.pkg
     val vFile = virtualFile ?: return null
-    vFile.getInjectedFromIfDoctestInjection(project)?.let { return (it as? PsiFile)?.findCargoPackage() }
     return project.cargoProjects.findPackageForFile(vFile)
 }
 
 val RsElement.containingCargoTarget: CargoWorkspace.Target?
-    get() {
-        val ws = cargoWorkspace ?: return null
-        val root = crateRoot ?: return null
-        val file = root.contextualFile.originalFile.virtualFile ?: return null
-        return ws.findTargetByCrateRoot(
-            file.getInjectedFromIfDoctestInjection(project)?.crateRoot?.contextualFile?.originalFile?.virtualFile
-                ?: file
-        )
-    }
+    get() = (contextualFile.originalFile as? RsFile)?.cargoTarget
 
 val RsElement.containingCargoPackage: CargoWorkspace.Package? get() = containingCargoTarget?.pkg
 
 val PsiElement.isEdition2018: Boolean
     get() = contextOrSelf<RsElement>()?.containingCargoTarget?.edition == CargoWorkspace.Edition.EDITION_2018
-
-/** @see org.rust.ide.injected.RsDoctestLanguageInjector */
-private fun VirtualFile.getInjectedFromIfDoctestInjection(project: Project): RsFile? {
-    if (!isDoctestInjection(project)) return null
-    return ((this as? VirtualFileWindow)?.delegate?.toPsiFile(project) as? RsFile)
-}
 
 /**
  * It is possible to match value with constant-like element, e.g.
@@ -117,7 +89,7 @@ abstract class RsElementImpl(node: ASTNode) : ASTWrapperPsiElement(node), RsElem
             ?: error("Element outside of module: $text")
 
     final override val crateRoot: RsMod?
-        get() = (context as? RsElement)?.crateRoot
+        get() = (contextualFile as? RsElement)?.crateRoot
 }
 
 abstract class RsStubbedElementImpl<StubT : StubElement<*>> : StubBasedPsiElementBase<StubT>, RsElement {
@@ -131,13 +103,10 @@ abstract class RsStubbedElementImpl<StubT : StubElement<*>> : StubBasedPsiElemen
             ?: error("Element outside of module: $text")
 
     final override val crateRoot: RsMod?
-        get() = (context as? RsElement)?.crateRoot
+        get() = (contextualFile as? RsElement)?.crateRoot
 
     override fun toString(): String = "${javaClass.simpleName}($elementType)"
 }
-
-val RsElement.implLookup: ImplLookup
-    get() = ImplLookup.relativeTo(this)
 
 fun RsElement.findInScope(name: String): PsiElement? {
     var resolved: PsiElement? = null

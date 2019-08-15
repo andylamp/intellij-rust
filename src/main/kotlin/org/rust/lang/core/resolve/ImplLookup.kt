@@ -6,6 +6,7 @@
 package org.rust.lang.core.resolve
 
 import com.intellij.openapi.project.Project
+import org.rust.cargo.project.model.CargoProject
 import org.rust.lang.core.macros.MacroExpansionMode
 import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.*
@@ -19,8 +20,9 @@ import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.core.types.ty.TyFloat.F32
 import org.rust.lang.core.types.ty.TyFloat.F64
 import org.rust.lang.core.types.ty.TyInteger.*
-import org.rust.openapiext.ProjectCache
+import org.rust.lang.utils.CargoProjectCache
 import org.rust.openapiext.testAssert
+import org.rust.stdext.Cache
 import org.rust.stdext.buildList
 import kotlin.LazyThreadSafetyMode.NONE
 
@@ -103,25 +105,39 @@ val HARDCODED_FROM_IMPLS_MAP: Map<TyPrimitive, List<TyPrimitive>> = run {
 sealed class TraitImplSource {
     abstract val value: RsTraitOrImpl
 
+    open val implementedTrait: BoundElement<RsTraitItem>? get() = value.implementedTrait
+    open val members: RsMembers? get() = value.members
+
     val impl: RsImplItem?
         get() = (this as? ExplicitImpl)?.value
 
     /** An impl block, directly defined in the code */
-    data class ExplicitImpl(override val value: RsImplItem): TraitImplSource()
+    data class ExplicitImpl(private val cachedImpl: RsCachedImplItem) : TraitImplSource() {
+        override val value: RsImplItem get() = cachedImpl.impl
+        val isInherent: Boolean get() = cachedImpl.traitRef == null
+        override val implementedTrait: BoundElement<RsTraitItem>? get() = cachedImpl.implementedTrait
+        override val members: RsMembers? get() = cachedImpl.membres
+        val type: Ty? get() = cachedImpl.typeAndGenerics?.first
+    }
+
     /** T: Trait */
-    data class TraitBound(override val value: RsTraitItem): TraitImplSource()
+    data class TraitBound(override val value: RsTraitItem) : TraitImplSource()
+
     /** Trait is implemented for item via ```#[derive]``` attribute. */
-    data class Derived(override val value: RsTraitItem): TraitImplSource()
+    data class Derived(override val value: RsTraitItem) : TraitImplSource()
+
     /** dyn/impl Trait or a closure */
-    data class Object(override val value: RsTraitItem): TraitImplSource()
+    data class Object(override val value: RsTraitItem) : TraitImplSource()
+
     /**
      * Used only as a result of method pick. It means that method is resolved to multiple impls of the same trait
      * (with different type parameter values), so we collapsed all impls to that trait. Specific impl
      * will be selected during type inference.
      */
-    data class Collapsed(override val value: RsTraitItem): TraitImplSource()
+    data class Collapsed(override val value: RsTraitItem) : TraitImplSource()
+
     /** A trait impl hardcoded in Intellij-Rust. Mostly it's something defined with a macro in stdlib */
-    data class Hardcoded(override val value: RsTraitItem): TraitImplSource()
+    data class Hardcoded(override val value: RsTraitItem) : TraitImplSource()
 }
 
 /**
@@ -159,13 +175,26 @@ data class ParamEnv(val callerBounds: List<TraitRef>) {
 
 class ImplLookup(
     private val project: Project,
+    cargoProject: CargoProject?,
     val items: KnownItems,
     private val paramEnv: ParamEnv = ParamEnv.EMPTY
 ) {
     // Non-concurrent HashMap and lazy(NONE) are safe here because this class isn't shared between threads
     private val primitiveTyHardcodedImplsCache = mutableMapOf<TyPrimitive, Collection<BoundElement<RsTraitItem>>>()
-    private val localTraitSelectionCache: MutableMap<TraitRef, SelectionResult<SelectionCandidate>>? =
-        if (paramEnv.isEmpty()) null else mutableMapOf()
+    private val traitSelectionCache: Cache<TraitRef, SelectionResult<SelectionCandidate>> =
+        if (paramEnv.isEmpty() && cargoProject != null) {
+            cargoProjectGlobalTraitSelectionCache.getCache(cargoProject)
+        } else {
+            // function-local cache is used when [paramEnv] is not empty, i.e. if there are trait bounds
+            // that affect trait selection
+            Cache.new()
+        }
+    private val findImplsAndTraitsCache: Cache<Ty, Set<TraitImplSource>> =
+        if (cargoProject != null) {
+            cargoProjectGlobalFindImplsAndTraitsCache.getCache(cargoProject)
+        } else {
+            Cache.new()
+        }
     private val arithOps by lazy(NONE) {
         ArithmeticOp.values().mapNotNull { it.findTrait(items) }
     }
@@ -192,7 +221,7 @@ class ImplLookup(
     }
 
     val ctx: RsInferenceContext by lazy(NONE) {
-        RsInferenceContext(this, items)
+        RsInferenceContext(project, this, items)
     }
 
     fun getEnvBoundTransitivelyFor(ty: Ty): Sequence<BoundElement<RsTraitItem>> {
@@ -204,7 +233,7 @@ class ImplLookup(
     }
 
     fun findImplsAndTraits(ty: Ty): Set<TraitImplSource> {
-        val cached = findImplsAndTraitsCache.getOrPut(project, freshen(ty)) { rawFindImplsAndTraits(ty) }
+        val cached = findImplsAndTraitsCache.getOrPut(freshen(ty)) { rawFindImplsAndTraits(ty) }
         return getEnvBoundTransitivelyFor(ty)
             .asIterable().mapTo(cached.toMutableSet()) { TraitImplSource.TraitBound(it.element) }
     }
@@ -333,12 +362,13 @@ class ImplLookup(
         return impls
     }
 
-    private fun findSimpleImpls(selfTy: Ty): Sequence<RsImplItem> {
-        return RsImplIndex.findPotentialImpls(project, selfTy).mapNotNull { impl ->
-            val subst = impl.generics.associate { it to ctx.typeVarForParam(it) }.toTypeSubst()
+    private fun findSimpleImpls(selfTy: Ty): Sequence<RsCachedImplItem> {
+        return RsImplIndex.findPotentialImpls(project, selfTy).mapNotNull { cachedImpl ->
+            val (type, generics) = cachedImpl.typeAndGenerics ?: return@mapNotNull null
+            val subst = generics.associateWith { ctx.typeVarForParam(it) }.toTypeSubst()
             // TODO: take into account the lifetimes (?)
-            val formalSelfTy = impl.typeReference?.type?.substitute(subst) ?: return@mapNotNull null
-            impl.takeIf { ctx.canCombineTypes(formalSelfTy, selfTy) }
+            val formalSelfTy = type.substitute(subst)
+            cachedImpl.takeIf { ctx.canCombineTypes(formalSelfTy, selfTy) }
         }
     }
 
@@ -379,15 +409,7 @@ class ImplLookup(
     private fun selectWithoutConfirm(ref: TraitRef, recursionDepth: Int): SelectionResult<SelectionCandidate> {
         if (recursionDepth > DEFAULT_RECURSION_LIMIT) return SelectionResult.Err
         testAssert { !ctx.hasResolvableTypeVars(ref) }
-        val freshenRef = freshen(ref)
-        @Suppress("IfThenToElvis")
-        return if (localTraitSelectionCache != null) {
-            // function-local cache is used when [paramEnv] is not empty, i.e. if there are trait bounds
-            // that affect trait selection
-            localTraitSelectionCache.getOrPut(freshenRef) { selectCandidate(ref, recursionDepth) }
-        } else {
-            globalTraitSelectionCache.getOrPut(project, freshenRef) { selectCandidate(ref, recursionDepth) }
-        }
+        return traitSelectionCache.getOrPut(freshen(ref)) { selectCandidate(ref, recursionDepth) }
     }
 
     private fun selectCandidate(ref: TraitRef, recursionDepth: Int): SelectionResult<SelectionCandidate> {
@@ -493,15 +515,15 @@ class ImplLookup(
             .toList()
     }
 
-    private fun Sequence<RsImplItem>.assembleImplCandidates(ref: TraitRef): Sequence<SelectionCandidate> =
-        mapNotNull { impl ->
-            val formalTraitRef = impl.implementedTrait ?: return@mapNotNull null
+    private fun Sequence<RsCachedImplItem>.assembleImplCandidates(ref: TraitRef): Sequence<SelectionCandidate> =
+        mapNotNull { cachedImpl ->
+            val formalTraitRef = cachedImpl.implementedTrait ?: return@mapNotNull null
             if (formalTraitRef.element != ref.trait.element) return@mapNotNull null
-            val formalSelfTy = impl.typeReference?.type ?: return@mapNotNull null
+            val (formalSelfTy, generics) = cachedImpl.typeAndGenerics ?: return@mapNotNull null
             val (_, implTraitRef) =
-                prepareSubstAndTraitRefRaw(ctx, impl.generics, formalSelfTy, formalTraitRef, ref.selfTy)
+                prepareSubstAndTraitRefRaw(ctx, generics, formalSelfTy, formalTraitRef, ref.selfTy)
             if (!ctx.probe { ctx.combineTraitRefs(implTraitRef, ref) }) return@mapNotNull null
-            SelectionCandidate.Impl(impl, formalSelfTy, formalTraitRef)
+            SelectionCandidate.Impl(cachedImpl.impl, formalSelfTy, formalTraitRef)
         }
 
     private fun assembleDerivedCandidates(ref: TraitRef): List<SelectionCandidate> {
@@ -769,14 +791,14 @@ class ImplLookup(
             } else {
                 ParamEnv.EMPTY
             }
-            return ImplLookup(psi.project, psi.knownItems, paramEnv)
+            return ImplLookup(psi.project, psi.cargoProject, psi.knownItems, paramEnv)
         }
 
-        private val findImplsAndTraitsCache =
-            ProjectCache<Ty, Set<TraitImplSource>>("findImplsAndTraitsCache")
+        private val cargoProjectGlobalFindImplsAndTraitsCache =
+            CargoProjectCache<Ty, Set<TraitImplSource>>("cargoProjectGlobalFindImplsAndTraitsCache")
 
-        private val globalTraitSelectionCache =
-            ProjectCache<TraitRef, SelectionResult<SelectionCandidate>>("globalTraitSelectionCache")
+        private val cargoProjectGlobalTraitSelectionCache =
+            CargoProjectCache<TraitRef, SelectionResult<SelectionCandidate>>("cargoProjectGlobalTraitSelectionCache")
     }
 }
 
@@ -840,7 +862,7 @@ private fun prepareSubstAndTraitRefRaw(
     formalTrait: BoundElement<RsTraitItem>,
     selfTy: Ty
 ): Pair<Substitution, TraitRef> {
-    val subst = generics.associate { it to ctx.typeVarForParam(it) }.toTypeSubst()
+    val subst = generics.associateWith { ctx.typeVarForParam(it) }.toTypeSubst()
     val boundSubst = formalTrait.substitute(subst).subst.mapTypeValues { (k, v) ->
         if (k == v && k.parameter is TyTypeParameter.Named) {
             // Default type parameter values `trait Tr<T=Foo> {}`

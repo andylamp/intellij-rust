@@ -21,34 +21,26 @@ import com.intellij.xdebugger.impl.ui.XDebugSessionData
 import com.jetbrains.cidr.cpp.toolchains.CPPToolchains
 import com.jetbrains.cidr.cpp.toolchains.CPPToolchainsConfigurable
 import com.jetbrains.cidr.toolchains.OSType
-import org.jetbrains.concurrency.AsyncPromise
 import org.rust.cargo.runconfig.CargoRunStateBase
-import org.rust.cargo.runconfig.RsAsyncRunner
-import org.rust.debugger.settings.RsDebuggerSettings
+import org.rust.cargo.runconfig.RsExecutableRunner
 
-const val ERROR_MESSAGE_TITLE: String = "Debugging is not possible"
+private const val ERROR_MESSAGE_TITLE: String = "Unable to run debugger"
 
+class RsDebugRunner : RsExecutableRunner(DefaultDebugExecutor.EXECUTOR_ID, ERROR_MESSAGE_TITLE) {
+    override fun getRunnerId(): String = RUNNER_ID
 
-class RsDebugRunner : RsAsyncRunner(DefaultDebugExecutor.EXECUTOR_ID, ERROR_MESSAGE_TITLE) {
-    override fun getRunnerId(): String = "RsDebugRunner"
-
-    override fun getRunContentDescriptor(
+    override fun showRunContent(
         state: CargoRunStateBase,
         environment: ExecutionEnvironment,
-        runCommand: GeneralCommandLine
+        runExecutable: GeneralCommandLine
     ): RunContentDescriptor? {
-        val runParameters = RsDebugRunParameters(environment.project, runCommand)
+        val runParameters = RsDebugRunParameters(environment.project, runExecutable, state.cargoProject)
         return XDebuggerManager.getInstance(environment.project)
             .startSession(environment, object : XDebugProcessConfiguratorStarter() {
                 override fun start(session: XDebugSession): XDebugProcess =
-                    RsLocalDebugProcess(runParameters, session, state.consoleBuilder, state::computeSysroot).apply {
+                    RsLocalDebugProcess(runParameters, session, state.consoleBuilder).apply {
                         ProcessTerminatedListener.attach(processHandler, environment.project)
-                        val settings = RsDebuggerSettings.getInstance()
-                        loadPrettyPrinters(settings.lldbRenderers, settings.gdbRenderers)
-                        val commitHash = state.cargoProject?.rustcInfo?.version?.commitHash
-                        if (commitHash != null) {
-                            loadRustcSources(commitHash)
-                        }
+                        setupDebugSession(state)
                         start()
                     }
 
@@ -57,25 +49,39 @@ class RsDebugRunner : RsAsyncRunner(DefaultDebugExecutor.EXECUTOR_ID, ERROR_MESS
             .runContentDescriptor
     }
 
+    override fun checkToolchainSupported(project: Project, state: CargoRunStateBase): Boolean {
+        if (CPPToolchains.getInstance().osType == OSType.WIN && "msvc" in state.rustVersion().rustc?.host.orEmpty()) {
+            project.showErrorDialog("MSVC toolchain is not supported. Please use GNU toolchain.")
+            return false
+        }
+        return true
+    }
+
     override fun checkToolchainConfigured(project: Project): Boolean {
         val toolchains = CPPToolchains.getInstance()
         val toolchain = toolchains.defaultToolchain
         if (toolchain == null) {
-            val option = Messages.showDialog(project, "Debug toolchain is not configured.", ERROR_MESSAGE_TITLE,
-                arrayOf("Configure"), 0, Messages.getErrorIcon())
-            if (option == 0) {
-                ShowSettingsUtil.getInstance().showSettingsDialog(project, CPPToolchainsConfigurable::class.java, null)
+            val option = Messages.showDialog(
+                project,
+                "Debug toolchain is not configured.",
+                ERROR_MESSAGE_TITLE,
+                arrayOf("Configure"),
+                Messages.OK,
+                Messages.getErrorIcon()
+            )
+            if (option == Messages.OK) {
+                ShowSettingsUtil.getInstance().showSettingsDialog(
+                    project,
+                    CPPToolchainsConfigurable::class.java,
+                    null
+                )
             }
             return false
         }
         return true
     }
 
-    override fun checkToolchainSupported(state: CargoRunStateBase): Boolean =
-        !(CPPToolchains.getInstance().osType == OSType.WIN && "msvc" in state.rustVersion().rustc?.host.orEmpty())
-
-    override fun processUnsupportedToolchain(project: Project, promise: AsyncPromise<Binary?>) {
-        project.showErrorDialog("MSVC toolchain is not supported. Please use GNU toolchain.")
-        promise.setResult(null)
+    companion object {
+        const val RUNNER_ID: String = "RsDebugRunner"
     }
 }

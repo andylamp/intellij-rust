@@ -218,23 +218,23 @@ def children_of_node(boxed_node, height, want_values):
         internal_type = lookup_type(internal_type_name)
         return node.cast(internal_type.pointer())
 
-    ptr = boxed_node['ptr']['pointer']
-    node = ptr[ZERO_FIELD]
-    node = cast_to_internal(node) if height > 0 else node
-    leaf = node['data'] if height > 0 else node.dereference()
-    keys = leaf['keys']['value']['value']
-    values = leaf['vals']['value']['value']
+    node_ptr = unwrap_unique_or_non_null(boxed_node['ptr'])
+    node_ptr = cast_to_internal(node_ptr) if height > 0 else node_ptr
+    leaf = node_ptr['data'] if height > 0 else node_ptr.dereference()
+    keys = leaf['keys']
+    values = leaf['vals']
     length = int(leaf['len'])
 
     for i in xrange(0, length + 1):
         if height > 0:
-            for child in children_of_node(node['edges'][i], height - 1, want_values):
+            child_ptr = node_ptr['edges'][i]['value']['value']
+            for child in children_of_node(child_ptr, height - 1, want_values):
                 yield child
         if i < length:
             if want_values:
-                yield (keys[i], values[i])
+                yield (keys[i]['value']['value'], values[i]['value']['value'])
             else:
-                yield keys[i]
+                yield keys[i]['value']['value']
 
 
 class StdBTreeSetProvider:
@@ -242,7 +242,7 @@ class StdBTreeSetProvider:
         self.valobj = valobj
 
     def to_string(self):
-        return "size=".format(self.valobj["map"]["length"])
+        return "size={}".format(self.valobj["map"]["length"])
 
     def children(self):
         root = self.valobj["map"]["root"]
@@ -260,7 +260,7 @@ class StdBTreeMapProvider:
         self.valobj = valobj
 
     def to_string(self):
-        return "size=".format(self.valobj["length"])
+        return "size={}".format(self.valobj["length"])
 
     def children(self):
         root = self.valobj["root"]
@@ -276,7 +276,8 @@ class StdBTreeMapProvider:
         return "map"
 
 
-class StdHashMapProvider:
+# BACKCOMPAT: rust 1.35
+class StdOldHashMapProvider:
     def __init__(self, valobj, show_values=True):
         self.valobj = valobj
         self.show_values = show_values
@@ -322,6 +323,46 @@ class StdHashMapProvider:
         for index in range(self.size):
             table_index = self.valid_indices[index]
             idx = table_index & self.capacity_mask
+            element = (pairs_start + idx).dereference()
+            if self.show_values:
+                yield ("key{}".format(index), element[ZERO_FIELD])
+                yield ("val{}".format(index), element[FIRST_FIELD])
+            else:
+                yield ("[{}]".format(index), element[ZERO_FIELD])
+
+    def display_hint(self):
+        return "map" if self.show_values else "array"
+
+
+class StdHashMapProvider:
+    def __init__(self, valobj, show_values=True):
+        self.valobj = valobj
+        self.show_values = show_values
+
+        table = self.valobj["base"]["table"]
+        capacity = int(table["bucket_mask"]) + 1
+        ctrl = table["ctrl"]["pointer"]
+
+        self.size = int(table["items"])
+        self.data_ptr = table["data"]["pointer"]
+        self.pair_type = self.data_ptr.dereference().type
+
+        self.valid_indices = []
+        for idx in range(capacity):
+            address = ctrl + idx
+            value = address.dereference()
+            is_presented = value & 128 == 0
+            if is_presented:
+                self.valid_indices.append(idx)
+
+    def to_string(self):
+        return "size={}".format(self.size)
+
+    def children(self):
+        pairs_start = self.data_ptr
+
+        for index in range(self.size):
+            idx = self.valid_indices[index]
             element = (pairs_start + idx).dereference()
             if self.show_values:
                 yield ("key{}".format(index), element[ZERO_FIELD])

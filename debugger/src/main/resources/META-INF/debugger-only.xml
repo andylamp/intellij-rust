@@ -1,4 +1,11 @@
-<idea-plugin>
+<idea-plugin xmlns:xi="http://www.w3.org/2001/XInclude" allow-bundled-update="true">
+    <xi:include href="/META-INF/platform-debugger-only.xml" xpointer="xpointer(/idea-plugin/*)"/>
+
+    <extensionPoints>
+        <extensionPoint qualifiedName="org.rust.debugger.driverConfigurationProvider"
+                        interface="org.rust.debugger.RsDebuggerDriverConfigurationProvider"/>
+    </extensionPoints>
+
     <extensions defaultExtensionNs="cidr.debugger">
         <languageSupport language="Rust" implementationClass="org.rust.debugger.lang.RsDebuggerLanguageSupport"/>
         <editorsExtension implementation="org.rust.debugger.lang.RsDebuggerEditorsExtension"/>
@@ -8,6 +15,7 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <programRunner implementation="org.rust.debugger.runconfig.RsDebugRunner"/>
+        <programRunner implementation="org.rust.debugger.runconfig.legacy.RsDebugRunnerLegacy"/>
         <xdebugger.settings implementation="org.rust.debugger.settings.RsDebuggerSettings"/>
     </extensions>
 </idea-plugin>
