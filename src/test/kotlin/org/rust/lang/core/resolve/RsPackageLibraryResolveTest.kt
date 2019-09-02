@@ -929,4 +929,39 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         fn foo(foo: dep_lib_target::trans_lib::Foo) {}
                                               //^ trans-lib/lib.rs
     """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test complex circular dependent star imports`() = stubOnlyResolve("""
+    //- foo.rs
+        pub struct S1;
+        pub struct S2;
+        impl S2 { pub fn foo(&self) {} }
+    //- lib.rs
+        pub mod foo;
+        pub mod prelude {
+            pub use crate::foo::{S1, S2};
+            pub use crate::bar::*; // `bar` may exists or may not
+        }
+        
+        pub use self::prelude::*;
+    //- main.rs
+        use test_package::{S1, S2};
+
+        fn create(_: S1, s2: S2) {
+            s2.foo();
+        }      //^ foo.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test re-exported crate via use item without "extern crate" 2018 edition`() = stubOnlyResolve("""
+    //- trans-lib/lib.rs
+        pub struct Foo;
+    //- dep-lib/lib.rs
+        pub use trans_lib;
+    //- lib.rs
+        use dep_lib_target::trans_lib::Foo;
+        
+        type T = Foo;
+               //^ trans-lib/lib.rs
+    """)
 }

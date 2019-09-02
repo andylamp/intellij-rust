@@ -82,11 +82,44 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitAttr(o: RsAttr) = checkAttr(holder, o)
             override fun visitRangeExpr(o: RsRangeExpr) = checkRangeExpr(holder, o)
             override fun visitTraitType(o: RsTraitType) = checkTraitType(holder, o)
+            override fun visitSelfParameter(o: RsSelfParameter) = checkParamAttrs(holder, o)
+            override fun visitValueParameter(o: RsValueParameter) = checkParamAttrs(holder, o)
+            override fun visitVariadic(o: RsVariadic) = checkParamAttrs(holder, o)
+            override fun visitPatStruct(o: RsPatStruct) = checkRsPatStruct(holder, o)
+            override fun visitPatTupleStruct(o: RsPatTupleStruct) = checkRsPatTupleStruct(holder, o)
         }
 
         element.accept(visitor)
     }
 
+    private fun checkRsPatStruct(holder: AnnotationHolder, patStruct: RsPatStruct) {
+        val declaration = patStruct.path.reference.deepResolve() as? RsFieldsOwner ?: return
+        val declarationFieldNames = declaration.fields.map { it.name }
+        val bodyFields = patStruct.patFieldList
+        val extraFields = bodyFields.filter { it.kind.fieldName !in declarationFieldNames }
+        val bodyFieldNames = bodyFields.map { it.kind.fieldName }
+        val missingFields = declaration.fields.filter { it.name !in bodyFieldNames && !it.queryAttributes.hasCfgAttr() }
+        extraFields.forEach {
+            RsDiagnostic.ExtraFieldInStructPattern(it).addToHolder(holder)
+        }
+        if (missingFields.isNotEmpty() && patStruct.dotdot == null) {
+            RsDiagnostic.MissingFieldsInStructPattern(patStruct, declaration).addToHolder(holder)
+        }
+    }
+
+    private fun checkRsPatTupleStruct(holder: AnnotationHolder, patTupleStruct: RsPatTupleStruct) {
+        val declaration = patTupleStruct.path.reference.deepResolve() as? RsFieldsOwner ?: return
+        val bodyFields = patTupleStruct.patList
+        if (bodyFields.size < declaration.fields.size && patTupleStruct.dotdot == null) {
+            RsDiagnostic.MissingFieldsInTuplePattern(patTupleStruct, declaration).addToHolder(holder)
+        } else if (bodyFields.size > declaration.fields.size) {
+            RsDiagnostic.ExtraFieldInTupleStructPattern(
+                patTupleStruct,
+                bodyFields.size ,
+                declaration.fields.size
+            ).addToHolder(holder)
+        }
+    }
 
     private fun checkTraitType(holder: AnnotationHolder, traitType: RsTraitType) {
         if (!traitType.isImpl) return
@@ -662,6 +695,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
     private fun checkExternCrate(holder: AnnotationHolder, el: RsExternCrateItem) {
         if (el.reference.multiResolve().isEmpty() && el.containingCargoPackage?.origin == PackageOrigin.WORKSPACE) {
+            if (!el.isEnabledByCfg) return
             RsDiagnostic.CrateNotFoundError(el, el.referenceName).addToHolder(holder)
         }
         if (el.self != null) {
@@ -793,6 +827,23 @@ private fun checkDuplicates(holder: AnnotationHolder, element: RsNameIdentifierO
     message.addToHolder(holder)
 }
 
+private fun checkParamAttrs(holder: AnnotationHolder, o: RsOuterAttributeOwner) {
+    val outerAttrs = o.outerAttrList
+    if (outerAttrs.isEmpty()) return
+    val startElement = outerAttrs.first()
+    val endElement = outerAttrs.last()
+    val message = "attributes on function parameters is experimental"
+    val diagnostic = when (PARAM_ATTRS.availability(startElement)) {
+        NOT_AVAILABLE -> RsDiagnostic.ExperimentalFeature(startElement, endElement, message, emptyList())
+        CAN_BE_ADDED -> {
+            val fix = PARAM_ATTRS.addFeatureFix(startElement)
+            RsDiagnostic.ExperimentalFeature(startElement, endElement, message, listOf(fix))
+        }
+        else -> return
+    }
+    diagnostic.addToHolder(holder)
+}
+
 private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursively: Boolean): Map<Namespace, Set<PsiElement>> {
     if (owner.parent is RsFnPointerType) return emptyMap()
 
@@ -803,6 +854,7 @@ private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursive
         owner.namedChildren(recursively, stopAt = RsFnPointerType::class.java)
             .filter { it !is RsExternCrateItem } // extern crates can have aliases.
             .filter { it.name != null }
+            .filter { it !is RsDocAndAttributeOwner || it.isEnabledByCfg }
             .flatMap { it.namespaced }
             .groupBy { it.first }       // Group by namespace
             .map { entry ->
@@ -811,10 +863,7 @@ private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursive
                     .map { it.second }
                     .groupBy { it.name }
                     .map { it.value }
-                    .filter {
-                        it.size > 1 &&
-                            it.any { !(it is RsDocAndAttributeOwner && it.queryAttributes.hasCfgAttr()) }
-                    }
+                    .filter { it.size > 1 }
                     .flatten()
                     .toSet()
             }
@@ -856,9 +905,8 @@ private val RsNamedElement.namespaced: Sequence<Pair<Namespace, RsNamedElement>>
 private fun RsCallExpr.expectedParamsCount(): Pair<Int, Boolean>? {
     val path = (expr as? RsPathExpr)?.path ?: return null
     val el = path.reference.resolve()
-    if (el is RsDocAndAttributeOwner && el.queryAttributes.hasCfgAttr()) return null
     return when (el) {
-        is RsFieldsOwner -> el.tupleFields?.tupleFieldDeclList?.size?.let { Pair(it, false) }
+        is RsFieldsOwner -> Pair(el.fields.size, false)
         is RsFunction -> {
             val owner = el.owner
             if (owner.isTraitImpl) return null
@@ -872,7 +920,6 @@ private fun RsCallExpr.expectedParamsCount(): Pair<Int, Boolean>? {
 
 private fun RsMethodCall.expectedParamsCount(): Pair<Int, Boolean>? {
     val fn = reference.resolve() as? RsFunction ?: return null
-    if (fn.queryAttributes.hasCfgAttr()) return null
     return fn.valueParameterList?.valueParameterList?.size?.let { Pair(it, fn.isVariadic) }
         .takeIf { fn.owner.isInherentImpl }
 }

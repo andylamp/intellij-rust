@@ -36,6 +36,7 @@ import org.rust.lang.core.types.type
 
 const val KEYWORD_PRIORITY = 80.0
 const val PRIMITIVE_TYPE_PRIORITY = KEYWORD_PRIORITY
+const val FRAGMENT_SPECIFIER_PRIORITY = KEYWORD_PRIORITY
 private const val VARIABLE_PRIORITY = 5.0
 private const val ENUM_VARIANT_PRIORITY = 4.0
 private const val FIELD_DECL_PRIORITY = 3.0
@@ -209,15 +210,11 @@ open class RsDefaultInsertHandler : InsertHandler<LookupElement> {
                 if (curUseItem != null) {
                     appendSemicolon(context, curUseItem)
                 } else {
+                    val isMethodCall = context.getElementOfType<RsMethodOrField>() != null
                     if (!context.alreadyHasCallParens) {
                         document.insertString(context.selectionEndOffset, "()")
                     }
-
-                    val charsSequence = document.charsSequence
-                    val inUFCS = element.hasSelfParameters
-                        && charsSequence.getOrNull(startOffset - 1) == ':'
-                        && charsSequence.getOrNull(startOffset - 2) == ':'
-                    val caretShift = if (element.valueParameters.isEmpty() && !inUFCS) 2 else 1
+                    val caretShift = if (element.valueParameters.isEmpty() && (isMethodCall || !element.hasSelfParameters)) 2 else 1
                     EditorModificationUtil.moveCaretRelatively(context.editor, caretShift)
                     if (!element.valueParameters.isEmpty()) {
                         AutoPopupController.getInstance(element.project)?.autoPopupParameterInfo(context.editor, element)

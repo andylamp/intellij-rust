@@ -95,9 +95,14 @@ fun processItemDeclarations(
         if (!(isPublic || withPrivateImports)) continue
 
         if (isEdition2018 && isAtom) {
-            // Use items like `use foo;` or `use foo::{self}` are meaningless on 2018 edition.
-            // We should ignore it or it breaks resolve of such `foo` in other places.
+            // Use items like `use foo;` or `use foo::{self}` are meaningful on 2018 edition
+            // only if `foo` is a crate, and it is `pub use` item. Otherwise,
+            // we should ignore it or it breaks resolve of such `foo` in other places.
             ItemResolutionTestmarks.extraAtomUse.hit()
+            if (!withPrivateImports) {
+                val crate = findDependencyCrateByName(path, name)
+                if (crate != null && processor(name, crate)) return true
+            }
             continue
         }
         if (processMultiResolveWithNs(name, ns, path.reference, processor)) return true
@@ -178,7 +183,7 @@ fun processItemDeclarations(
             // BACKCOMPAT 2019.1
             val rootQualifier = generateSequence(basePath) { it.qualifier }.drop(1).lastOrNull()
             if (rootQualifier != null) {
-                guard.doPreventingRecursion(rootQualifier, false) { basePath.reference.resolve() }
+                guard.doPreventingRecursion(rootQualifier, memoize = false) { basePath.reference.resolve() }
             } else {
                 basePath.reference.resolve()
             }
@@ -191,7 +196,7 @@ fun processItemDeclarations(
                 { it.name !in directlyDeclaredNames && originalProcessor(it) },
                 withPrivateImports = basePath != null && isSuperChain(basePath)
             )
-        })
+        }, memoize = false)
         if (found == true) return true
     }
 
@@ -221,6 +226,7 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
 
     // XXX: there are two `cfg`ed `boxed` modules in liballoc, so
     // we apply "first in the namespace wins" heuristic.
+    // TODO fix after enabling #[cfg(...)] evaluation
 
     if (ns.size == 1) {
         // Optimized version for single namespace.

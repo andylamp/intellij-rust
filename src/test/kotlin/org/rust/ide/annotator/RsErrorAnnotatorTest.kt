@@ -326,7 +326,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         }
         fn main() {
             let foo = Foo;
-            foo.bar(10);  // Ignore both calls
+            foo.bar<error descr="This function takes 0 parameters but 1 parameter was supplied [E0061]">(10)</error>;
             foo.bar();
         }
     """)
@@ -783,13 +783,17 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
         }
     """)
 
+    @MockAdditionalCfgOptions("foo")
     fun `test respects cfg attribute E0428`() = checkErrors("""
         mod opt {
-            #[cfg(not(windows))] mod foo {}
-            #[cfg(windows)]     mod foo {}
+            #[cfg(not(bar))] mod foo {}
+            #[cfg(bar)]      mod foo {}
 
-            #[cfg(windows)] fn <error descr="A value named `hello_world` has already been defined in this module [E0428]">hello_world</error>() {}
+            #[cfg(foo)] fn <error descr="A value named `hello_world` has already been defined in this module [E0428]">hello_world</error>() {}
             fn <error descr="A value named `hello_world` has already been defined in this module [E0428]">hello_world</error>() {}
+
+            #[cfg(bar)] fn hello_rust() {}
+            fn hello_rust() {}
         }
     """)
 
@@ -2725,6 +2729,170 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class.java) {
                     break;
                 }
             };
+        }
+    """)
+
+    @MockRustcVersion("1.35.0")
+    fun `test param attrs E0658 1`() = checkErrors("""
+        struct S;
+        fn f1(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> x: S) {}
+        fn f2(<error descr="attributes on function parameters is experimental [E0658]">#[attr1] #[attr2]</error> x: S) {}
+        impl S {
+            fn f3(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> self) {}
+            fn f4(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> &self) {}
+            fn f5<'a>(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> &mut self) {}
+            fn f6<'a>(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> &'a self) {}
+            fn f7<'a>(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> &'a mut self, <error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> x: S, y: S) {}
+            fn f8(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> self: Self) {}
+            fn f9(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> self: S<Self>) {}
+        }
+        trait T { fn f10(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> S); }
+        extern "C" { fn f11(<error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> x: S, <error descr="attributes on function parameters is experimental [E0658]">#[attr]</error> ...); }
+    """)
+
+    @MockRustcVersion("1.36.0-nightly")
+    fun `test param attrs E0658 2`() = checkErrors("""
+        #![feature(param_attrs)]
+        struct S;
+        fn f1(#[attr] x: S) {}
+        fn f2(#[attr1] #[attr2] x: S) {}
+        impl S {
+            fn f3(#[attr] self) {}
+            fn f4(#[attr] &self) {}
+            fn f5<'a>(#[attr] &mut self) {}
+            fn f6<'a>(#[attr] &'a self) {}
+            fn f7<'a>(#[attr] &'a mut self, #[attr] x: S, y: S) {}
+            fn f8(#[attr] self: Self) {}
+            fn f9(#[attr] self: S<Self>) {}
+        }
+        trait T { fn f10(#[attr] S); }
+        extern "C" { fn f11(#[attr] x: S, #[attr] ...); }
+    """)
+
+    fun `test no errors when correct field amount in tuple struct`() = checkErrors("""
+        struct Foo (i32, i32, i32);
+
+        fn main() {
+            let Foo (a, b, c) = foo;
+        }
+    """)
+
+    fun `test missing fields in tuple struct`() = checkErrors("""
+        struct Foo (i32, i32, i32);
+
+        fn main() {
+            let <error descr="Tuple struct pattern does not correspond to its declaration [E0023]">Foo (a, b)</error> = foo;
+        }
+    """)
+
+    fun `test extra fields in tuple struct`() = checkErrors("""
+        struct Foo (i32, i32, i32);
+
+        fn main() {
+            let <error descr="Extra fields found in the tuple struct pattern: Expected 3, found 4 [E0023]">Foo (a, b, c, d)</error> = foo;
+        }
+    """)
+
+    fun `test wrong field name`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() {
+            let <error descr="Struct pattern does not correspond to its declaration [E0027]">Foo { a, b, <error descr="Extra field found in the struct pattern: `d` [E0026]">d</error> }</error> = foo;
+        }
+    """)
+
+    fun `test wrong field name with dots`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() {
+            let Foo { <error>d</error>, a, .. } = foo;
+        }
+    """)
+
+    fun `test wrong field name in enum variant pattern`() = checkErrors("""
+        enum Foo {
+            Bar { quux: i32, spam: i32 },
+            Baz(i32, i32),
+        }
+
+        fn f(foo: Foo) {
+            match foo {
+                <error descr="Enum variant pattern does not correspond to its declaration [E0027]">Foo::Bar { quux, <error descr="Extra field found in the struct pattern: `abc` [E0026]">abc</error> }</error> => {},
+                <error descr="Enum variant pattern does not correspond to its declaration [E0023]">Foo::Baz(a)</error> => {},
+            }
+        }
+    """)
+
+    fun `test no error in mixed up fields`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() {
+            let Foo { b, c, a } = foo;
+        }
+    """)
+
+    fun `test no error in mixed up fields with dots`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() {
+            let Foo { c, b, .. } = foo;
+        }
+    """)
+
+    fun `test no error in mixed up fields with extra dots`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+
+        fn main() {
+            let Foo { c, b, a, .. } = foo;
+        }
+    """)
+
+    fun `test no error on missing field with cfg-attribute`() = checkErrors("""
+        struct Foo {
+            a: i32,
+            b: i32,
+            #[cfg(foo)]
+            c: i32,
+        }
+
+        fn main() {
+            let Foo { a, b } = foo;
+        }
+    """)
+
+    fun `test no error in tuple with dots in the middle`() = checkErrors("""
+        struct Foo(i32, i32, i32);
+
+        fn main() {
+            let Foo (a, .., b) = foo;
+        }
+    """)
+
+    fun `test no error in tuple with underscores`() = checkErrors("""
+        struct Foo(i32, i32, i32);
+
+        fn main() {
+            let Foo (_, _, _) = foo;
         }
     """)
 }

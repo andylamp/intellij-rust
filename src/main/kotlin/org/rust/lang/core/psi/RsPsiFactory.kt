@@ -11,7 +11,6 @@ import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiParserFacade
 import com.intellij.util.LocalTimeCounter
 import org.rust.ide.inspections.checkMatch.Pattern
-import org.rust.ide.presentation.insertionSafeText
 import org.rust.ide.presentation.insertionSafeTextWithLifetimes
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionContext
@@ -387,6 +386,14 @@ class RsPsiFactory(
             ?.firstChild as RsPatBinding?
             ?: error("Failed to create pat element")
 
+    fun createPatField(name: String): RsPatField =
+        createFromText("""
+            struct Foo { bar: i32 }
+            fn baz(foo: Foo) {
+                let Foo { $name } = foo;
+            }
+        """) ?: error("Failed to create pat field")
+
     fun createPatStruct(struct: RsStructItem): RsPatStruct {
         val structName = struct.name ?: error("Failed to create pat struct")
         val pad = if (struct.namedFields.isEmpty()) "" else " "
@@ -473,19 +480,25 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
 
 private fun String.iff(cond: Boolean) = if (cond) this + " " else " "
 
-fun RsTypeReference.substAndGetText(subst: Substitution): String {
-    val substitutedType = type.substitute(subst)
-    val hasLifetime = refLikeType?.lifetime != null
-    return if (hasLifetime) substitutedType.insertionSafeTextWithLifetimes else substitutedType.insertionSafeText
-}
+fun RsTypeReference.substAndGetText(subst: Substitution): String =
+    type.substitute(subst).insertionSafeTextWithLifetimes
 
 private fun RsSelfParameter.substAndGetText(subst: Substitution): String =
-    buildString {
-        append(and?.text ?: "")
-        val region = lifetime.resolve().substitute(subst)
-        if (region != ReUnknown) append("$region ")
-        if (mutability == MUTABLE) append("mut ")
-        append(self.text)
+    if (isExplicitType) {
+        buildString {
+            append(self.text)
+            append(colon!!.text)
+            val type = typeReference?.substAndGetText(subst)
+            append(type)
+        }
+    } else {
+        buildString {
+            append(and?.text ?: "")
+            val region = lifetime.resolve().substitute(subst)
+            if (region != ReUnknown) append("$region ")
+            if (mutability == MUTABLE) append("mut ")
+            append(self.text)
+        }
     }
 
 private fun mutsToRefs(mutability: List<Mutability>): String =

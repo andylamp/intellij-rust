@@ -84,6 +84,7 @@
         <findUsagesHandlerFactory implementation="org.rust.ide.search.RsFindUsagesHandlerFactory"/>
         <usageTypeProvider implementation="org.rust.ide.search.RsUsageTypeProvider"/>
         <readWriteAccessDetector implementation="org.rust.ide.search.RsReadWriteAccessDetector" id="rust"/>
+        <fileStructureGroupRuleProvider implementation="org.rust.ide.search.RsFunctionGroupingRuleProvider" id="rs-function"/>
 
         <!-- Todos -->
 
@@ -671,6 +672,22 @@
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
+            <className>org.rust.ide.intentions.ChopFieldListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.JoinFieldListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ChopVariantListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.JoinVariantListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
             <className>org.rust.ide.intentions.InvertIfIntention</className>
             <category>Rust</category>
         </intentionAction>
@@ -688,6 +705,18 @@
         </intentionAction>
         <intentionAction>
             <className>org.rust.ide.intentions.ConvertToTupleIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddStructFieldsPatIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddStructFieldsLiteralIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddStructFieldsLiteralRecursiveIntention</className>
             <category>Rust</category>
         </intentionAction>
 
@@ -739,6 +768,8 @@
 
         <registryKey key="cargo.build.tool.window.enabled" defaultValue="true"
                      description="Enable Cargo tasks to use Build Tool Window"/>
+        <registryKey key="rust.cfg.attributes.enabled" defaultValue="false"
+                     description="Enable Rust cfg attributes support"/>
 
         <!-- Icon Provider -->
 

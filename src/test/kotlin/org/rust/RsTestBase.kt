@@ -19,6 +19,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileFilter
 import com.intellij.psi.PsiElement
 import com.intellij.psi.impl.PsiManagerEx
+import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.UsefulTestCase
@@ -26,13 +27,15 @@ import com.intellij.testFramework.fixtures.LightPlatformCodeInsightFixtureTestCa
 import com.intellij.util.text.SemVer
 import junit.framework.AssertionFailedError
 import org.intellij.lang.annotations.Language
+import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.toolchain.RustChannel
 import org.rust.cargo.toolchain.RustcVersion
+import org.rust.lang.core.macros.findExpansionElements
 import org.rust.lang.core.macros.macroExpansionManager
-import org.rust.lang.core.psi.ext.ancestorOrSelf
+import org.rust.lang.core.psi.ext.startOffset
 import org.rust.openapiext.saveAllDocuments
 import org.rust.stdext.BothEditions
 
@@ -62,6 +65,7 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
 
         setupMockRustcVersion()
         setupMockEdition()
+        setupMockCfgOptions()
         findAnnotationInstance<ExpandMacros>()?.let {
             val disposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(it.mode, it.cache)
             Disposer.register(testRootDisposable, disposable)
@@ -87,6 +91,17 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
     private fun setupMockEdition() {
         val edition = findAnnotationInstance<MockEdition>()?.edition ?: CargoWorkspace.Edition.EDITION_2015
         project.cargoProjects.setEdition(edition)
+    }
+
+    private fun setupMockCfgOptions() {
+        val additionalOptions = findAnnotationInstance<MockAdditionalCfgOptions>()?.options
+            ?.takeIf { it.isNotEmpty() } ?: return
+
+        val allOptions = CfgOptions(
+            CfgOptions.DEFAULT.keyValueOptions,
+            CfgOptions.DEFAULT.nameOptions + additionalOptions
+        )
+        project.cargoProjects.setCfgOptions(allOptions)
     }
 
     private fun parse(version: String): Pair<SemVer, RustChannel> {
@@ -224,8 +239,11 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
         }
     }
 
-    protected inline fun <reified T : PsiElement> findElementInEditor(marker: String = "^"): T {
-        val (element, data) = findElementWithDataAndOffsetInEditor<T>(marker)
+    protected inline fun <reified T : PsiElement> findElementInEditor(marker: String = "^"): T =
+        findElementInEditor(T::class.java, marker)
+
+    protected fun <T : PsiElement> findElementInEditor(psiClass: Class<T>, marker: String): T {
+        val (element, data) = findElementWithDataAndOffsetInEditor(psiClass, marker)
         check(data.isEmpty()) { "Did not expect marker data" }
         return element
     }
@@ -238,7 +256,14 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
     protected inline fun <reified T : PsiElement> findElementWithDataAndOffsetInEditor(
         marker: String = "^"
     ): Triple<T, String, Int> {
-        val elementsWithDataAndOffset = findElementsWithDataAndOffsetInEditor<T>(marker)
+        return findElementWithDataAndOffsetInEditor(T::class.java, marker)
+    }
+
+    protected fun <T : PsiElement> findElementWithDataAndOffsetInEditor(
+        psiClass: Class<T>,
+        marker: String
+    ): Triple<T, String, Int> {
+        val elementsWithDataAndOffset = findElementsWithDataAndOffsetInEditor(psiClass, marker)
         check(elementsWithDataAndOffset.isNotEmpty()) { "No `$marker` marker:\n${myFixture.file.text}" }
         check(elementsWithDataAndOffset.size <= 1) { "More than one `$marker` marker:\n${myFixture.file.text}" }
         return elementsWithDataAndOffset.first()
@@ -246,6 +271,13 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
 
     protected inline fun <reified T : PsiElement> findElementsWithDataAndOffsetInEditor(
         marker: String = "^"
+    ): List<Triple<T, String, Int>> {
+        return findElementsWithDataAndOffsetInEditor(T::class.java, marker)
+    }
+
+    protected fun <T : PsiElement> findElementsWithDataAndOffsetInEditor(
+        psiClass: Class<T>,
+        marker: String
     ): List<Triple<T, String, Int>> {
         val commentPrefix = LanguageCommenters.INSTANCE.forLanguage(myFixture.file.language).lineCommentPrefix ?: "//"
         val caretMarker = "$commentPrefix$marker"
@@ -260,14 +292,25 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
             val previousLine = LogicalPosition(markerPosition.line - 1, markerPosition.column)
             val elementOffset = myFixture.editor.logicalPositionToOffset(previousLine)
             val elementAtMarker = myFixture.file.findElementAt(elementOffset)!!
-            val element = elementAtMarker.ancestorOrSelf<T>()
+
+            if (followMacroExpansions) {
+                val expandedElementAtMarker = elementAtMarker.findExpansionElements()?.singleOrNull()
+                val expandedElement = expandedElementAtMarker?.let { PsiTreeUtil.getParentOfType(it, psiClass, false) }
+                if (expandedElement != null) {
+                    val offset = expandedElementAtMarker.startOffset + (elementOffset - elementAtMarker.startOffset)
+                    result.add(Triple(expandedElement, data, offset))
+                    continue
+                }
+            }
+
+            val element = PsiTreeUtil.getParentOfType(elementAtMarker, psiClass, false)
             if (element != null) {
                 result.add(Triple(element, data, elementOffset))
             } else {
                 val injectionElement = InjectedLanguageManager.getInstance(project)
                     .findInjectedElementAt(myFixture.file, elementOffset)
-                    ?.ancestorOrSelf<T>()
-                    ?: error("No ${T::class.java.simpleName} at ${elementAtMarker.text}")
+                    ?.let { PsiTreeUtil.getParentOfType(it, psiClass, false) }
+                    ?: error("No ${psiClass.simpleName} at ${elementAtMarker.text}")
                 val injectionOffset = (injectionElement.containingFile.virtualFile as VirtualFileWindow)
                     .documentWindow.hostToInjected(elementOffset)
                 result.add(Triple(injectionElement, data, injectionOffset))
@@ -275,6 +318,8 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
         }
         return result
     }
+
+    protected open val followMacroExpansions: Boolean get() = false
 
     protected fun replaceCaretMarker(text: String) = text.replace("/*caret*/", "<caret>")
 
