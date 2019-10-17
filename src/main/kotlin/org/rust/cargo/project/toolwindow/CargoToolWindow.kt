@@ -5,12 +5,10 @@
 
 package org.rust.cargo.project.toolwindow
 
-import com.intellij.openapi.actionSystem.ActionManager
-import com.intellij.openapi.actionSystem.ActionToolbar
-import com.intellij.openapi.actionSystem.DataKey
-import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.ide.DefaultTreeExpander
+import com.intellij.ide.TreeExpander
+import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
@@ -24,14 +22,9 @@ import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.model.guessAndSetupRustProject
-import org.rust.cargo.toolchain.CargoCommandLine
-import org.rust.cargo.toolchain.launchCommand
-import org.rust.cargo.toolchain.run
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
+import org.rust.cargo.runconfig.hasCargoProject
 import javax.swing.JComponent
 import javax.swing.JEditorPane
-import javax.swing.tree.DefaultMutableTreeNode
 
 class CargoToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -47,17 +40,17 @@ private class CargoToolWindowPanel(project: Project) : SimpleToolWindowPanel(tru
     private val cargoTab = CargoToolWindow(project)
 
     init {
-        setToolbar(cargoTab.toolbar.component)
+        toolbar = cargoTab.toolbar.component
         cargoTab.toolbar.setTargetComponent(this)
         setContent(cargoTab.content)
     }
 
-    override fun getData(dataId: String): Any? {
-        if (CargoToolWindow.SELECTED_CARGO_PROJECT.`is`(dataId)) {
-            return cargoTab.selectedProject
+    override fun getData(dataId: String): Any? =
+        when {
+            CargoToolWindow.SELECTED_CARGO_PROJECT.`is`(dataId) -> cargoTab.selectedProject
+            PlatformDataKeys.TREE_EXPANDER.`is`(dataId) -> cargoTab.treeExpander
+            else -> super.getData(dataId)
         }
-        return super.getData(dataId)
-    }
 }
 
 class CargoToolWindow(
@@ -73,25 +66,11 @@ class CargoToolWindow(
         isEditable = false
     }
 
-    private val projectStructure = CargoProjectStructure()
-    private val projectTree = CargoProjectStructureTree(projectStructure).apply {
-        cellRenderer = CargoProjectTreeRenderer()
-        addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount < 2) return
-                val tree = e.source as? CargoProjectStructureTree ?: return
-                val node = tree.selectionModel.selectionPath
-                    ?.lastPathComponent as? DefaultMutableTreeNode ?: return
-                val target = (node.userObject as? CargoProjectStructure.Node.Target)?.target ?: return
-                val command = target.launchCommand()
-                if (command == null) {
-                    LOG.warn("Can't create launch command for `${target.name}` target")
-                    return
-                }
-                val cargoProject = selectedProject ?: return
-                CargoCommandLine.forTarget(target, command).run(cargoProject)
-            }
-        })
+    private val projectTree = CargoProjectsTree()
+    private val projectStructure = CargoProjectTreeStructure(projectTree, project)
+
+    val treeExpander: TreeExpander = object : DefaultTreeExpander(projectTree) {
+        override fun isVisible(event: AnActionEvent): Boolean = super.isVisible(event) && project.hasCargoProject
     }
 
     val selectedProject: CargoProject? get() = projectTree.selectedProject
@@ -129,7 +108,5 @@ class CargoToolWindow(
     companion object {
         @JvmStatic
         val SELECTED_CARGO_PROJECT: DataKey<CargoProject> = DataKey.create<CargoProject>("SELECTED_CARGO_PROJECT")
-
-        private val LOG: Logger = Logger.getInstance(CargoToolWindow::class.java)
     }
 }

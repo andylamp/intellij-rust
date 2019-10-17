@@ -165,8 +165,9 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
     val containingMod = modDecl.containingMod
 
     val ownedDirectory = containingMod.getOwnedDirectory()
-    val inModRs = modDecl.contextualFile.name == RsConstants.MOD_RS_FILE
-    val inCrateRoot = containingMod.isCrateRoot
+    val contextualFile = modDecl.contextualFile
+    val inModRs = contextualFile.name == RsConstants.MOD_RS_FILE
+    val inCrateRoot = lazy(LazyThreadSafetyMode.NONE) { containingMod.isCrateRoot }
 
     val explicitPath = modDecl.pathAttribute
     if (explicitPath != null) {
@@ -175,7 +176,7 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
         // * parent of module declaration otherwise
         val dir = if (containingMod is RsFile) {
             modDeclExplicitPathInNonInlineModule.hit()
-            modDecl.contextualFile.parent
+            contextualFile.parent
         } else {
             modDeclExplicitPathInInlineModule.hit()
             ownedDirectory
@@ -198,7 +199,7 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
     }
 
     for (file in ownedDirectory.files) {
-        if (file == modDecl.contextualFile.originalFile || file.name == RsConstants.MOD_RS_FILE) continue
+        if (file == contextualFile.originalFile || file.name == RsConstants.MOD_RS_FILE) continue
         val mod = file.rustFile ?: continue
         val name = fileName(file)
         if (processor(name, mod)) return true
@@ -210,19 +211,19 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
             if (processor(d.name, mod)) return true
         }
 
-        // Submodule file of crate root (for example, `mod foo;` in `src/main.rs`)
-        // can be located in the same directory with parent module (i.e. in `src/foo.rs`)
-        // or in `mod.rs` of subdirectory of crate root dir (i.e. in `src/foo/mod.rs`)
-        // Both cases are handled above
-        if (inCrateRoot) {
-            crateRootModule.hit()
-            continue
-        }
-
         // We shouldn't search possible module files in subdirectories
         // if module declaration is located in `mod.rs`
         if (inModRs) {
             modRsFile.hit()
+            continue
+        }
+
+        // Submodule file of crate root (for example, `mod foo;` in `src/main.rs`)
+        // can be located in the same directory with parent module (i.e. in `src/foo.rs`)
+        // or in `mod.rs` of subdirectory of crate root dir (i.e. in `src/foo/mod.rs`)
+        // Both cases are handled above
+        if (inCrateRoot.value) {
+            crateRootModule.hit()
             continue
         }
 
@@ -562,6 +563,12 @@ private fun processTypeQualifiedPathResolveVariants(
 }
 
 fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
+    if (binding.parent is RsPatField) {
+        val parentPat = binding.parent.parent as RsPatStruct
+        val patStruct = parentPat.path.reference.resolve()
+        if (patStruct is RsFieldsOwner && processFieldDeclarations(patStruct, processor)) return true
+    }
+
     return processNestedScopesUpwards(binding, if (isCompletion) TYPES_N_VALUES else VALUES) { entry ->
         processor.lazy(entry.name) {
             val element = entry.element ?: return@lazy null
@@ -718,7 +725,7 @@ fun processMacroCallPathResolveVariants(path: RsPath, isCompletion: Boolean, pro
         if (isCompletion) {
             processMacroCallVariantsInScope(path, processor)
         } else {
-            if (path.findElementExpandedFrom(strict = false) == null) {
+            if (!path.cameFromMacroCall()) {
                 // Handles `#[macro_export(local_inner_macros)]`
                 // this "recursive" macro resolve should not be a problem because
                 // 1. we resolve the macro from which [path] is expanded, so it can't run into infinite recursion
@@ -1125,57 +1132,44 @@ private fun processAssociatedItems(
     ns: Set<Namespace>,
     processor: (AssocItemScopeEntry) -> Boolean
 ): Boolean {
+    val nsFilter: (RsAbstractable) -> Boolean = when {
+        Namespace.Types in ns && Namespace.Values in ns -> {{ true }}
+        Namespace.Types in ns -> {{ it is RsTypeAlias }}
+        Namespace.Values in ns -> {{ it !is RsTypeAlias }}
+        else -> return false
+    }
+
     val traitBounds = (type as? TyTypeParameter)?.let { lookup.getEnvBoundTransitivelyFor(it).toList() }
     val visitedInherent = mutableSetOf<String>()
-    fun processTraitOrImpl(traitOrImpl: TraitImplSource, inherent: Boolean): Boolean {
-        fun inherentProcessor(entry: RsAbstractable): Boolean {
-            val name = entry.name ?: return false
-            if (inherent) visitedInherent.add(name)
-            if (!inherent && name in visitedInherent) return false
 
-            val subst = if (traitBounds != null && traitOrImpl is TraitImplSource.TraitBound) {
+    for (traitOrImpl in lookup.findImplsAndTraits(type)) {
+        val isInherentImpl = traitOrImpl is TraitImplSource.ExplicitImpl && traitOrImpl.isInherent
+
+        for (member in traitOrImpl.implAndTraitExpandedMembers) {
+            if (!nsFilter(member)) continue
+            val name = member.name ?: continue
+
+            // In Rust, inherent impl members (`impl Foo {}`) wins over trait impl members (`impl T for Foo {}`).
+            // Note that `findImplsAndTraits` returns ordered sequence: inherent impls are placed to the head
+            if (isInherentImpl) {
+                visitedInherent.add(name)
+            } else if (name in visitedInherent) {
+                continue
+            }
+
+            val result = if (traitBounds != null && traitOrImpl is TraitImplSource.TraitBound) {
                 // Retrieve trait subst for associated type like
                 // trait SliceIndex<T> { type Output; }
                 // fn get<I: : SliceIndex<S>>(index: I) -> I::Output
-                // Resulting subst will contains mapping T => S
-                traitBounds.filter { it.element == traitOrImpl.value }.map { it.subst }
+                // Resulting subst will contain mapping T => S
+                val bounds = traitBounds.filter { it.element == traitOrImpl.value }
+                bounds.any { processor(AssocItemScopeEntry(name, member, it.subst, type, traitOrImpl)) }
             } else {
-                listOf(emptySubstitution)
+                processor(AssocItemScopeEntry(name, member, emptySubstitution, type, traitOrImpl))
             }
-            return subst.any { processor(AssocItemScopeEntry(name, entry, it, type, traitOrImpl)) }
+            if (result) return true
         }
-
-        /**
-         * For `impl T for Foo`, this'll walk impl members and trait `T` members,
-         * which are not implemented.
-         */
-        fun processMembersWithDefaults(accessor: (RsMembers) -> List<RsAbstractable>): Boolean {
-            val directlyImplemented = traitOrImpl.members?.let { accessor(it) }.orEmpty()
-            if (directlyImplemented.any { inherentProcessor(it) }) return true
-
-            if (traitOrImpl is TraitImplSource.ExplicitImpl) {
-                val direct = directlyImplemented.map { it.name }.toSet()
-                val membersFromTrait = traitOrImpl.implementedTrait?.element?.members ?: return false
-                for (member in accessor(membersFromTrait)) {
-                    if (member.name !in direct && inherentProcessor(member)) return true
-                }
-            }
-
-            return false
-        }
-
-        if (Namespace.Values in ns) {
-            if (processMembersWithDefaults { it.expandedMembers.functionsAndConstants }) return true
-        }
-        if (Namespace.Types in ns) {
-            if (processMembersWithDefaults { it.expandedMembers.types }) return true
-        }
-        return false
     }
-
-    val (inherent, traits) = lookup.findImplsAndTraits(type).partition { it is TraitImplSource.ExplicitImpl && it.isInherent }
-    if (inherent.any { processTraitOrImpl(it, true) }) return true
-    if (traits.any { processTraitOrImpl(it, false) }) return true
     return false
 }
 
@@ -1203,7 +1197,7 @@ private fun processLexicalDeclarations(
 
     fun processPattern(pattern: RsPat, processor: RsResolveProcessor): Boolean {
         val boundNames = PsiTreeUtil.findChildrenOfType(pattern, RsPatBinding::class.java)
-            .filter { it.reference.resolve() == null && hygieneFilter(it) }
+            .filter { (it.parent is RsPatField || !it.isReferenceToConstant) && hygieneFilter(it) }
         return processAll(boundNames, processor)
     }
 
@@ -1322,7 +1316,7 @@ private fun processLexicalDeclarations(
 
         is RsLambdaExpr -> {
             if (Namespace.Values !in ns) return false
-            for (parameter in scope.valueParameterList.valueParameterList) {
+            for (parameter in scope.valueParameters) {
                 val pat = parameter.pat
                 if (pat != null && processPattern(pat, processor)) return true
             }
@@ -1384,14 +1378,13 @@ private fun makeHygieneFilter(anchor: PsiElement): (RsPatBinding) -> Boolean {
         // This branch is needed to prevent AST access
         anchor.containingFile
     } else {
-        val nameIdentifier = if (anchor is RsReferenceElement) anchor.referenceNameElement else anchor
-        (nameIdentifier.findElementExpandedFrom(strict = false) ?: nameIdentifier).containingFile
+        (anchor.findMacroCallFromWhichLeafIsExpanded() ?: anchor).containingFile
     }.unwrapCodeFragments()
 
     return fun(binding: RsPatBinding): Boolean {
         val nameIdentifier = binding.nameIdentifier ?: return false
         val bindingHygienicScope =
-            (nameIdentifier.findElementExpandedFrom(strict = false) ?: nameIdentifier).containingFile
+            (nameIdentifier.findMacroCallFromWhichLeafIsExpanded() ?: nameIdentifier).containingFile
             .unwrapCodeFragments()
         return anchorHygienicScope == bindingHygienicScope
     }

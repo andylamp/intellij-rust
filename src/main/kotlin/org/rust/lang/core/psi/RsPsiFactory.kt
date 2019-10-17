@@ -18,6 +18,7 @@ import org.rust.lang.core.macros.prepareExpandedTextForParsing
 import org.rust.lang.core.parser.RustParserUtil.PathParsingMode
 import org.rust.lang.core.parser.RustParserUtil.PathParsingMode.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.VALUES
 import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.emptySubstitution
 import org.rust.lang.core.types.infer.resolve
@@ -132,6 +133,12 @@ class RsPsiFactory(
 
     fun createStructLiteral(name: String): RsStructLiteral =
         createExpressionOfType("$name { }")
+
+    fun createStructLiteralField(name: String, value: String): RsStructLiteralField {
+        return createExpressionOfType<RsStructLiteral>("S { $name: $value }")
+            .structLiteralBody
+            .structLiteralFieldList[0]
+    }
 
     fun createStructLiteralField(name: String, value: RsExpr? = null): RsStructLiteralField {
         val structLiteralField = createExpressionOfType<RsStructLiteral>("S { $name: () }")
@@ -307,7 +314,7 @@ class RsPsiFactory(
                 blockFields != null -> " { .. }"
                 else -> ""
             }
-            val prefix = if (context.findInScope(variantName) != variant) "$enumName::" else ""
+            val prefix = if (context.findInScope(variantName, VALUES) != variant) "$enumName::" else ""
             "$prefix$variantName$suffix => {}"
         }
         return createExpressionOfType<RsMatchExpr>("match x { $matchBodyText }").matchBody
@@ -378,8 +385,9 @@ class RsPsiFactory(
             ?: error("Failed to create parameter element")
     }
 
-    fun tryCreatePat(text: CharSequence): RsPat? =
-        createFromText("fn f($text: ()) {}")
+    fun createPatFieldFull(name: String, value: String): RsPatFieldFull =
+        createFromText("fn f(A{$name: $value}: ()) {}")
+            ?: error("Failed to create full field pattern")
 
     fun createPatBinding(name: String, mutable: Boolean = false, ref: Boolean = false): RsPatBinding =
         (createStatement("let ${"ref ".iff(ref)}${"mut ".iff(mutable)}$name = 10;") as RsLetDecl).pat

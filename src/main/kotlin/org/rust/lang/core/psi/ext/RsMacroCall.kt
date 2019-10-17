@@ -57,7 +57,20 @@ val RsMacroCall.macroBody: String?
     }
 
 val RsMacroCall.bodyTextRange: TextRange?
-    get() = macroArgumentElement?.braceListBodyTextRange()
+    get() {
+        val stub = greenStub
+        return if (stub != null) {
+            val bodyStartOffset = stub.bodyStartOffset
+            val macroBody = stub.macroBody
+            if (bodyStartOffset != -1 && macroBody != null) {
+                TextRange(bodyStartOffset, bodyStartOffset + macroBody.length)
+            } else {
+                null
+            }
+        } else {
+            macroArgumentElement?.braceListBodyTextRange()
+        }
+    }
 
 private val MACRO_ARGUMENT_TYPES: TokenSet = tokenSetOf(
     MACRO_ARGUMENT, FORMAT_MACRO_ARGUMENT, LOG_MACRO_ARGUMENT,
@@ -67,6 +80,8 @@ private val MACRO_ARGUMENT_TYPES: TokenSet = tokenSetOf(
 
 private val RsMacroCall.macroArgumentElement: RsElement?
     get() = node.findChildByType(MACRO_ARGUMENT_TYPES)?.psi as? RsElement
+
+val RsMacroCall.macroArgument: RsMacroArgument? get() = macroArgumentElement as? RsMacroArgument
 
 private val RsExpr.value: String? get() {
     return when (this) {
@@ -122,6 +137,16 @@ val RsMacroCall.expansion: MacroExpansion?
         )
     }
 
+val RsMacroCall.expansionFlatten: List<RsExpandedElement>
+    get() {
+        val list = mutableListOf<RsExpandedElement>()
+        processExpansionRecursively {
+            list.add(it)
+            false
+        }
+        return list
+    }
+
 fun RsMacroCall.expandAllMacrosRecursively(): String =
     expandAllMacrosRecursively(0)
 
@@ -154,15 +179,7 @@ private fun RsExpandedElement.processRecursively(processor: (RsExpandedElement) 
 }
 
 private fun PsiElement.braceListBodyTextRange(): TextRange? =
-    textRangeBetweenParens(firstChild, lastChild)
-
-private fun textRangeBetweenParens(bra: PsiElement?, ket: PsiElement?): TextRange? {
-    if (bra == null || ket == null || bra == ket) return null
-    return TextRange(
-        bra.endOffset,
-        ket.startOffset
-    )
-}
+    textRange.let { TextRange(it.startOffset + 1, it.endOffset - 1) }
 
 fun RsMacroCall.replaceWithExpr(expr: RsExpr): RsElement {
     return when (val context = expansionContext) {

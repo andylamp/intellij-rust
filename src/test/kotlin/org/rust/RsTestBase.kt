@@ -3,9 +3,6 @@
  * found in the LICENSE file.
  */
 
-// BACKCOMPAT: 2019.1
-@file:Suppress("DEPRECATION")
-
 package org.rust
 
 import com.intellij.injected.editor.VirtualFileWindow
@@ -23,13 +20,13 @@ import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.UsefulTestCase
-import com.intellij.testFramework.fixtures.LightPlatformCodeInsightFixtureTestCase
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.text.SemVer
 import junit.framework.AssertionFailedError
 import org.intellij.lang.annotations.Language
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.RustcInfo
-import org.rust.cargo.project.model.cargoProjects
+import org.rust.cargo.project.model.impl.testCargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.toolchain.RustChannel
 import org.rust.cargo.toolchain.RustcVersion
@@ -39,8 +36,7 @@ import org.rust.lang.core.psi.ext.startOffset
 import org.rust.openapiext.saveAllDocuments
 import org.rust.stdext.BothEditions
 
-// BACKCOMPAT: 2019.1. Use BasePlatformTestCase instead
-abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCase {
+abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
 
     override fun getProjectDescriptor(): LightProjectDescriptor {
         val annotation = findAnnotationInstance<ProjectDescriptor>() ?: return DefaultDescriptor
@@ -85,12 +81,12 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
         val annotation = findAnnotationInstance<MockRustcVersion>() ?: return
         val (semVer, channel) = parse(annotation.rustcVersion)
         val rustcInfo = RustcInfo("", RustcVersion(semVer, "", channel))
-        project.cargoProjects.setRustcInfo(rustcInfo)
+        project.testCargoProjects.setRustcInfo(rustcInfo)
     }
 
     private fun setupMockEdition() {
         val edition = findAnnotationInstance<MockEdition>()?.edition ?: CargoWorkspace.Edition.EDITION_2015
-        project.cargoProjects.setEdition(edition)
+        project.testCargoProjects.setEdition(edition)
     }
 
     private fun setupMockCfgOptions() {
@@ -101,7 +97,7 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
             CfgOptions.DEFAULT.keyValueOptions,
             CfgOptions.DEFAULT.nameOptions + additionalOptions
         )
-        project.cargoProjects.setCfgOptions(allOptions)
+        project.testCargoProjects.setCfgOptions(allOptions)
     }
 
     private fun parse(version: String): Pair<SemVer, RustChannel> {
@@ -156,12 +152,12 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
         }
 
     private fun runTestEdition2015() {
-        project.cargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2015)
+        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2015)
         super.runTest()
     }
 
     private fun runTestEdition2018() {
-        project.cargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2018)
+        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2018)
         super.runTest()
     }
 

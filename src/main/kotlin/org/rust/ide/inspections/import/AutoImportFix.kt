@@ -23,14 +23,18 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.TYPES_N_VALUES
 import org.rust.lang.core.resolve.TraitImplSource
-import org.rust.lang.core.resolve.processNestedScopesUpwards
 import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
 import org.rust.lang.core.types.infer.ResolvedPath
+import org.rust.lang.core.types.infer.TypeVisitor
+import org.rust.lang.core.types.infer.type
 import org.rust.lang.core.types.inference
+import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyPrimitive
+import org.rust.lang.core.types.ty.TyTypeParameter
+import org.rust.lang.core.types.type
 import org.rust.openapiext.Testmark
 import org.rust.openapiext.checkWriteAccessAllowed
 import org.rust.openapiext.runWriteCommandAction
@@ -52,7 +56,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
         val element = startElement as? RsElement ?: return
         val (_, candidates) = when (element) {
             is RsPath -> findApplicableContext(project, element) ?: return
-            is RsMethodCall -> findApplicableContext(project, element)  ?: return
+            is RsMethodCall -> findApplicableContext(project, element) ?: return
             else -> return
         }
 
@@ -105,7 +109,7 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 return Context(basePath, emptyList())
             }
 
-            val isNameInScope = processNestedScopesUpwards(path, TYPES_N_VALUES) { it.name == basePath.referenceName }
+            val isNameInScope = path.hasInScope(basePath.referenceName, TYPES_N_VALUES)
             if (isNameInScope) {
                 // Don't import names that are already in scope but cannot be resolved
                 // because namespace of psi element prevents correct name resolution.
@@ -331,7 +335,16 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
             ) ?: return false
             val element = path.reference.deepResolve() as? RsQualifiedNamedElement ?: return false
             if (!context.namespaceFilter(element)) return false
-            return !(element.parent is RsMembers && element.ancestorStrict<RsTraitItem>() != null)
+
+            // Looks like it's useless to access trait associated types directly (i.e. `Trait::Type`),
+            // but methods can be used in UFCS and associated functions or constants can be accessed
+            // it they have `Self` type in a signature
+
+            if (element !is RsAbstractable || element.owner !is RsAbstractableOwner.Trait) return true
+            if (element.canBeAccessedByTraitName) return true
+            if (path.qualifier?.reference?.deepResolve() !is RsTraitItem) return true
+
+            return false
         }
 
         private fun Sequence<ImportCandidate>.filterImportCandidates(
@@ -376,10 +389,10 @@ class AutoImportFix(element: RsElement) : LocalQuickFixOnPsiElement(element), Hi
                 candidate to attributes
             }
 
-            val condition: (RsFile.Attributes) -> Boolean = if (hasImportWithSameAttributes) {
-                attributes -> attributes == fileAttributes
-            } else {
-                attributes -> attributes < fileAttributes
+            val condition: (RsFile.Attributes) -> Boolean = if (hasImportWithSameAttributes) { attributes ->
+                attributes == fileAttributes
+            } else { attributes ->
+                attributes < fileAttributes
             }
             return candidateToAttributes.mapNotNull { (candidate, attributes) ->
                 if (condition(attributes)) candidate else null
@@ -429,7 +442,7 @@ sealed class ImportInfo {
 
     abstract val usePath: String
 
-    class LocalImportInfo(override val usePath: String): ImportInfo()
+    class LocalImportInfo(override val usePath: String) : ImportInfo()
 
     class ExternCrateImportInfo(
         val target: CargoWorkspace.Target,
@@ -658,23 +671,61 @@ data class ImportContext private constructor(
             attributes = path.stdlibAttributes,
             namespaceFilter = path.namespaceFilter(isCompletion)
         )
+
+        fun from(project: Project, element: RsElement): ImportContext = ImportContext(
+            project = project,
+            mod = element.containingMod,
+            superMods = LinkedHashSet(element.containingMod.superMods),
+            scope = RsWithMacrosScope(project, GlobalSearchScope.allScope(project)),
+            pathParsingMode = PathParsingMode.NO_COLONS,
+            attributes = element.stdlibAttributes,
+            namespaceFilter = { true }
+        )
     }
 }
 
-private val RsPath.pathParsingMode: PathParsingMode get() = when (parent) {
-    is RsPathExpr,
-    is RsStructLiteral,
-    is RsPatStruct,
-    is RsPatTupleStruct -> PathParsingMode.COLONS
-    else -> PathParsingMode.NO_COLONS
-}
+private val RsPath.pathParsingMode: PathParsingMode
+    get() = when (parent) {
+        is RsPathExpr,
+        is RsStructLiteral,
+        is RsPatStruct,
+        is RsPatTupleStruct -> PathParsingMode.COLONS
+        else -> PathParsingMode.NO_COLONS
+    }
 private val RsElement.stdlibAttributes: RsFile.Attributes
     get() = (crateRoot?.containingFile as? RsFile)?.attributes ?: RsFile.Attributes.NONE
 private val RsItemsOwner.firstItem: RsElement get() = itemsAndMacros.first { it !is RsAttr && it !is RsVis }
-private val <T: RsElement> List<T>.lastElement: T? get() = maxBy { it.textOffset }
+private val <T : RsElement> List<T>.lastElement: T? get() = maxBy { it.textOffset }
 
 private val CargoWorkspace.Target.isStd: Boolean
     get() = pkg.origin == PackageOrigin.STDLIB && normName == AutoInjectedCrates.STD
 
 private val CargoWorkspace.Target.isCore: Boolean
     get() = pkg.origin == PackageOrigin.STDLIB && normName == AutoInjectedCrates.CORE
+
+/**
+ * If function or constant is defined in a trait
+ * ```rust
+ * trait Trait {
+ *     fn foo() {}
+ * }
+ * ```
+ * it potentially can be accessed by the trait name `Trait::foo` only if there are `self` parameter or
+ * `Self` type in the signature
+ */
+private val RsAbstractable.canBeAccessedByTraitName: Boolean
+    get() {
+        check(owner is RsAbstractableOwner.Trait)
+        val type = when (this) {
+            is RsFunction -> {
+                if (selfParameter != null) return true
+                type
+            }
+            is RsConstant -> typeReference?.type ?: return false
+            else -> return false
+        }
+        return type.visitWith(object : TypeVisitor {
+            override fun visitTy(ty: Ty): Boolean =
+                if (ty is TyTypeParameter && ty.parameter is TyTypeParameter.Self) true else ty.superVisitWith(this)
+        })
+    }

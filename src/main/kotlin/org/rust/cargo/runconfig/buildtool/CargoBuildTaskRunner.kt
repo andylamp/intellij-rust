@@ -92,15 +92,14 @@ class CargoBuildTaskRunner : ProjectTaskRunner() {
                     ?: false
                 if (allTargets) add("--all-targets")
             }
-            if (settings.useOffline) add("-Zoffline")
         }
 
         return cargoProjects.mapNotNull { cargoProject ->
             val commandLine = CargoCommandLine.forProject(cargoProject, "build", additionalArguments)
             val settings = runManager.createCargoCommandRunConfiguration(commandLine)
-            val executionEnvironment = ExecutionEnvironment(executor, runner, settings, project)
+            val environment = ExecutionEnvironment(executor, runner, settings, project)
             val configuration = settings.configuration as? CargoCommandConfiguration ?: return@mapNotNull null
-            val buildableElement = CargoBuildConfiguration(configuration, executionEnvironment)
+            val buildableElement = CargoBuildConfiguration(configuration, environment)
             ProjectModelBuildTaskImpl(buildableElement, false)
         }
     }

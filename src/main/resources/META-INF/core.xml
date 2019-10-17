@@ -2,6 +2,7 @@
     <depends>com.intellij.modules.lang</depends>
 
     <xi:include href="/META-INF/platform-core.xml" xpointer="xpointer(/idea-plugin/*)"/>
+    <xi:include href="/META-INF/experiments.xml" xpointer="xpointer(/idea-plugin/*)"/>
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Rust -->
@@ -12,7 +13,11 @@
 
         <!-- File-type Factory -->
 
-        <fileTypeFactory implementation="org.rust.lang.RsFileTypeFactory"/>
+        <fileType name="Rust"
+                  language="Rust"
+                  implementationClass="org.rust.lang.RsFileType"
+                  extensions="rs"
+                  fieldName="INSTANCE"/>
         <internalFileTemplate name="Rust File"/>
 
         <!-- Parser -->
@@ -34,6 +39,7 @@
         <extendWordSelectionHandler implementation="org.rust.ide.wordSelection.RsGroupSelectionHandler"/>
         <extendWordSelectionHandler implementation="org.rust.ide.wordSelection.RsFieldLikeSelectionHandler"/>
         <extendWordSelectionHandler implementation="org.rust.ide.wordSelection.RsListSelectionHandler"/>
+        <extendWordSelectionHandler implementation="org.rust.ide.wordSelection.RsMacroCallSelectionHandler"/>
 
         <!-- Syntax Highlighter -->
 
@@ -70,6 +76,10 @@
 
         <lang.implementationTextSelectioner language="Rust"
                                             implementationClass="org.rust.ide.hints.RsImplementationTextSelectioner"/>
+
+        <!-- Filters -->
+
+        <analyzeStacktraceFilter implementation="org.rust.cargo.runconfig.filters.RsBacktraceFilter"/>
 
         <!-- Structure View -->
 
@@ -127,6 +137,7 @@
                                    implementationClass="org.rust.ide.hints.RsGenericParameterInfoHandler"/>
         <codeInsight.parameterNameHints language="Rust"
                                         implementationClass="org.rust.ide.hints.RsInlayParameterHintsProvider"/>
+        <codeInsight.inlayProvider language="Rust" implementationClass="org.rust.ide.hints.RsInlayTypeHintsProvider"/>
 
         <declarationRangeHandler key="org.rust.lang.core.psi.RsStructItem"
                                  implementationClass="org.rust.ide.hints.RsStructItemDeclarationRangeHandler"/>
@@ -154,6 +165,7 @@
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsExpressionAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsErrorAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsUnsafeExpressionAnnotator"/>
+        <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsCfgDisabledCodeAnnotator"/>
         <highlightRangeExtension implementation="org.rust.ide.annotator.RsErrorAnnotator"/>
 
         <!-- Line Marker Providers -->
@@ -176,7 +188,10 @@
 
         <!-- Rename Processor -->
 
-        <renamePsiElementProcessor implementation="org.rust.ide.refactoring.RsRenameProcessor"/>
+        <renamePsiElementProcessor implementation="org.rust.ide.refactoring.RsRenameProcessor" order="first"
+                                   id="rsRenameProcessor"/>
+        <renamePsiElementProcessor implementation="org.rust.ide.refactoring.RsDirectoryRenameProcessor"
+                                   order="first, before rsRenameProcessor"/>
 
         <!-- Implement methods -->
 
@@ -208,6 +223,7 @@
         <!-- Spell-checker -->
 
         <spellchecker.support language="Rust" implementationClass="org.rust.ide.spelling.RsSpellcheckingStrategy"/>
+        <spellchecker.bundledDictionaryProvider implementation="org.rust.ide.spelling.RsBundledDictionaryProvider"/>
 
         <!-- Handlers -->
 
@@ -756,7 +772,8 @@
         <projectService serviceInterface="org.rust.cargo.project.settings.RustProjectSettingsService"
                         serviceImplementation="org.rust.cargo.project.settings.impl.RustProjectSettingsServiceImpl"/>
         <projectService serviceInterface="org.rust.cargo.project.model.CargoProjectsService"
-                        serviceImplementation="org.rust.cargo.project.model.impl.CargoProjectsServiceImpl"/>
+                        serviceImplementation="org.rust.cargo.project.model.impl.CargoProjectsServiceImpl"
+                        testServiceImplementation="org.rust.cargo.project.model.impl.TestCargoProjectsServiceImpl"/>
 
         <toolWindow id="Cargo"
                     anchor="right"
@@ -765,11 +782,6 @@
 
         <additionalLibraryRootsProvider
                 implementation="org.rust.cargo.project.workspace.RsAdditionalLibraryRootsProvider"/>
-
-        <registryKey key="cargo.build.tool.window.enabled" defaultValue="true"
-                     description="Enable Cargo tasks to use Build Tool Window"/>
-        <registryKey key="rust.cfg.attributes.enabled" defaultValue="false"
-                     description="Enable Rust cfg attributes support"/>
 
         <!-- Icon Provider -->
 
@@ -825,7 +837,6 @@
 
         <runAnything.executionProvider order="after RunAnythingRunConfigurationProvider"
                                        implementation="org.rust.ide.actions.runAnything.CargoRunAnythingProvider"/>
-        <runAnything.helpGroup implementation="org.rust.ide.actions.runAnything.CargoRunAnythingHelpGroup"/>
 
         <lang.elementManipulator forClass="org.rust.lang.core.psi.RsLitExpr"
                                  implementationClass="org.rust.ide.injected.RsStringLiteralManipulator"/>
@@ -922,45 +933,6 @@
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
-        <action id="Rust.RustfmtFile"
-                class="org.rust.ide.actions.RustfmtFileAction"
-                text="Reformat File with Rustfmt"
-                description="Reformat current file with rustfmt"
-                icon="AllIcons.Actions.RealIntentionBulb">
-            <add-to-group group-id="CodeMenu" anchor="last"/>
-        </action>
-
-        <action id="Rust.RustfmtCargoProject"
-                class="org.rust.ide.actions.RustfmtCargoProjectAction"
-                text="Reformat Cargo Project with Rustfmt"
-                description="Reformat cargo project with rustfmt"
-                icon="AllIcons.Actions.RealIntentionBulb">
-            <add-to-group group-id="CodeMenu" anchor="last"/>
-        </action>
-
-        <action id="Rust.RefreshCargoProject"
-                class="org.rust.ide.actions.RefreshCargoProjectAction"
-                icon="AllIcons.Actions.Refresh"/>
-
-        <action id="Rust.CargoCommand"
-                class="org.rust.cargo.runconfig.command.RunCargoCommandAction"
-                text="Run Cargo Command"/>
-
-        <action id="Rust.RunExternalLinter"
-                class="org.rust.ide.actions.RsRunExternalLinterAction"
-                text="Run External Linter"/>
-
-        <action id="Rust.AttachCargoProject"
-                class="org.rust.cargo.project.model.AttachCargoProjectAction"
-                text="Attach Cargo Project"
-                icon="AllIcons.General.Add"/>
-
-        <action id="Rust.DetachCargoProject"
-                class="org.rust.cargo.project.model.DetachCargoProjectAction"
-                text="Detach Cargo Project"
-                icon="AllIcons.General.Remove"
-                use-shortcut-of="$Delete"/>
-
         <action id="Rust.ShowSingleStepMacroExpansionAction"
                 class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction"
                 text="Show Expanded Macro">
@@ -983,19 +955,6 @@
                 text="Generate Constructor">
             <add-to-group group-id="GenerateGroup"/>
         </action>
-        <group id="Rust.Cargo">
-            <reference id="Rust.RefreshCargoProject"/>
-            <reference id="Rust.CargoCommand"/>
-            <reference id="Rust.RustfmtCargoProject"/>
-            <reference id="Rust.RunExternalLinter"/>
-            <separator/>
-            <reference id="Rust.AttachCargoProject"/>
-            <reference id="Rust.DetachCargoProject"/>
-        </group>
-        <action id="Rust.ToggleExternalLinterOnTheFlyAction"
-                class="org.rust.ide.actions.ToggleExternalLinterOnTheFlyAction"
-                text="Run External Linter (Cargo Check / Clippy) on the Fly">
-        </action>
 
         <action id="Rust.ReexpandMacrosAction"
                 class="org.rust.lang.core.macros.ReexpandMacrosAction"
@@ -1003,7 +962,83 @@
         </action>
 
         <action id="Rust.CreateNewGithubIssue"
-                class="org.rust.ide.actions.diagnostic.CreateNewGithubIssue"/>
+                class="org.rust.ide.actions.diagnostic.CreateNewGithubIssue">
+            <add-to-group group-id="HelpMenu" anchor="after" relative-to-action="ReportProblem"/>
+        </action>
+
+        <!-- Cargo-->
+
+        <action id="Cargo.RustfmtFile"
+                class="org.rust.ide.actions.RustfmtFileAction"
+                text="Reformat File with Rustfmt"
+                description="Reformat current file with rustfmt"
+                icon="AllIcons.Actions.RealIntentionBulb">
+            <add-to-group group-id="CodeMenu" anchor="last"/>
+        </action>
+
+        <action id="Cargo.RustfmtCargoProject"
+                class="org.rust.ide.actions.RustfmtCargoProjectAction"
+                text="Reformat Cargo Project with Rustfmt"
+                description="Reformat cargo project with rustfmt"
+                icon="AllIcons.Actions.RealIntentionBulb">
+            <add-to-group group-id="CodeMenu" anchor="last"/>
+        </action>
+
+        <action id="Cargo.RefreshCargoProject"
+                class="org.rust.ide.actions.RefreshCargoProjectAction"
+                icon="AllIcons.Actions.Refresh"/>
+
+        <action id="Cargo.AttachCargoProject"
+                class="org.rust.cargo.project.model.AttachCargoProjectAction"
+                text="Attach Cargo Project"
+                icon="AllIcons.General.Add"/>
+
+        <action id="Cargo.DetachCargoProject"
+                class="org.rust.cargo.project.model.DetachCargoProjectAction"
+                text="Detach Cargo Project"
+                icon="AllIcons.General.Remove"
+                use-shortcut-of="$Delete"/>
+
+        <action id="Cargo.RunCargoCommand"
+                class="org.rust.cargo.runconfig.command.RunCargoCommandAction"
+                text="Run Cargo Command"/>
+
+        <action id="Cargo.RunExternalLinter"
+                class="org.rust.ide.actions.RsRunExternalLinterAction"
+                text="Run External Linter"/>
+
+        <action id="Cargo.ToggleExternalLinterOnTheFlyAction"
+                class="org.rust.ide.actions.ToggleExternalLinterOnTheFlyAction"
+                text="Run External Linter (Cargo Check / Clippy) on the Fly"/>
+
+        <action id="Cargo.ShowSettings"
+                class="org.rust.ide.actions.CargoEditSettingsAction" text="Cargo Settings"
+                description="Edit Cargo settings for the current project"
+                icon="AllIcons.General.Settings">
+        </action>
+
+        <group id="Rust.Cargo">
+            <reference id="Cargo.RefreshCargoProject"/>
+            <reference id="Cargo.AttachCargoProject"/>
+            <reference id="Cargo.DetachCargoProject"/>
+            <separator/>
+            <reference id="Cargo.RunCargoCommand"/>
+            <reference id="Cargo.RunExternalLinter"/>
+            <reference id="Cargo.RustfmtCargoProject"/>
+            <separator/>
+            <reference id="ExpandAll"/>
+            <reference id="CollapseAll"/>
+            <separator/>
+            <reference id="Cargo.ShowSettings"/>
+        </group>
+
+        <!-- Internal -->
+
+        <action id="RsGenerateDictionaries" class="org.rust.ide.spelling.RsSpellCheckerGenerateDictionariesAction"
+                text="Generate Rust Spellchecker Dictionaries" internal="true">
+            <add-to-group group-id="Internal"/>
+        </action>
+
     </actions>
 
 </idea-plugin>

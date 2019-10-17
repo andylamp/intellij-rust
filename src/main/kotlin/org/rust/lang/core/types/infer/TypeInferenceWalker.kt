@@ -31,6 +31,7 @@ class RsTypeInferenceWalker(
 ) {
     private var tryTy: Ty? = returnTy
     private var yieldTy: Ty? = null
+    private var macroExprDepth: Int = 0
     private val lookup get() = ctx.lookup
     private val items get() = ctx.items
     private val fulfill get() = ctx.fulfill
@@ -81,14 +82,7 @@ class RsTypeInferenceWalker(
     fun inferFnBody(block: RsBlock): Ty =
         block.inferTypeCoercableTo(returnTy)
 
-    fun inferLambdaBody(expr: RsExpr): Ty =
-        if (expr is RsBlockExpr) {
-            // skipping diverging procession for lambda body
-            ctx.writeExprTy(expr, returnTy)
-            inferFnBody(expr.block)
-        } else {
-            expr.inferTypeCoercableTo(returnTy)
-        }
+    fun inferLambdaBody(expr: RsExpr): Ty = expr.inferTypeCoercableTo(returnTy)
 
     private fun RsBlock.inferTypeCoercableTo(expected: Ty): Ty =
         inferType(expected, true)
@@ -388,7 +382,7 @@ class RsTypeInferenceWalker(
             is RsPatBinding -> ctx.getBindingType(element)
             is RsTypeDeclarationElement -> element.declaredType
             is RsEnumVariant -> element.parentEnum.declaredType
-            is RsFunction -> element.typeOfValue
+            is RsFunction -> element.type
             is RsConstant -> element.typeReference?.type ?: TyUnknown
             is RsConstParameter -> element.typeReference?.type ?: TyUnknown
             is RsSelfParameter -> element.typeOfValue
@@ -595,7 +589,7 @@ class RsTypeInferenceWalker(
 
         unifySubst(fnSubst, typeParameters)
 
-        val methodType = (callee.element.typeOfValue)
+        val methodType = (callee.element.type)
             .substitute(typeParameters)
             .foldWith(associatedTypeNormalizer) as TyFunction
         if (expected != null && !callee.element.isAsync) ctx.combineTypes(expected, methodType.retType)
@@ -606,7 +600,7 @@ class RsTypeInferenceWalker(
         return methodType.retType
     }
 
-    private fun <T: AssocItemScopeEntryBase<E>, E> filterAssocItems(variants: List<T>, context: RsElement): List<T> {
+    private fun <T : AssocItemScopeEntryBase<E>, E> filterAssocItems(variants: List<T>, context: RsElement): List<T> {
         return variants.singleOrLet { list ->
             // 1. filter traits that are not imported
             TypeInferenceMarks.methodPickTraitScope.hit()
@@ -1046,6 +1040,19 @@ class RsTypeInferenceWalker(
     }
 
     private fun inferMacroExprType(macroExpr: RsMacroExpr, expected: Ty?): Ty {
+        if (macroExprDepth > DEFAULT_RECURSION_LIMIT) {
+            TypeInferenceMarks.macroExprDepthLimitReached.hit()
+            return TyUnknown
+        }
+        macroExprDepth++
+        try {
+            return inferMacroExprType0(macroExpr, expected)
+        } finally {
+            macroExprDepth--
+        }
+    }
+
+    private fun inferMacroExprType0(macroExpr: RsMacroExpr, expected: Ty?): Ty {
         val macroCall = macroExpr.macroCall
         val name = macroCall.macroName
         val exprArg = macroCall.exprMacroArgument
@@ -1134,7 +1141,7 @@ class RsTypeInferenceWalker(
     }
 
     private fun inferLambdaExprType(expr: RsLambdaExpr, expected: Ty?): Ty {
-        val params = expr.valueParameterList.valueParameterList
+        val params = expr.valueParameters
         val expectedFnTy = expected
             ?.let(this::deduceLambdaType)
             ?: unknownTyFunction(params.size)
@@ -1288,6 +1295,13 @@ class RsTypeInferenceWalker(
 
     fun writePatFieldTy(psi: RsPatField, ty: Ty): Unit =
         ctx.writePatFieldTy(psi, ty)
+
+    private fun Ty.lookupFutureOutputTy(lookup: ImplLookup): Ty {
+        val futureTrait = lookup.items.Future ?: return TyUnknown
+        val outputType = futureTrait.findAssociatedType("Output") ?: return TyUnknown
+        val selection = lookup.selectProjection(TraitRef(this, futureTrait.withSubst()), outputType)
+        return selection.ok()?.register() ?: TyUnknown
+    }
 }
 
 private val RsSelfParameter.typeOfValue: Ty
@@ -1313,7 +1327,7 @@ private fun RsSelfParameter.typeOfValue(selfType: Ty): Ty {
 
 }
 
-private val RsFunction.typeOfValue: TyFunction
+val RsFunction.type: TyFunction
     get() {
         val paramTypes = mutableListOf<Ty>()
 

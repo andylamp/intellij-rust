@@ -7,11 +7,12 @@ package org.rust.lang.core.resolve
 
 import com.intellij.openapi.project.Project
 import org.rust.lang.core.psi.RsImplItem
-import org.rust.lang.core.psi.RsMembers
 import org.rust.lang.core.psi.RsTraitItem
 import org.rust.lang.core.psi.RsTraitRef
-import org.rust.lang.core.psi.ext.RsMod
+import org.rust.lang.core.psi.ext.RsAbstractable
+import org.rust.lang.core.psi.ext.expandedMembers
 import org.rust.lang.core.psi.ext.resolveToBoundTrait
+import org.rust.lang.core.psi.isValidProjectMember
 import org.rust.lang.core.resolve.ref.ResolveCacheDependency
 import org.rust.lang.core.resolve.ref.RsResolveCache
 import org.rust.lang.core.types.BoundElement
@@ -19,6 +20,7 @@ import org.rust.lang.core.types.infer.generics
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyTypeParameter
 import org.rust.lang.core.types.type
+import org.rust.stdext.mapToSet
 import kotlin.LazyThreadSafetyMode.PUBLICATION
 
 /**
@@ -26,14 +28,23 @@ import kotlin.LazyThreadSafetyMode.PUBLICATION
  * [ImplLookup.assembleCandidates] and [processAssociatedItems] in particular
  */
 class RsCachedImplItem(
-    val impl: RsImplItem,
-    val crateRoot: RsMod? = impl.crateRoot,
-    val traitRef: RsTraitRef? = impl.traitRef,
-    val membres: RsMembers? = impl.members
+    val impl: RsImplItem
 ) {
+    val traitRef: RsTraitRef? = impl.traitRef
+    val isValid: Boolean = impl.isValidProjectMember
+
     val implementedTrait: BoundElement<RsTraitItem>? by lazy(PUBLICATION) { traitRef?.resolveToBoundTrait() }
     val typeAndGenerics: Pair<Ty, List<TyTypeParameter>>? by lazy(PUBLICATION) {
         impl.typeReference?.type?.let { it to impl.generics }
+    }
+
+    /** For `impl T for Foo` returns union of impl members and trait `T` members that are not overriden by the impl */
+    val implAndTraitExpandedMembers: List<RsAbstractable> by lazy(PUBLICATION) {
+        val implMembers = impl.members?.expandedMembers.orEmpty()
+        val traitMembers = implementedTrait?.element?.members?.expandedMembers
+            ?: return@lazy implMembers
+        val implMemberNames = implMembers.mapToSet { it.name }
+        implMembers + traitMembers.filter { it.name !in implMemberNames }
     }
 
     companion object {

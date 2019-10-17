@@ -205,11 +205,10 @@ TypeArgumentList ::= TypeArgumentListImpl {
 ColonTypeArgumentList ::= '::' TypeArgumentListImpl { elementType = TypeArgumentList }
 
 private TypeArgumentListImpl ::= '<' !'=' ( <<list_element Lifetime>>*
-                                            <<list_element (!(identifier '=') TypeReference)>>*
-                                            <<list_element (BlockExpr | LitExpr | &('-' LitExpr) UnaryExpr)>>*
+                                            <<list_element (!(identifier ('='|':')) !'>' TypeReference)>>*
+                                            <<list_element (!'>' (BlockExpr | LitExpr | &('-' LitExpr) UnaryExpr))>>*
                                             <<list_element AssocTypeBinding>>*) '>' { pin = 2 }
-AssocTypeBinding ::= identifier '=' TypeReference {
-  pin = 2
+AssocTypeBinding ::= identifier (AssocTypeBindingType | AssocTypeBindingBound) {
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsReferenceElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsAssocTypeBindingMixin"
@@ -217,9 +216,15 @@ AssocTypeBinding ::= identifier '=' TypeReference {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
+private AssocTypeBindingType ::=  '=' TypeReference { pin = 1 }
+private AssocTypeBindingBound ::=  ':' TypeBounds { pin = 1 }
 
-// Paths for expressions:
-//     a::b::<T,U>::c
+
+// Paths for types:
+//    Vec<T>
+//    a::b<T,U>::c<V,W>
+//    std::Fn(V) -> W
+//    std::Fn(V)
 PathGenericArgsWithoutColons ::= <<typeQuals 'ON' <<pathMode 'NO_COLONS' PathImpl>>>> { elementType = Path }
 PathGenericArgsWithoutColonsNoTypeQual ::= <<typeQuals 'OFF' <<pathMode 'NO_COLONS' PathImpl>>>> { elementType = Path }
 
@@ -227,10 +232,8 @@ PathGenericArgsWithoutColonsNoTypeQual ::= <<typeQuals 'OFF' <<pathMode 'NO_COLO
 //     a::b::c
 PathWithoutTypes ::= <<typeQuals 'OFF' <<pathMode 'NO_TYPES' PathImpl>>>> { elementType = Path }
 
-// Paths for types:
-//    a::b<T,U>::c<V,W>
-//    a::b<T,U>::c(V) -> W
-//    a::b<T,U>::c(V)
+// Paths for expressions:
+//     a::b::<T,U>::c
 PathGenericArgsWithColons ::= <<typeQuals 'ON' <<pathMode 'COLONS' PathImpl>>>> { elementType = Path }
 PathGenericArgsWithColonsNoTypeQual ::= <<typeQuals 'OFF' <<pathMode 'COLONS' PathImpl>>>> { elementType = Path }
 
@@ -314,9 +317,10 @@ fake ValueParameter ::= OuterAttr* Pat? TypeReference? {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-FnParameter ::= !(Variadic) OuterAttr* [ Pat ':' ] TypeReference
-private FnParameter_with_recover ::= FnParameter (',' | &')') {
-  pin = 1
+FnParameter ::= OuterAttr* [ Pat ':' ] (VariadicUpper | TypeReference)
+upper VariadicUpper ::= '...' ','? { elementType = Variadic }
+private FnParameter_with_recover ::= !')' FnParameter (',' | &')') {
+  pin = 2
   recoverWhile = FnParameter_recover
 }
 private FnParameter_recover ::= !(Pat_first | OuterAttr_first | ')' | '...')
@@ -340,7 +344,7 @@ fake ValueParameterList ::= SelfParameter? ValueParameter* Variadic? {
 }
 
 FnParameters          ::= '(' !',' [ SelfParameter (',' | &')') ]
-                                   FnParameter_with_recover* [Variadic ','? ]
+                                   FnParameter_with_recover*
                           ')' { pin = 1 }
 LambdaParameters      ::= '|' !',' [ <<comma_separated_list LambdaParameter>> ] '|'
 
@@ -800,31 +804,31 @@ private TypeAscription ::= ':' TypeReference
 private TypeReferenceInner ::= ArrayType
                                | RefLikeType
                                | FnPointerType
-                               | MacroType
                                // External rule to find the difference between `(T)` and `(T,)`
                                | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
                                | ExplicitTraitType
                                | TrivialBaseType
                                // External rule to find the difference between `T` and `T+T`
                                | <<baseOrTraitType PathGenericArgsWithoutColons ImplicitTraitType TraitType_upper>>
+                               | MacroType
                                | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
 
 private TypeReferenceNoImplicitTraitTypeInner ::= ArrayType
                                | RefLikeType
                                | FnPointerType
-                               | MacroType
                                // External rule to find the difference between `(T)` and `(T,)`
                                | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
                                | ExplicitTraitType
+                               | MacroType
                                | BaseType
                                | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
 
 private ScalarTypeReferenceInner ::= ArrayType
                                    | RefLikeType
                                    | FnPointerType
+                                   | <<tupleOrParenType ScalarTypeReferenceInner TupleType_upper>>
                                    | MacroType
                                    | BaseType
-                                   | <<tupleOrParenType ScalarTypeReferenceInner TupleType_upper>>
                                    | ForInType
 
 TypeReference ::= TypeReferenceInner {
@@ -1255,7 +1259,7 @@ YieldExpr ::= OuterAttr* yield Expr? {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-Macro ::= AttrsAndVis "macro_rules" '!' identifier MacroBody <<macroSemicolon>>{
+Macro ::= AttrsAndVis "macro_rules" '!' identifier ShallowMacroBody <<macroSemicolon>> {
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
@@ -1268,7 +1272,11 @@ Macro ::= AttrsAndVis "macro_rules" '!' identifier MacroBody <<macroSemicolon>>{
   pin = 3
 }
 
-MacroBody ::= <<any_braces (MacroCase ';'?)*>>
+MacroBody ::= <<any_braces (MacroCase ';'?)*>> {
+  elementTypeFactory = "org.rust.lang.core.psi.LazyElementsKt.factory"
+  extraRoot = true
+}
+private ShallowMacroBody ::= <<parseMacroBodyLazy>>
 
 MacroCase ::= MacroPattern '=>' MacroExpansion { pin = 1 }
 
@@ -1309,7 +1317,7 @@ Macro2 ::= AttrsAndVis MACRO_KW identifier ( Macro2FunctionLikeBody | Macro2Matc
 }
 
 private Macro2FunctionLikeBody ::= '(' MacroPatternContents ')' '{' MacroExpansionContents '}'
-private Macro2MatchLikeBody ::= '{' MacroCase ';'? '}'
+private Macro2MatchLikeBody ::= '{' (MacroCase ','?)* '}'
 
 MacroCall ::= MacroHead <<macroSemicolon>> {
   implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
@@ -1341,7 +1349,11 @@ private SpecialExprContextMacroNames ::= "try" | "await" | "dbg" | "format" | "f
 
 private MacroHead ::= AttrsAndVis &(PathWithoutTypes '!') (SpecialMacro | CommonMacro)
 
-MacroArgument ::= <<any_braces MacroArgumentTT>>
+MacroArgument ::= <<any_braces MacroArgumentTT>> {
+  elementTypeFactory = "org.rust.lang.core.psi.LazyElementsKt.factory"
+  extraRoot = true
+}
+private ShallowMacroArgument ::= <<parseMacroArgumentLazy>>
 MacroArgumentTT ::= (<<any_braces MacroArgumentTT>> | MacroBodyIdent | MacroBodyQuoteIdent | <<unpairedToken>>)*
 MacroBodyIdent ::= identifier {
   implements = "org.rust.lang.core.psi.ext.RsReferenceElementBase"
@@ -1358,7 +1370,7 @@ CompactTT ::= (<<any_braces CompactTT>> | <<unpairedToken>>)*
 //noinspection BnfUnusedRule
 TT ::= <<any_braces TT*>> | <<unpairedToken>>
 
-private CommonMacro ::= PathWithoutTypes '!' identifier? MacroArgument { pin = 2 }
+private CommonMacro ::= PathWithoutTypes '!' identifier? ShallowMacroArgument { pin = 2 }
 private SpecialMacro ::= ExprMacro | FormatLikeMacro | AssertMacro | VecMacro | LogMacro | IncludeMacro | ConcatMacro
 
 private ExprMacro ::= &(("try" | "await" | "dbg") '!') PathWithoutTypes '!' ExprMacroArgument

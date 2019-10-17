@@ -87,6 +87,12 @@ allprojects {
         }
     }
 
+    grammarKit {
+        if (platformVersion == "193") {
+            grammarKitRelease = "07f30a1e76"
+        }
+    }
+
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "1.8"
@@ -152,11 +158,11 @@ val Project.dependencyCachePath get(): String {
 }
 
 val channelSuffix = if (channel.isBlank()) "" else "-$channel"
+val versionSuffix = "-$platformVersion$channelSuffix"
 val patchVersion = prop("patchVersion").toInt().let { if (channel.isBlank()) it else it + 1 }
 
 // Special module with run, build and publish tasks
 project(":plugin") {
-    val versionSuffix = "-$platformVersion$channelSuffix"
     version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
@@ -224,6 +230,16 @@ project(":plugin") {
 }
 
 project(":") {
+    sourceSets {
+        main {
+            if (channel == "nightly" || channel == "dev") {
+                resources.srcDirs("src/main/resources-nightly")
+            } else {
+                resources.srcDirs("src/main/resources-stable")
+            }
+        }
+    }
+
     val testOutput = configurations.create("testOutput")
 
     dependencies {
@@ -380,7 +396,7 @@ project(":coverage") {
 }
 
 project(":intellij-toml") {
-    version = "0.2.0.${prop("buildNumber")}$channelSuffix"
+    version = "0.2.0.${prop("buildNumber")}$versionSuffix"
 
     intellij {
         if (isAtLeast192 && baseIDE == "idea") {
@@ -403,8 +419,14 @@ project(":intellij-toml") {
         purgeOldFiles = true
     }
 
-    tasks.withType<KotlinCompile> {
-        dependsOn(generateTomlLexer, generateTomlParser)
+    tasks{
+        withType<KotlinCompile> {
+            dependsOn(generateTomlLexer, generateTomlParser)
+        }
+        withType<PublishTask> {
+            token(prop("publishToken"))
+            channels(channel)
+        }
     }
 }
 
@@ -441,11 +463,18 @@ task("makeRelease") {
             "https://intellij-rust.github.io/$newChangelogPath.html"
         )
         pluginXml.writeText(newText)
-        updatePatchVersion()
+        val newPatchVersion = updatePatchVersion()
         "git add $pluginXmlPath gradle.properties".execute()
         "git commit -m Changelog".execute()
         "git push".execute()
-        commitNightly()
+
+        val head = "git rev-parse HEAD".execute()
+        "git checkout release-$newPatchVersion".execute()
+        "git cherry-pick $head".execute()
+        "git push".execute()
+
+        "git checkout master".execute()
+//        commitNightly()
     }
 }
 
@@ -468,12 +497,16 @@ fun commitChangelog(): String {
     return lastPost
 }
 
-fun updatePatchVersion() {
+/** Returns new patch version */
+fun updatePatchVersion(): Int {
     val properties = file("gradle.properties")
+    var newPatchVersion: Int? = null
     val propertiesText = properties.readText().replace(Regex("patchVersion=(\\d+)")) {
-        "patchVersion=${it.groupValues[1].toInt() + 1}"
+        newPatchVersion = it.groupValues[1].toInt() + 1
+        "patchVersion=${newPatchVersion}"
     }
     properties.writeText(propertiesText)
+    return newPatchVersion!!
 }
 
 fun commitNightly() {

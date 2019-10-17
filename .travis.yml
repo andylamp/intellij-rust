@@ -11,24 +11,24 @@ jdk: openjdk8
 env:
   global:
     - OLD_RUST_VERSION=1.28.0
-    - CURRENT_RUST_VERSION=1.37.0
+    - CURRENT_RUST_VERSION=1.38.0
     - NIGHLY_RUST_VERSION=nightly-2019-06-18
     - RUST_SRC_WITH_SYMLINK=$HOME/.rust-src
 
 matrix:
   include:
-    # 191 platform
-    - name: idea-191/old-rust
-      env: RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=191 ORG_GRADLE_PROJECT_ideaVersion=2019.1.2
     # 192 platform
+    - name: idea-192/old-rust
+      env: RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192 ORG_GRADLE_PROJECT_ideaVersion=IU-2019.2.1 ORG_GRADLE_PROJECT_clionVersion=CL-2019.2.1
     - name: idea-192/stable-rust
       env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192
     - name: clion-192/stable-rust
       env: RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192 ORG_GRADLE_PROJECT_baseIDE=clion
-    - name: idea-192/nightly-rust
-      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192
-    - name: clion-192/nightly-rust
-      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=192 ORG_GRADLE_PROJECT_baseIDE=clion
+    # 193 platform
+    - name: idea-193/nightly-rust
+      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=193
+    - name: clion-193/nightly-rust
+      env: RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=193 ORG_GRADLE_PROJECT_baseIDE=clion
 
 install: true
 
@@ -46,17 +46,3 @@ before_script:
 script:
   - travis_wait 30 ./gradlew check -PexcludeTests=org/rustPerformanceTests/** -Pkotlin.incremental=false --no-daemon
   - ./gradlew runPrettyPrintersTests --no-daemon
-
-# https://docs.travis-ci.com/user/languages/java/#Caching
-before_cache:
-  - rm -f  $HOME/.gradle/caches/modules-2/modules-2.lock
-  - rm -fr $HOME/.gradle/caches/*/plugin-resolution/
-  - rm -f  $HOME/.gradle/caches/*/fileHashes/fileHashes.bin
-  - rm -f  $HOME/.gradle/caches/*/fileHashes/fileHashes.lock
-cache:
-  directories:
-    - $HOME/.gradle/caches/
-    - $HOME/.gradle/wrapper/
-    - $HOME/.cargo/registry/cache/
-    - $HOME/.cargo/registry/src/
-    - $HOME/.cargo/bin/

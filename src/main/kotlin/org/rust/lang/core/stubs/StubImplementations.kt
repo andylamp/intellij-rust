@@ -36,10 +36,14 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 179
+        override fun getStubVersion(): Int = 181
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
+            override fun skipChildProcessingWhenBuildingStubs(parent: ASTNode, node: ASTNode): Boolean {
+                val elementType = node.elementType
+                return elementType == RsElementTypes.MACRO_ARGUMENT || elementType == RsElementTypes.MACRO_BODY
+            }
         }
 
         override fun serialize(stub: RsFileStub, dataStream: StubOutputStream) {
@@ -719,7 +723,8 @@ class RsPathStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     val referenceName: String,
     val hasColonColon: Boolean,
-    val kind: PathKind
+    val kind: PathKind,
+    val startOffset: Int
 ) : StubBase<RsPath>(parent, elementType) {
 
     object Type : RsStubElementType<RsPathStub, RsPath>("PATH") {
@@ -729,13 +734,14 @@ class RsPathStub(
             RsPathImpl(stub, this)
 
         override fun createStub(psi: RsPath, parentStub: StubElement<*>?) =
-            RsPathStub(parentStub, this, psi.referenceName, psi.hasColonColon, psi.kind)
+            RsPathStub(parentStub, this, psi.referenceName, psi.hasColonColon, psi.kind, psi.startOffset)
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsPathStub(parentStub, this,
                 dataStream.readName()!!.string,
                 dataStream.readBoolean(),
-                dataStream.readEnum()
+                dataStream.readEnum(),
+                dataStream.readVarInt()
             )
 
         override fun serialize(stub: RsPathStub, dataStream: StubOutputStream) =
@@ -743,6 +749,7 @@ class RsPathStub(
                 writeName(stub.referenceName)
                 writeBoolean(stub.hasColonColon)
                 writeEnum(stub.kind)
+                writeVarInt(stub.startOffset)
             }
     }
 }
@@ -1079,7 +1086,8 @@ class RsMacro2Stub(
 
 class RsMacroCallStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val macroBody: String?
+    val macroBody: String?,
+    val bodyStartOffset: Int
 ) : StubBase<RsMacroCall>(parent, elementType) {
 
     object Type : RsStubElementType<RsMacroCallStub, RsMacroCall>("MACRO_CALL") {
@@ -1090,19 +1098,21 @@ class RsMacroCallStub(
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsMacroCallStub(parentStub, this,
-                dataStream.readUTFFastAsNullable()
+                dataStream.readUTFFastAsNullable(),
+                dataStream.readVarInt()
             )
 
         override fun serialize(stub: RsMacroCallStub, dataStream: StubOutputStream) =
             with(dataStream) {
                 writeUTFFastAsNullable(stub.macroBody)
+                writeVarInt(stub.bodyStartOffset)
             }
 
         override fun createPsi(stub: RsMacroCallStub): RsMacroCall =
             RsMacroCallImpl(stub, this)
 
         override fun createStub(psi: RsMacroCall, parentStub: StubElement<*>?) =
-            RsMacroCallStub(parentStub, this, psi.macroBody)
+            RsMacroCallStub(parentStub, this, psi.macroBody, psi.bodyTextRange?.startOffset ?: -1)
 
         override fun indexStub(stub: RsMacroCallStub, sink: IndexSink) = sink.indexMacroCall(stub)
     }

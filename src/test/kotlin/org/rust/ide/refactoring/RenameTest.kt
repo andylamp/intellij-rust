@@ -69,6 +69,7 @@ class RenameTest : RsTestBase() {
         fn main() {
             let x = S { foo: 92 };
             println!("{}", x.foo);
+            let S { foo } = x;
             let foo = 62;
             S { foo };
         }
@@ -78,8 +79,54 @@ class RenameTest : RsTestBase() {
         fn main() {
             let x = S { spam: 92 };
             println!("{}", x.spam);
+            let S { spam: foo } = x;
             let foo = 62;
             S { spam: foo };
+        }
+    """)
+
+    fun `test pat binding in let`() = doTest("spam", """
+        struct S { foo: i32 }
+        fn main() {
+            let S { ref foo } = S { foo: 92 };
+            let x = foo/*caret*/;
+        }
+    """, """
+        struct S { foo: i32 }
+        fn main() {
+            let S { foo: ref spam } = S { foo: 92 };
+            let x = spam;
+        }
+    """)
+
+    fun `test pat binding in fn`() = doTest("spam", """
+        struct S { foo: i32 }
+        fn test(S { foo }:S) {
+            let x = foo/*caret*/;
+        }
+    """, """
+        struct S { foo: i32 }
+        fn test(S { foo: spam }:S) {
+            let x = spam;
+        }
+    """)
+
+
+    fun `test field initialization shorthand`() = doTest("spam", """
+        struct S { foo: i32 }
+
+        fn main() {
+            let /*caret*/foo = 92;
+            let x = S { foo };
+            println!("{}", x.foo);
+        }
+    """, """
+        struct S { foo: i32 }
+
+        fn main() {
+            let spam = 92;
+            let x = S { foo: spam };
+            println!("{}", x.foo);
         }
     """)
 
@@ -169,6 +216,53 @@ class RenameTest : RsTestBase() {
         val file = myFixture.configureFromTempProjectFile("foo.rs")
         myFixture.renameElement(file, "mod.rs")
     }
+
+    fun `test rename mod declaration for dir module`() = checkByDirectory("""
+    //- main.rs
+        use foo::Spam;
+        mod foo;
+
+        fn main() { let _ = Spam::Quux; }
+    //- foo/mod.rs
+        pub enum Spam { Quux, Eggs }
+    """, """
+    //- main.rs
+        use bar::Spam;
+        mod bar;
+
+        fn main() { let _ = Spam::Quux; }
+    //- bar/mod.rs
+        pub enum Spam { Quux, Eggs }
+    """) {
+        val mod = myFixture.configureFromTempProjectFile("main.rs").descendantsOfType<RsModDeclItem>().single()
+        check(mod.name == "foo")
+        val file = mod.reference.resolve()!!
+        myFixture.renameElement(file, "bar")
+    }
+
+    fun `test rename dir for dir module`() = checkByDirectory("""
+    //- main.rs
+        use foo::Spam;
+        mod foo;
+
+        fn main() { let _ = Spam::Quux; }
+    //- foo/mod.rs
+        pub enum Spam { Quux, Eggs }
+    """, """
+    //- main.rs
+        use bar::Spam;
+        mod bar;
+
+        fn main() { let _ = Spam::Quux; }
+    //- bar/mod.rs
+        pub enum Spam { Quux, Eggs }
+    """) {
+        val mod = myFixture.configureFromTempProjectFile("main.rs").descendantsOfType<RsModDeclItem>().single()
+        check(mod.name == "foo")
+        val file = myFixture.configureFromTempProjectFile("foo/mod.rs")
+        myFixture.renameElement(file, "bar")
+    }
+
 
     fun `test rename file to keyword`() = checkByDirectory("""
     //- main.rs

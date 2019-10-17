@@ -9,20 +9,23 @@ import com.intellij.codeInsight.intention.IntentionAction
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.codeInspection.ProblemHighlightType
-import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.text.StringUtil.pluralize
 import com.intellij.psi.PsiElement
 import com.intellij.xml.util.XmlStringUtil.escapeString
+import org.rust.ide.annotator.RsAnnotationHolder
 import org.rust.ide.annotator.RsErrorAnnotator
 import org.rust.ide.annotator.fixes.*
 import org.rust.ide.inspections.RsExperimentalChecksInspection
+import org.rust.ide.inspections.RsProblemsHolder
 import org.rust.ide.inspections.RsTypeCheckInspection
 import org.rust.ide.inspections.checkMatch.Pattern
 import org.rust.ide.inspections.fixes.AddRemainingArmsFix
 import org.rust.ide.inspections.fixes.AddWildcardArmFix
 import org.rust.ide.refactoring.implementMembers.ImplementMembersFix
+import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
@@ -145,7 +148,7 @@ sealed class RsDiagnostic(
         private fun errTyOfTryFromActualImplForTy(ty: Ty, items: KnownItems, lookup: ImplLookup): Ty? {
             val fromTrait = items.TryFrom ?: return null
             val result = lookup.selectProjectionStrict(TraitRef(ty, fromTrait.withSubst(actualTy)),
-                fromTrait.associatedTypesTransitively.find { it.name == "Error"} ?: return null)
+                fromTrait.associatedTypesTransitively.find { it.name == "Error" } ?: return null)
             return result.ok()?.value
         }
 
@@ -207,7 +210,7 @@ sealed class RsDiagnostic(
             // for the first type X in the "actual sequence" that is also in the "expected sequence"; get the number of
             // dereferences we need to apply to get to X from `actualTy` and number of references to get to `expectedTy`
             val derefs = actualCoercionSeq.indexOfFirst { refSeqEnd = tyToExpectedRefSeq[it]; refSeqEnd != null }
-            val refs = expectedRefSeq.subList(0, refSeqEnd?: return null)
+            val refs = expectedRefSeq.subList(0, refSeqEnd ?: return null)
             // check that mutability of references would not contradict the `element`
             val isSuitableMutability = refs.isEmpty() ||
                 !refs.last().isMut ||
@@ -1105,27 +1108,35 @@ sealed class RsDiagnostic(
             )
     }
 
-    class MissingFieldsInTuplePattern(pat: RsPat, private val declaration: RsFieldsOwner) : RsDiagnostic(pat) {
+    class MissingFieldsInTuplePattern(
+        pat: RsPat,
+        private val declaration: RsFieldsOwner,
+        private val expectedAmount: Int,
+        private val actualAmount: Int
+    ) : RsDiagnostic(pat) {
         override fun prepare(): PreparedAnnotation {
             val itemType = if (declaration is RsEnumVariant) "Enum variant" else "Tuple struct"
             return PreparedAnnotation(
                 ERROR,
                 E0023,
-                // TODO: provide number of expected/actual fields
-                "$itemType pattern does not correspond to its declaration",
+                "$itemType pattern does not correspond to its declaration: expected $expectedAmount ${pluralize("field", expectedAmount)}, found $actualAmount",
                 fixes = listOf(AddStructFieldsPatFix(element))
             )
         }
     }
 
-    class MissingFieldsInStructPattern(pat: RsPat, private val declaration: RsFieldsOwner) : RsDiagnostic(pat) {
+    class MissingFieldsInStructPattern(
+        pat: RsPat,
+        private val declaration: RsFieldsOwner,
+        private val missingFields: List<RsFieldDecl>
+    ) : RsDiagnostic(pat) {
         override fun prepare(): PreparedAnnotation {
             val itemType = if (declaration is RsEnumVariant) "Enum variant" else "Struct"
+            val missingFieldNames = escapeString(missingFields.joinToString(", ") { "`${it.name!!}`" })
             return PreparedAnnotation(
                 ERROR,
                 E0027,
-                // TODO: provide name of missing fields
-                "$itemType pattern does not correspond to its declaration",
+                "$itemType pattern does not mention ${pluralize("field", missingFields.size)} $missingFieldNames",
                 fixes = listOf(AddStructFieldsPatFix(element))
             )
         }
@@ -1150,7 +1161,7 @@ sealed class RsDiagnostic(
             return PreparedAnnotation(
                 ERROR,
                 E0023,
-                "Extra fields found in the tuple struct pattern: Expected $expectedAmount, found $extraFieldsAmount"
+                "Extra fields found in the tuple struct pattern: expected $expectedAmount, found $extraFieldsAmount"
             )
         }
     }
@@ -1183,6 +1194,12 @@ class PreparedAnnotation(
     val description: String = "",
     val fixes: List<LocalQuickFix> = emptyList()
 )
+
+fun RsDiagnostic.addToHolder(holder: RsAnnotationHolder) {
+    if (element.isEnabledByCfg) {
+        addToHolder(holder.holder)
+    }
+}
 
 fun RsDiagnostic.addToHolder(holder: AnnotationHolder) {
     val prepared = prepare()
@@ -1224,7 +1241,7 @@ fun RsDiagnostic.addToHolder(holder: AnnotationHolder) {
     }
 }
 
-fun RsDiagnostic.addToHolder(holder: ProblemsHolder) {
+fun RsDiagnostic.addToHolder(holder: RsProblemsHolder) {
     val prepared = prepare()
     val descriptor = holder.manager.createProblemDescriptor(
         element,
