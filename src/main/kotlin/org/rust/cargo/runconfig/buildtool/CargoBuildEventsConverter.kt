@@ -17,9 +17,8 @@ import com.intellij.build.output.BuildOutputInstantReader
 import com.intellij.build.output.BuildOutputParser
 import com.intellij.openapi.progress.ProgressIndicator
 import org.rust.cargo.toolchain.CargoTopMessage
-import org.rust.cargo.toolchain.RustcSpan
+import org.rust.cargo.toolchain.RustcMessage
 import org.rust.cargo.toolchain.impl.CargoMetadata
-import org.rust.ide.annotator.isValid
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.function.Consumer
@@ -88,11 +87,15 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
         val kind = getMessageKind(rustcMessage.level)
         if (kind == MessageEvent.Kind.SIMPLE) return true
 
-        val filePosition = getFilePosition(rustcMessage.spans)
-
+        val filePosition = getFilePosition(rustcMessage)
         val messageEvent = createMessageEvent(parentEventId, kind, message, detailedMessage, filePosition)
         if (messageEvents.add(messageEvent)) {
+            if (startEvents.none { it.id == parentEventId }) {
+                handleCompilingMessage("Compiling $parentEventId", true, messageConsumer)
+            }
+
             messageConsumer.accept(messageEvent)
+
             if (kind == MessageEvent.Kind.ERROR) {
                 context.errors += 1
             } else {
@@ -262,8 +265,8 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
         }
     }
 
-    private fun getFilePosition(spans: List<RustcSpan>): FilePosition? {
-        val span = spans.firstOrNull { it.is_primary && it.isValid() } ?: return null
+    private fun getFilePosition(message: RustcMessage): FilePosition? {
+        val span = message.mainSpan ?: return null
         val filePath = run {
             var filePath = Paths.get(span.file_name)
             if (!filePath.isAbsolute) {

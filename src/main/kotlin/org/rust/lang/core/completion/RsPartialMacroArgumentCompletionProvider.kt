@@ -8,8 +8,9 @@ package org.rust.lang.core.completion
 import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionProvider
 import com.intellij.codeInsight.completion.CompletionResultSet
+import com.intellij.openapiext.Testmark
 import com.intellij.patterns.ElementPattern
-import com.intellij.patterns.PlatformPatterns
+import com.intellij.patterns.PlatformPatterns.psiElement
 import com.intellij.psi.PsiElement
 import com.intellij.util.ProcessingContext
 import org.rust.lang.RsLanguage
@@ -20,7 +21,6 @@ import org.rust.lang.core.macros.MacroExpansionContext.STMT
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psiElement
-import org.rust.openapiext.Testmark
 
 /**
  * Provides completion inside a macro argument (e.g. `foo!(/*caret*/)`) if the macro is NOT expanded
@@ -71,7 +71,7 @@ object RsPartialMacroArgumentCompletionProvider : CompletionProvider<CompletionP
     }
 
     val elementPattern: ElementPattern<PsiElement>
-        get() = PlatformPatterns.psiElement()
+        get() = psiElement()
             .withLanguage(RsLanguage)
             .inside(psiElement<RsMacroArgument>())
 

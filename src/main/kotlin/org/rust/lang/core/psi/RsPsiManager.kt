@@ -12,15 +12,19 @@ import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootEvent
 import com.intellij.openapi.roots.ModuleRootListener
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.ModificationTracker
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.messages.Topic
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionMode
+import org.rust.lang.core.macros.isTopLevelExpansion
 import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.lang.core.psi.RsPsiManager.Companion.isIgnorePsiEvents
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.findModificationTrackerOwner
@@ -46,6 +50,29 @@ interface RsPsiManager {
     val rustStructureModificationTracker: ModificationTracker
 
     fun incRustStructureModificationCount()
+
+    companion object {
+        private val IGNORE_PSI_EVENTS: Key<Boolean> = Key.create("IGNORE_PSI_EVENTS")
+
+        fun setIgnorePsiEvents(psi: PsiFile, ignore: Boolean) {
+            val virtualFile = psi.virtualFile ?: return
+            check(virtualFile is LightVirtualFile)
+
+            psi.putUserData(IGNORE_PSI_EVENTS, if (ignore) true else null)
+        }
+
+        fun <T> withIgnoredPsiEvents(psi: PsiFile, f: () -> T): T {
+            setIgnorePsiEvents(psi, true)
+            try {
+                return f()
+            } finally {
+                setIgnorePsiEvents(psi, false)
+            }
+        }
+
+        fun isIgnorePsiEvents(psi: PsiFile): Boolean =
+            psi.getUserData(IGNORE_PSI_EVENTS) == true
+    }
 }
 
 interface RustStructureChangeListener {
@@ -53,7 +80,7 @@ interface RustStructureChangeListener {
 }
 
 interface RustPsiChangeListener {
-    fun rustPsiChanged(element: PsiElement)
+    fun rustPsiChanged(file: PsiFile, element: PsiElement, isStructureModification: Boolean)
 }
 
 class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
@@ -79,8 +106,14 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
                 is ChildMovement.After -> event.child
                 is ChildrenChange.After -> if (!event.isGenericChange) event.parent else return
                 is PropertyChange.After -> {
-                    if (event.propertyName == PsiTreeChangeEvent.PROP_WRITABLE) return
-                    event.element ?: return
+                    when (event.propertyName) {
+                        PsiTreeChangeEvent.PROP_UNLOADED_PSI, PsiTreeChangeEvent.PROP_FILE_TYPES -> {
+                            incRustStructureModificationCount()
+                            return
+                        }
+                        PsiTreeChangeEvent.PROP_WRITABLE -> return
+                        else -> event.element ?: return
+                    }
                 }
                 else -> return
             }
@@ -95,6 +128,7 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
                 }
             } else {
                 if (file.fileType != RsFileType) return
+                if (isIgnorePsiEvents(file)) return
 
                 val isWhitespaceOrComment = element is PsiComment || element is PsiWhiteSpace
                 if (isWhitespaceOrComment &&
@@ -139,10 +173,17 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
         // (b/c they affect range mappings and body hashes)
         if (isWhitespaceOrComment && owner !is RsMacroCall && owner !is RsMacro) return
 
-        if (owner == null || !owner.incModificationCount(psi)) {
+        val isStructureModification = owner == null || !owner.incModificationCount(psi)
+
+        if (!isStructureModification && owner is RsMacroCall &&
+            (project.macroExpansionManager.macroExpansionMode !is MacroExpansionMode.New || !owner.isTopLevelExpansion)) {
+            return updateModificationCount(file, owner, isChildrenChange = false, isWhitespaceOrComment = false)
+        }
+
+        if (isStructureModification) {
             incRustStructureModificationCount(file, psi)
         }
-        project.messageBus.syncPublisher(RUST_PSI_CHANGE_TOPIC).rustPsiChanged(psi)
+        project.messageBus.syncPublisher(RUST_PSI_CHANGE_TOPIC).rustPsiChanged(file, psi, isStructureModification)
     }
 
     override fun incRustStructureModificationCount() =

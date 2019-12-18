@@ -11,7 +11,6 @@ import com.intellij.lang.PsiBuilderUtil
 import com.intellij.lang.WhitespacesAndCommentsBinder
 import com.intellij.lang.parser.GeneratedParserUtilBase
 import com.intellij.lexer.Lexer
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.util.Key
 import com.intellij.psi.TokenType
 import com.intellij.psi.tree.IElementType
@@ -23,19 +22,32 @@ import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_EOL_DOC_CO
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.stdext.makeBitMask
-import org.rust.stdext.removeLast
 
 @Suppress("UNUSED_PARAMETER")
 object RustParserUtil : GeneratedParserUtilBase() {
     enum class PathParsingMode {
-        /** `Foo::<i32>` */
-        COLONS,
-        /** `Foo<i32>` */
-        NO_COLONS,
-        /** `Foo` */
-        NO_TYPES
+        /**
+         * Accepts paths like `Foo::<i32>`
+         * Should be used to parse references to values
+         */
+        VALUE,
+        /**
+         * Accepts paths like `Foo<i32>`, `Foo::<i32>`, Fn(i32) -> i32 and Fn::(i32) -> i32
+         * Should be used to parse type and trait references
+         */
+        TYPE,
+        /**
+         * Accepts paths like `Foo`
+         * Should be used to parse paths where type args cannot be specified: `use` items, macro calls, etc.
+         */
+        NO_TYPE_ARGS
     }
     enum class BinaryMode { ON, OFF }
+    enum class MacroCallParsingMode(val semicolon: Boolean, val pin: Boolean, val forbidExprSpecialMacros: Boolean) {
+        ITEM(semicolon = true, pin = true, forbidExprSpecialMacros = false),
+        BLOCK(semicolon = true, pin = false, forbidExprSpecialMacros = true),
+        EXPR(semicolon = false, pin = true, forbidExprSpecialMacros = false)
+    }
 
     private val FLAGS: Key<Int> = Key("RustParserUtil.FLAGS")
     private var PsiBuilder.flags: Int
@@ -56,23 +68,43 @@ object RustParserUtil : GeneratedParserUtilBase() {
     private val TYPE_QUAL_ALLOWED: Int = makeBitMask(2)
     private val STMT_EXPR_MODE: Int = makeBitMask(3)
 
-    private val PATH_COLONS: Int = makeBitMask(4)
-    private val PATH_NO_COLONS: Int = makeBitMask(5)
-    private val PATH_NO_TYPES: Int = makeBitMask(6)
+    private val PATH_VALUE: Int = makeBitMask(4)
+    private val PATH_TYPE: Int = makeBitMask(5)
+    private val PATH_NO_TYPE_ARGS: Int = makeBitMask(6)
+
+    private val MACRO_BRACE_PARENS: Int = makeBitMask(7)
+    private val MACRO_BRACE_BRACKS: Int = makeBitMask(8)
+    private val MACRO_BRACE_BRACES: Int = makeBitMask(9)
     private fun setPathMod(flags: Int, mode: PathParsingMode): Int {
         val flag = when (mode) {
-            PathParsingMode.COLONS -> PATH_COLONS
-            PathParsingMode.NO_COLONS -> PATH_NO_COLONS
-            PathParsingMode.NO_TYPES -> PATH_NO_TYPES
+            PathParsingMode.VALUE -> PATH_VALUE
+            PathParsingMode.TYPE -> PATH_TYPE
+            PathParsingMode.NO_TYPE_ARGS -> PATH_NO_TYPE_ARGS
         }
-        return flags and (PATH_COLONS or PATH_NO_COLONS or PATH_NO_TYPES).inv() or flag
+        return flags and (PATH_VALUE or PATH_TYPE or PATH_NO_TYPE_ARGS).inv() or flag
     }
 
     private fun getPathMod(flags: Int): PathParsingMode = when {
-        BitUtil.isSet(flags, PATH_COLONS) -> PathParsingMode.COLONS
-        BitUtil.isSet(flags, PATH_NO_COLONS) -> PathParsingMode.NO_COLONS
-        BitUtil.isSet(flags, PATH_NO_TYPES) -> PathParsingMode.NO_TYPES
+        BitUtil.isSet(flags, PATH_VALUE) -> PathParsingMode.VALUE
+        BitUtil.isSet(flags, PATH_TYPE) -> PathParsingMode.TYPE
+        BitUtil.isSet(flags, PATH_NO_TYPE_ARGS) -> PathParsingMode.NO_TYPE_ARGS
         else -> error("Path parsing mode not set")
+    }
+
+    private fun setMacroBraces(flags: Int, mode: MacroBraces): Int {
+        val flag = when (mode) {
+            MacroBraces.PARENS -> MACRO_BRACE_PARENS
+            MacroBraces.BRACKS -> MACRO_BRACE_BRACKS
+            MacroBraces.BRACES -> MACRO_BRACE_BRACES
+        }
+        return flags and (MACRO_BRACE_PARENS or MACRO_BRACE_BRACKS or MACRO_BRACE_BRACES).inv() or flag
+    }
+
+    private fun getMacroBraces(flags: Int): MacroBraces? = when {
+        BitUtil.isSet(flags, MACRO_BRACE_PARENS) -> MacroBraces.PARENS
+        BitUtil.isSet(flags, MACRO_BRACE_BRACKS) -> MacroBraces.BRACKS
+        BitUtil.isSet(flags, MACRO_BRACE_BRACES) -> MacroBraces.BRACES
+        else -> null
     }
 
     private val DEFAULT_FLAGS: Int = STRUCT_ALLOWED or TYPE_QUAL_ALLOWED
@@ -95,6 +127,9 @@ object RustParserUtil : GeneratedParserUtilBase() {
         }
         candidate
     }
+
+    private val LEFT_BRACES = tokenSetOf(LPAREN, LBRACE, LBRACK)
+    private val RIGHT_BRACES = tokenSetOf(RPAREN, RBRACE, RBRACK)
 
     //
     // Helpers
@@ -169,6 +204,7 @@ object RustParserUtil : GeneratedParserUtilBase() {
             LBRACE, RBRACE,
             LPAREN, RPAREN,
             LBRACK, RBRACK -> false
+            null -> false // EOF
             else -> {
                 collapsedTokenType(b)?.let { (tokenType, size) ->
                     val marker = b.mark()
@@ -267,6 +303,91 @@ object RustParserUtil : GeneratedParserUtilBase() {
         val result = traitTypeUpperP.parse(b, level + 1)
         exit_section_(b, baseOrTrait, TRAIT_TYPE, result)
         return result
+    }
+
+    private val SPECIAL_MACRO_PARSERS: Map<String, (PsiBuilder, Int) -> Boolean>
+    private val SPECIAL_EXPR_MACROS: Set<String>
+
+    init {
+        val specialParsers = hashMapOf<String, (PsiBuilder, Int) -> Boolean>()
+        val exprMacros = hashSetOf<String>()
+        SPECIAL_MACRO_PARSERS = specialParsers
+        SPECIAL_EXPR_MACROS = exprMacros
+
+        fun put(parser: (PsiBuilder, Int) -> Boolean, isExpr: Boolean, vararg keys: String) {
+            for (name in keys) {
+                check(name !in specialParsers) { "$name was already added" }
+                specialParsers[name] = parser
+                if (isExpr) {
+                    exprMacros += name
+                }
+            }
+        }
+
+        put(RustParser::ExprMacroArgument, true, "try", "await", "dbg")
+        put(RustParser::FormatMacroArgument, true, "format", "format_args", "write", "writeln", "print", "println",
+            "eprint", "eprintln", "panic", "unimplemented", "unreachable", "todo")
+        put(RustParser::AssertMacroArgument, true, "assert", "debug_assert", "assert_eq", "assert_ne",
+            "debug_assert_eq", "debug_assert_ne")
+        put(RustParser::VecMacroArgument, true, "vec")
+        put(RustParser::LogMacroArgument, true, "trace", "log", "warn", "debug", "error", "info")
+        put(RustParser::IncludeMacroArgument, true, "include_str", "include_bytes")
+        put(RustParser::IncludeMacroArgument, false, "include")
+        put(RustParser::ConcatMacroArgument, true, "concat")
+        put(RustParser::EnvMacroArgument, true, "env")
+    }
+
+    @JvmStatic
+    fun parseMacroCall(b: PsiBuilder, level: Int, mode: MacroCallParsingMode): Boolean {
+        if (!RustParser.AttrsAndVis(b, level + 1)) return false
+
+        val macroName = lookupSimpleMacroName(b)
+        if (mode.forbidExprSpecialMacros && macroName in SPECIAL_EXPR_MACROS) return false
+
+        if (!RustParser.PathWithoutTypeArgs(b, level + 1) || !consumeToken(b, EXCL)) {
+            return false
+        }
+
+        // foo! bar {}
+        //      ^ this ident
+        val hasIdent = consumeTokenFast(b, IDENTIFIER)
+
+        val braceKind = b.tokenType?.let { MacroBraces.fromToken(it) }
+
+        if (macroName != null && !hasIdent && braceKind != null) { // try special macro
+            val specialParser = SPECIAL_MACRO_PARSERS[macroName]
+            if (specialParser != null && specialParser(b, level + 1)) {
+                if (braceKind.needsSemicolon && mode.semicolon && !consumeToken(b, SEMICOLON)) {
+                    b.error("`;` expected, got '${b.tokenText}'")
+                    return mode.pin
+                }
+                return true
+            }
+        }
+
+        if (braceKind == null || !parseMacroArgumentLazy(b, level + 1)) {
+            b.error("<macro argument> expected, got '${b.tokenText}'")
+            return mode.pin
+        }
+        if (braceKind.needsSemicolon && mode.semicolon && !consumeToken(b, SEMICOLON)) {
+            b.error("`;` expected, got '${b.tokenText}'")
+            return mode.pin
+        }
+        return true
+    }
+
+    // foo ! ();
+    // ^ this name
+    private fun lookupSimpleMacroName(b: PsiBuilder): String? {
+        return if (b.tokenType == IDENTIFIER) {
+            val nextTokenIsExcl = b.probe {
+                b.advanceLexer()
+                b.tokenType == EXCL
+            }
+            if (nextTokenIsExcl) b.tokenText else null
+        } else {
+            null
+        }
     }
 
     @JvmStatic
@@ -393,41 +514,11 @@ object RustParserUtil : GeneratedParserUtilBase() {
     fun parseMacroBodyLazy(builder: PsiBuilder, level: Int): Boolean =
         parseTokenTreeLazy(builder, level, MACRO_BODY)
 
-    private val LEFT_BRACES = tokenSetOf(LPAREN, LBRACE, LBRACK)
-    private val RIGHT_BRACES = tokenSetOf(RPAREN, RBRACE, RBRACK)
-
     private fun parseTokenTreeLazy(builder: PsiBuilder, level: Int, tokenTypeToCollapse: IElementType): Boolean {
         val firstToken = builder.tokenType
         if (firstToken == null || firstToken !in LEFT_BRACES) return false
-
-        val marker = builder.mark()
-
-        builder.advanceLexer()
-
-        val braceStack = mutableListOf<MacroBraces>()
-        braceStack += MacroBraces.fromTokenOrFail(firstToken)
-
-        while (braceStack.isNotEmpty() && !builder.eof()) {
-            val tokenType = builder.tokenType
-            if (tokenType != null) {
-                if (tokenType in LEFT_BRACES) {
-                    braceStack += MacroBraces.fromTokenOrFail(tokenType)
-                } else if (tokenType in RIGHT_BRACES) {
-                    if (braceStack.removeLast() != MacroBraces.fromTokenOrFail(tokenType)) {
-                        marker.rollbackTo()
-                        return false
-                    }
-                }
-            }
-            builder.advanceLexer()
-        }
-
-        if (braceStack.isNotEmpty()) {
-            marker.rollbackTo()
-            return false
-        }
-
-        marker.collapse(tokenTypeToCollapse)
+        val rightBrace = MacroBraces.fromTokenOrFail(firstToken).closeToken
+        PsiBuilderUtil.parseBlockLazy(builder, firstToken, rightBrace, tokenTypeToCollapse)
         return true
     }
 
@@ -436,29 +527,62 @@ object RustParserUtil : GeneratedParserUtilBase() {
 
         val firstToken = lexer.tokenType
         if (firstToken == null || firstToken !in LEFT_BRACES) return false
+        val rightBrace = MacroBraces.fromTokenOrFail(firstToken).closeToken
 
-        lexer.advance()
+        return PsiBuilderUtil.hasProperBraceBalance(text, lexer, firstToken, rightBrace)
+    }
 
-        val braceStack = mutableListOf<MacroBraces>()
-        braceStack += MacroBraces.fromTokenOrFail(firstToken)
-
-        while (true) {
-            ProgressManager.checkCanceled()
-            val tokenType = lexer.tokenType
-                ?: return braceStack.isEmpty() //eof: checking balance
-
-            if (braceStack.isEmpty()) {
-                //the last brace is not the last token
+    @JvmStatic
+    fun parseAnyBraces(b: PsiBuilder, level: Int, param: Parser): Boolean {
+        val firstToken = b.tokenType ?: return false
+        if (firstToken !in LEFT_BRACES) return false
+        val leftBrace = MacroBraces.fromTokenOrFail(firstToken)
+        val pos = b.mark()
+        b.advanceLexer() // Consume '{' or '(' or '['
+        return b.withRootBrace(leftBrace) { rootBrace ->
+            if (!param.parse(b, level + 1)) {
+                pos.rollbackTo()
                 return false
             }
 
-            if (tokenType in LEFT_BRACES) {
-                braceStack += MacroBraces.fromTokenOrFail(tokenType)
-            } else if (tokenType in RIGHT_BRACES) {
-                if (braceStack.removeLast() != MacroBraces.fromTokenOrFail(tokenType)) return false
+            val lastToken = b.tokenType
+            if (lastToken == null || lastToken !in RIGHT_BRACES) {
+                b.error("'${leftBrace.closeText}' expected")
+                return pos.close(lastToken == null)
             }
 
-            lexer.advance()
+            var rightBrace = MacroBraces.fromToken(lastToken)
+            if (rightBrace == leftBrace) {
+                b.advanceLexer() // Consume '}' or ')' or ']'
+            } else {
+                b.error("'${leftBrace.closeText}' expected")
+                if (leftBrace == rootBrace) {
+                    // Recovery loop. Consume everything until [rightBrace] is [leftBrace]
+                    while (rightBrace != leftBrace && !b.eof()) {
+                        b.advanceLexer()
+                        val tokenType = b.tokenType ?: break
+                        rightBrace = MacroBraces.fromToken(tokenType)
+                    }
+                    b.advanceLexer()
+                }
+            }
+
+            pos.drop()
+            return true
+        }
+    }
+
+    /** Saves [currentBrace] as root brace if it is not set yet; applies the root brace to [f] */
+    private inline fun PsiBuilder.withRootBrace(currentBrace: MacroBraces, f: (MacroBraces) -> Boolean): Boolean {
+        val oldFlags = flags
+        val oldRootBrace = getMacroBraces(oldFlags)
+        if (oldRootBrace == null) {
+            flags = setMacroBraces(oldFlags, currentBrace)
+        }
+        try {
+            return f(oldRootBrace ?: currentBrace)
+        } finally {
+            flags = oldFlags
         }
     }
 }

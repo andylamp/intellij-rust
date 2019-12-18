@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.psi.ext
 
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.NavigatablePsiElement
 import com.intellij.psi.PsiElement
 import org.rust.ide.experiments.RsExperiments
@@ -12,7 +13,6 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.utils.evaluation.CfgEvaluator
 import org.rust.lang.utils.evaluation.ThreeValuedLogic
 import org.rust.openapiext.isFeatureEnabled
-import org.rust.openapiext.isUnitTestMode
 
 interface RsDocAndAttributeOwner : RsElement, NavigatablePsiElement
 
@@ -162,6 +162,9 @@ class QueryAttributes(
     val cfgAttributes: Sequence<RsMetaItem>
         get() = attrsByName("cfg")
 
+    val unstableAttributes: Sequence<RsMetaItem>
+        get() = attrsByName("unstable")
+
     // `#[attributeName = "Xxx"]`
     private fun getStringAttributes(attributeName: String): Sequence<String?> =
         attrsByName(attributeName).map { it.value }
@@ -203,7 +206,7 @@ private fun RsDocAndAttributeOwner.evaluateCfg(): ThreeValuedLogic {
     // this will return the library as containing package.
     // When the application now requests certain features, which are not enabled by default in the library
     // we will evaluate features wrongly here
-    val options = containingCargoPackage?.cfgOptions ?: return ThreeValuedLogic.True
-
-    return CfgEvaluator(options).evaluate(cfgAttributes)
+    val pkg = containingCargoPackage ?: return ThreeValuedLogic.True
+    val features = pkg.features.associate { it.name to it.state }
+    return CfgEvaluator(pkg.cfgOptions, features, pkg.origin).evaluate(cfgAttributes)
 }

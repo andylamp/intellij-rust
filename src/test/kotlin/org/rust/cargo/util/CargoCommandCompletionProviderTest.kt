@@ -106,7 +106,8 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
             name = name,
             kind = kind,
             edition = edition,
-            doctest = true
+            doctest = true,
+            outDirUrl = null
         )
 
         fun pkg(
@@ -122,7 +123,8 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
             targets = targets,
             source = null,
             origin = if (isWorkspaceMember) PackageOrigin.WORKSPACE else PackageOrigin.DEPENDENCY,
-            edition = edition
+            edition = edition,
+            features = emptyList()
         )
 
         val pkgs = listOf(

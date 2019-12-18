@@ -13,6 +13,9 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapiext.Testmark
+import com.intellij.openapiext.hitOnFalse
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.StubBasedPsiElement
@@ -48,7 +51,8 @@ import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.foldTyTypeParameterWith
 import org.rust.lang.core.types.infer.substitute
 import org.rust.lang.core.types.ty.*
-import org.rust.openapiext.*
+import org.rust.openapiext.testAssert
+import org.rust.openapiext.toPsiFile
 import org.rust.stdext.buildList
 
 // IntelliJ Rust name resolution algorithm.
@@ -1262,7 +1266,7 @@ private fun processLexicalDeclarations(
             }
         }
 
-        is RsBlock -> {
+        is RsBlock, is RsReplCodeFragment -> {
             // We want to filter out
             // all non strictly preceding let declarations.
             //
@@ -1282,7 +1286,12 @@ private fun processLexicalDeclarations(
                 }
 
                 val letDecls = mutableListOf<RsLetDecl>()
-                for (stmt in scope.expandedStmts) {
+                val stmts = when (scope) {
+                    is RsBlock -> scope.expandedStmtsAndTailExpr.first
+                    is RsReplCodeFragment -> scope.stmts.toList()
+                    else -> emptyList()  // unreachable
+                }
+                for (stmt in stmts) {
                     if (cameFrom == stmt) break
                     if (stmt is RsLetDecl) {
                         letDecls.add(stmt)
@@ -1295,7 +1304,7 @@ private fun processLexicalDeclarations(
                 }
             }
 
-            return processItemDeclarations(scope, ns, processor, ItemProcessingMode.WITH_PRIVATE_IMPORTS)
+            return processItemDeclarations(scope as RsItemsOwner, ns, processor, ItemProcessingMode.WITH_PRIVATE_IMPORTS)
         }
 
         is RsForExpr -> {

@@ -45,7 +45,7 @@ the task for TOML module and `./gradlew task` will do for all modules.
 
 ### Modules
 
-Rust plugin sources are divided into several modules. Almost all modules (except root and `plugin` ones) support
+Rust plugin sources are divided into several modules. Almost all modules (except root, `common` and `plugin` ones) support
 some functionality in particular IDE or integrate with another plugin. Like debugging in CLion or
 integration with `TOML` plugin.
 
@@ -57,6 +57,7 @@ like IDEA and CLion.
 
 The current Rust plugin modules:
 * `:` - root/core module
+* `:common` - shares common code between Rust and Toml plugins
 * `:plugin` - module to build/run/publish Rust plugin
 * `:idea` - contains code available only in IDEA
 * `:clion` - contains code available only in CLion
@@ -66,6 +67,7 @@ The current Rust plugin modules:
 * `:copyright` - integration with [copyright](https://github.com/JetBrains/intellij-community/tree/master/plugins/copyright) plugin
 * `:duplicates` - support `Duplicated code fragment` inspection
 * `:coverage` - integration with [coverage](https://github.com/JetBrains/intellij-community/tree/master/plugins/coverage-common) plugin
+* `:grazie` - integration with [grazie](https://plugins.jetbrains.com/plugin/12175-grazie) plugin 
 
 If you want to implement integration with another plugin/IDE, you should create a new gradle module for that.
 

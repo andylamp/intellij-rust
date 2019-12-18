@@ -10,6 +10,7 @@ import com.intellij.openapi.application.impl.LaterInvocator
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.openapiext.Testmark
 import com.intellij.testFramework.builders.ModuleFixtureBuilder
 import com.intellij.testFramework.fixtures.impl.TempDirTestFixtureImpl
 import com.intellij.util.io.delete
@@ -19,14 +20,13 @@ import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.fileTree
 import org.rust.fileTreeFromText
-import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.hashBasedRebindCallHit
-import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.hashBasedRebindExactHit
-import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.hashBasedRebindNotHit
-import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.stubBasedRebind
+import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.refsRecoverCallHit
+import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.refsRecoverExactHit
+import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.refsRecoverNotHit
+import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks.stubBasedRefMatch
 import org.rust.lang.core.psi.RsMacroCall
 import org.rust.lang.core.psi.ext.childrenOfType
 import org.rust.lang.core.psi.ext.expansion
-import org.rust.openapiext.Testmark
 import org.rust.openapiext.fullyRefreshDirectory
 import org.rust.openapiext.pathAsPath
 
@@ -120,10 +120,9 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
             Thread.sleep(10)
             LaterInvocator.dispatchPendingFlushes()
         }
-        project.macroExpansionManager.ensureUpToDate()
     }
 
-    fun `test re-open project without changes`() = stubBasedRebind.checkReExpanded(doNothing(), """
+    fun `test re-open project without changes`() = stubBasedRefMatch.checkReExpanded(doNothing(), """
         //- main.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
@@ -131,7 +130,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
-    fun `test touch definition at separate file`() = stubBasedRebind.checkReExpanded(touchFile("src/foo.rs"), """
+    fun `test touch definition at separate file`() = stubBasedRefMatch.checkReExpanded(touchFile("src/foo.rs"), """
         //- foo.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         //- bar.rs
@@ -145,7 +144,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
-    fun `test touch usage at separate file`() = hashBasedRebindExactHit.checkReExpanded(touchFile("src/main.rs"), """
+    fun `test touch usage at separate file`() = refsRecoverExactHit.checkReExpanded(touchFile("src/main.rs"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         //- main.rs
@@ -154,13 +153,13 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(a);
     """)
 
-    fun `test edit usage at same file`() = hashBasedRebindNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
+    fun `test edit usage at same file`() = refsRecoverNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
         //- main.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         foo!(aaa);
     """, "foo")
 
-    fun `test edit usage at separate file`() = hashBasedRebindNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
+    fun `test edit usage at separate file`() = refsRecoverNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         //- main.rs
@@ -169,13 +168,13 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(aaa);
     """, "foo")
 
-    fun `test edit definition at same file`() = hashBasedRebindCallHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
+    fun `test edit definition at same file`() = refsRecoverCallHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
         //- main.rs
         macro_rules! foo { ($ i:ident) => { fn $ i() { aaa; } } }
         foo!(a);
     """, "foo")
 
-    fun `test edit definition at separate file`() = stubBasedRebind.checkReExpanded(replaceInFile("src/def.rs", "aaa", "aab"), """
+    fun `test edit definition at separate file`() = stubBasedRefMatch.checkReExpanded(replaceInFile("src/def.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { fn $ i() { aaa; } } }
         //- main.rs

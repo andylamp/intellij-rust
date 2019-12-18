@@ -121,11 +121,11 @@ class RsPsiFactory(
     fun createUnsafeBlockExpr(body: String): RsBlockExpr =
         createExpressionOfType("unsafe { $body }")
 
-    fun tryCreatePath(text: String, ns: PathParsingMode = NO_COLONS): RsPath? {
+    fun tryCreatePath(text: String, ns: PathParsingMode = TYPE): RsPath? {
         val path = when (ns) {
-            NO_COLONS -> createFromText("fn foo(t: $text) {}")
-            COLONS -> createFromText<RsPathExpr>("fn main() { $text; }")?.path
-            NO_TYPES -> error("NO_TYPES mode is not supported; use NO_COLONS")
+            TYPE -> createFromText("fn foo(t: $text) {}")
+            VALUE -> createFromText<RsPathExpr>("fn main() { $text; }")?.path
+            NO_TYPE_ARGS -> error("$NO_TYPE_ARGS mode is not supported; use $TYPE")
         } ?: return null
         if (path.text != text) return null
         return path
@@ -264,7 +264,10 @@ class RsPsiFactory(
 
         val typeConstraints = typeBounds
             .filter { it.typeParamBounds != null }
-            .mapNotNull { it.text }
+            .map {
+                //ignore default type parameter
+                it.text.take(it.eq?.startOffsetInParent ?: it.textLength)
+            }
 
         val whereClauseConstraints = (lifetimeConstraints + typeConstraints).joinToString(", ")
 
@@ -430,8 +433,11 @@ class RsPsiFactory(
     fun createFunctionCall(functionName: String, arguments: Iterable<RsExpr>): RsCallExpr =
         createExpressionOfType("$functionName(${arguments.joinToString { it.text }})")
 
-    fun createAssocFunctionCall(typeText: String, methodNameText: String, arguments: Iterable<RsExpr>): RsCallExpr =
-        createExpressionOfType("$typeText::$methodNameText(${arguments.joinToString { it.text }})")
+    fun createAssocFunctionCall(typeText: String, methodNameText: String, arguments: Iterable<RsExpr>): RsCallExpr {
+        val isCorrectTypePath = tryCreatePath(typeText) != null
+        val typePath = if (isCorrectTypePath) typeText else "<$typeText>"
+        return createExpressionOfType("$typePath::$methodNameText(${arguments.joinToString { it.text }})")
+    }
 
     fun createNoArgsMethodCall(expr: RsExpr, methodNameText: String): RsDotExpr = when (expr) {
         is RsBinaryExpr, is RsUnaryExpr, is RsCastExpr -> createExpressionOfType("(${expr.text}).$methodNameText()")
@@ -468,6 +474,7 @@ class RsPsiFactory(
 }
 
 private fun RsFunction.getSignatureText(subst: Substitution): String? {
+    val async = if (isAsync) "async " else ""
     val unsafe = if (isUnsafe) "unsafe " else ""
     // We can't simply take a substring of original method declaration
     // because of anonymous parameters.
@@ -483,7 +490,7 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
 
     val ret = retType?.typeReference?.substAndGetText(subst)?.let { "-> $it " } ?: ""
     val where = whereClause?.text ?: ""
-    return "${unsafe}fn $name$generics(${allArguments.joinToString(",")}) $ret$where"
+    return "${async}${unsafe}fn $name$generics(${allArguments.joinToString(",")}) $ret$where"
 }
 
 private fun String.iff(cond: Boolean) = if (cond) this + " " else " "

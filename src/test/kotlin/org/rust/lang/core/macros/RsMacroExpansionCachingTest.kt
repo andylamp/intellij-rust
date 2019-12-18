@@ -8,6 +8,9 @@ package org.rust.lang.core.macros
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.openapiext.Testmark
+import com.intellij.openapiext.TestmarkPred
+import com.intellij.openapiext.not
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import org.intellij.lang.annotations.Language
@@ -21,7 +24,6 @@ import org.rust.lang.core.psi.ext.childrenOfType
 import org.rust.lang.core.psi.ext.expansion
 import org.rust.lang.core.psi.ext.stubChildrenOfType
 import org.rust.lang.core.psi.ext.stubDescendantsOfTypeOrSelf
-import org.rust.openapiext.Testmark
 import org.rust.openapiext.toPsiFile
 
 @ExpandMacros
@@ -60,10 +62,15 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         }
     }
 
-    private fun checkReExpanded(action: () -> Unit, @Language("Rust") code: String, vararg names: String) {
+    private fun checkReExpandedInner(
+        testmark: TestmarkPred?,
+        action: () -> Unit,
+        @Language("Rust") code: String,
+        vararg names: String
+    ) {
         InlineFile(code).withCaret()
         val oldStamps = myFixture.file.collectMacros().collectStamps()
-        action()
+        testmark?.checkHit { action() } ?: action()
         val collectMacros = myFixture.file.collectMacros()
         val changed = collectMacros.collectStamps().entries
             .filter { oldStamps[it.key] != it.value }
@@ -72,6 +79,12 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
             "Expected to re-expand ${names.asList()}, re-expanded $changed instead"
         }
     }
+
+    private fun checkReExpanded(action: () -> Unit, @Language("Rust") code: String, vararg names: String) =
+        checkReExpandedInner(null, action, code, *names)
+
+    private fun TestmarkPred.checkReExpanded(action: () -> Unit, @Language("Rust") code: String, vararg names: String) =
+        checkReExpandedInner(this, action, code, *names)
 
     private fun checkReExpandedTree(
         action: (p: TestProject) -> Unit,
@@ -105,28 +118,27 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         @Language("Rust") vararg expectedExpansions: String
     ) {
         InlineFile(code)
-        project.macroExpansionManager.ensureUpToDate()
 
         action()
 
         checkAllMacroExpansionsInFile(myFixture.file, expectedExpansions.map { Pair<String, Testmark?>(it, null) }.toTypedArray())
     }
 
-    fun `test edit call`() = checkReExpanded(type(), """
+    fun `test edit call`() = Testmarks.refsRecover.not().checkReExpanded(type(), """
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
         foo!(a/*caret*/);
         bar!(a);
     """, "foo")
 
-    fun `test edit def 1`() = checkReExpanded(type(), """
+    fun `test edit def 1`() = Testmarks.refsRecover.not().checkReExpanded(type(), """
         macro_rules! foo { ($ i:ident) => { mod $ i {/*caret*/} } }
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
         foo!(a);
         bar!(a);
     """, "foo")
 
-    fun `test edit def 2`() = checkReExpanded(type(), """
+    fun `test edit def 2`() = Testmarks.refsRecover.not().checkReExpanded(type(), """
         macro_rules! foo { ($ i:ident) => { mod $ i {/*caret*/} } }
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
         macro_rules! if_std { ($ i:item) => { $ i } }
@@ -141,7 +153,7 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         bar!();
     """, "bar", "foo")
 
-    fun `test edit def 4`() = checkReExpanded(type(), """
+    fun `test edit def 4`() = Testmarks.refsRecover.not().checkReExpanded(type(), """
         macro_rules! foo { () => { mod a/*caret*/ {} } }
         macro_rules! bar { () => { foo!(); } }
         bar!();
@@ -153,7 +165,7 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
         foo!(aaa);
         bar!(bbb);
-    """, listOf("foo"), Testmarks.hashBasedRebind)
+    """, listOf("foo"), Testmarks.refsRecover)
 
     fun `test stub call 2`() = checkReExpandedTree(replaceInFile("main.rs", "//", ""), """
     //- main.rs
@@ -161,7 +173,7 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         macro_rules! bar { ($ i:ident) => { mod $ i {} } }
         foo!(aaa);
         //bar!(bbb);
-    """, listOf("bar"), Testmarks.hashBasedRebindNotHit)
+    """, listOf("bar"), Testmarks.refsRecoverNotHit)
 
     fun `test add a call`() = checkExpansionAfterAction(type("\b\b\b"), """
         macro_rules! foo {
@@ -210,14 +222,15 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
     """)
 
     fun `test edit-save-reload document`() = checkExpansionAfterAction({
-        myFixture.type("\b\b\b")
-        PsiDocumentManager.getInstance(project).commitAllDocuments()
-        project.macroExpansionManager.ensureUpToDate()
+        Testmarks.refsRecover.checkNotHit {
+            myFixture.type("\b\b\b")
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
 
-        FileDocumentManager.getInstance().saveAllDocuments()
-        project.macroExpansionManager.unbindPsi()
+            FileDocumentManager.getInstance().saveAllDocuments()
+            FileDocumentManager.getInstance().reloadFromDisk(myFixture.getDocument(myFixture.file))
+        }
 
-        Testmarks.stubBasedRebind.checkHit {
+        Testmarks.stubBasedLookup.checkHit {
             myFixture.file.childrenOfType<RsMacroCall>()
                 .forEach { it.expansion }
         }
@@ -234,5 +247,33 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         mod foo {}
     """, """
         mod bar {}
+    """)
+
+    fun `test add 1st macro to expansion`() = checkExpansionAfterAction(type("\b\b\b\b\b\b\b\b\bfoo!{struct S;}"), """
+        macro_rules! foo {
+            ($($ i:item)*) => { $($ i)* };
+        }
+
+        foo! {
+            struct S;/*caret*/
+        }
+    """, """
+        struct S;
+    """)
+
+    fun `test add 2nd macro to expansion`() = checkExpansionAfterAction(type("foo!{struct S3;}"), """
+        macro_rules! foo {
+            ($($ i:item)*) => { $($ i)* };
+        }
+
+        foo! {
+            struct S1;
+            foo!{struct S2;}
+            /*caret*/
+        }
+    """, """
+        struct S1;
+        struct S2;
+        struct S3;
     """)
 }

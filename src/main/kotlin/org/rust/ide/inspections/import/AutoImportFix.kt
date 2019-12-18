@@ -10,6 +10,7 @@ import com.intellij.codeInspection.LocalQuickFixOnPsiElement
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.project.Project
+import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.search.GlobalSearchScope
@@ -35,7 +36,6 @@ import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyPrimitive
 import org.rust.lang.core.types.ty.TyTypeParameter
 import org.rust.lang.core.types.type
-import org.rust.openapiext.Testmark
 import org.rust.openapiext.checkWriteAccessAllowed
 import org.rust.openapiext.runWriteCommandAction
 
@@ -677,7 +677,7 @@ data class ImportContext private constructor(
             mod = element.containingMod,
             superMods = LinkedHashSet(element.containingMod.superMods),
             scope = RsWithMacrosScope(project, GlobalSearchScope.allScope(project)),
-            pathParsingMode = PathParsingMode.NO_COLONS,
+            pathParsingMode = PathParsingMode.TYPE,
             attributes = element.stdlibAttributes,
             namespaceFilter = { true }
         )
@@ -689,8 +689,8 @@ private val RsPath.pathParsingMode: PathParsingMode
         is RsPathExpr,
         is RsStructLiteral,
         is RsPatStruct,
-        is RsPatTupleStruct -> PathParsingMode.COLONS
-        else -> PathParsingMode.NO_COLONS
+        is RsPatTupleStruct -> PathParsingMode.VALUE
+        else -> PathParsingMode.TYPE
     }
 private val RsElement.stdlibAttributes: RsFile.Attributes
     get() = (crateRoot?.containingFile as? RsFile)?.attributes ?: RsFile.Attributes.NONE

@@ -5,20 +5,17 @@
 
 package org.rust.lang.core.parser
 
+import com.intellij.TestCase
 import com.intellij.lang.LanguageBraceMatching
-import com.intellij.openapi.application.impl.ApplicationInfoImpl
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiErrorElement
 import com.intellij.psi.PsiFile
 import com.intellij.testFramework.ParsingTestCase
-import com.intellij.testFramework.PlatformTestCase
 import org.jetbrains.annotations.NonNls
-import org.rust.RsTestBase
 import org.rust.RsTestCase
 import org.rust.ide.typing.RsBraceMatcher
 import org.rust.lang.RsLanguage
-import java.io.File
 
 abstract class RsParsingTestCaseBase(@NonNls dataPath: String) : ParsingTestCase(
     "org/rust/lang/core/parser/fixtures/$dataPath",
@@ -27,13 +24,8 @@ abstract class RsParsingTestCaseBase(@NonNls dataPath: String) : ParsingTestCase
     RustParserDefinition()
 ), RsTestCase {
 
-    private lateinit var platformPrefix: String
-
     override fun setUp() {
         super.setUp()
-        PlatformTestCase.doAutodetectPlatformPrefix()
-        val info = ApplicationInfoImpl.getShadowInstance()
-        platformPrefix = info.majorVersion.takeLast(2) + info.minorVersion.take(1)
         addExplicitExtension(LanguageBraceMatching.INSTANCE, RsLanguage, RsBraceMatcher())
     }
 
@@ -41,16 +33,7 @@ abstract class RsParsingTestCaseBase(@NonNls dataPath: String) : ParsingTestCase
 
     override fun getTestName(lowercaseFirstLetter: Boolean): String {
         val camelCase = super.getTestName(lowercaseFirstLetter)
-        return RsTestBase.camelOrWordsToSnake(camelCase)
-    }
-
-    override fun checkResult(targetDataName: String, file: PsiFile) {
-        val path = if (File("$myFullDataPath/$testName.txt").exists()) {
-            targetDataName
-        } else {
-            "$platformPrefix/$targetDataName"
-        }
-        super.checkResult(path, file)
+        return TestCase.camelOrWordsToSnake(camelCase)
     }
 
     protected fun hasError(file: PsiFile): Boolean {

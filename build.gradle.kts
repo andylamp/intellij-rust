@@ -29,15 +29,17 @@ val baseVersion = when (baseIDE) {
     else -> error("Unexpected IDE name: `$baseIDE`")
 }
 
-val psiViewerPluginVersion = prop("psiViewerPluginVersion")
-
 val isAtLeast192 = platformVersion.toInt() >= 192
+val isAtLeast193 = platformVersion.toInt() >= 193
+
+val graziePlugin = "tanvd.grazi:${prop("graziePluginVersion")}"
+val psiViewerPlugin = "PsiViewer:${prop("psiViewerPluginVersion")}"
 
 plugins {
     idea
-    kotlin("jvm") version "1.3.50"
-    id("org.jetbrains.intellij") version "0.4.10"
-    id("org.jetbrains.grammarkit") version "2019.2"
+    kotlin("jvm") version "1.3.60"
+    id("org.jetbrains.intellij") version "0.4.13"
+    id("org.jetbrains.grammarkit") version "2019.3"
     id("de.undercouch.download") version "3.4.3"
     id("net.saliman.properties") version "1.4.6"
 }
@@ -88,8 +90,8 @@ allprojects {
     }
 
     grammarKit {
-        if (platformVersion == "193") {
-            grammarKitRelease = "07f30a1e76"
+        if (!isAtLeast193) {
+            grammarKitRelease = "2019.1"
         }
     }
 
@@ -159,7 +161,7 @@ val Project.dependencyCachePath get(): String {
 
 val channelSuffix = if (channel.isBlank()) "" else "-$channel"
 val versionSuffix = "-$platformVersion$channelSuffix"
-val patchVersion = prop("patchVersion").toInt().let { if (channel.isBlank()) it else it + 1 }
+val patchVersion = prop("patchVersion").toInt()
 
 // Special module with run, build and publish tasks
 project(":plugin") {
@@ -169,7 +171,8 @@ project(":plugin") {
         val plugins = mutableListOf(
             project(":intellij-toml"),
             "IntelliLang",
-            "PsiViewer:$psiViewerPluginVersion"
+            graziePlugin,
+            psiViewerPlugin
         )
         if (baseIDE == "idea") {
             plugins += "copyright"
@@ -191,6 +194,7 @@ project(":plugin") {
         compile(project(":coverage"))
         compile(project(":intelliLang"))
         compile(project(":duplicates"))
+        compile(project(":grazie"))
     }
 
     tasks {
@@ -243,10 +247,12 @@ project(":") {
     val testOutput = configurations.create("testOutput")
 
     dependencies {
+        compile(project(":common"))
         compile("org.jetbrains:markdown:0.1.30") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
+        testCompile(project(":common", "testOutput"))
         testOutput(sourceSets.getByName("test").output.classesDirs)
     }
 
@@ -304,7 +310,9 @@ project(":idea") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -314,8 +322,10 @@ project(":clion") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         compile(project(":debugger"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -325,7 +335,9 @@ project(":debugger") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -339,7 +351,9 @@ project(":toml") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -353,7 +367,9 @@ project(":intelliLang") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -368,7 +384,9 @@ project(":copyright") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
@@ -380,23 +398,43 @@ project(":duplicates") {
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
 project(":coverage") {
     intellij {
-        version = ideaVersion
-        setPlugins("coverage")
+        if (!isAtLeast193) {
+            version = ideaVersion
+        }
+        if (baseIDE == "idea") {
+            setPlugins("coverage")
+        }
     }
     dependencies {
         compile(project(":"))
+        compile(project(":common"))
         testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
+    }
+}
+
+project(":grazie") {
+    intellij {
+        setPlugins(graziePlugin)
+    }
+    dependencies {
+        compile(project(":"))
+        compile(project(":common"))
+        testCompile(project(":", "testOutput"))
+        testCompile(project(":common", "testOutput"))
     }
 }
 
 project(":intellij-toml") {
-    version = "0.2.0.${prop("buildNumber")}$versionSuffix"
+    version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
 
     intellij {
         if (isAtLeast192 && baseIDE == "idea") {
@@ -404,9 +442,14 @@ project(":intellij-toml") {
         }
     }
 
+    dependencies {
+        compile(project(":common"))
+        testCompile(project(":common", "testOutput"))
+    }
+
     val generateTomlLexer = task<GenerateLexer>("generateTomlLexer") {
         source = "src/main/grammars/TomlLexer.flex"
-        targetDir = "src/gen/org/toml/lang/parse"
+        targetDir = "src/gen/org/toml/lang/lexer"
         targetClass = "_TomlLexer"
         purgeOldFiles = true
     }
@@ -430,6 +473,14 @@ project(":intellij-toml") {
     }
 }
 
+project(":common") {
+    val testOutput = configurations.create("testOutput")
+
+    dependencies {
+        testOutput(sourceSets.getByName("test").output.classesDirs)
+    }
+}
+
 task("runPrettyPrintersTests") {
     doLast {
         val lldbPath = when {
@@ -449,6 +500,32 @@ task("runPrettyPrintersTests") {
     }
 }
 
+task("makeReleaseBranch") {
+    doLast {
+        val regex = Regex("patchVersion=(\\d+)")
+
+        val properties = file("gradle.properties")
+        val propertiesText = properties.readText()
+        val patchVersion = regex.find(propertiesText)?.groupValues?.get(1)?.toInt()
+            ?: error("Failed to read 'patchVersion' property")
+        val releaseBranchName = "release-$patchVersion"
+
+        // Create local release branch
+        "git branch $releaseBranchName".execute()
+        // Update patchVersion property
+        val newPropertiesText = propertiesText.replace(regex) {
+            "patchVersion=${patchVersion + 1}"
+        }
+        properties.writeText(newPropertiesText)
+        // Push release branch
+        "git push -u origin $releaseBranchName".execute()
+        // Commit changes in `gradle.properties`
+        "git add gradle.properties".execute()
+        listOf("git", "commit", "-m", ":arrow_up: patch version").execute()
+        "git push".execute()
+    }
+}
+
 task("makeRelease") {
     doLast {
         val newChangelog = commitChangelog()
@@ -463,13 +540,13 @@ task("makeRelease") {
             "https://intellij-rust.github.io/$newChangelogPath.html"
         )
         pluginXml.writeText(newText)
-        val newPatchVersion = updatePatchVersion()
-        "git add $pluginXmlPath gradle.properties".execute()
+        "git add $pluginXmlPath".execute()
         "git commit -m Changelog".execute()
         "git push".execute()
 
         val head = "git rev-parse HEAD".execute()
-        "git checkout release-$newPatchVersion".execute()
+        // We assume that current version in master is 1 more than version in release branch
+        "git checkout release-${patchVersion - 1}".execute()
         "git cherry-pick $head".execute()
         "git push".execute()
 
@@ -495,18 +572,6 @@ fun commitChangelog(): String {
     if (!yes) error("Human says no")
     "git push".execute(website)
     return lastPost
-}
-
-/** Returns new patch version */
-fun updatePatchVersion(): Int {
-    val properties = file("gradle.properties")
-    var newPatchVersion: Int? = null
-    val propertiesText = properties.readText().replace(Regex("patchVersion=(\\d+)")) {
-        newPatchVersion = it.groupValues[1].toInt() + 1
-        "patchVersion=${newPatchVersion}"
-    }
-    properties.writeText(propertiesText)
-    return newPatchVersion!!
 }
 
 fun commitNightly() {
@@ -542,8 +607,6 @@ fun commitNightly() {
 
 task("updateCompilerFeatures") {
     doLast {
-        val featureGateUrl = URL("https://raw.githubusercontent.com/rust-lang/rust/master/src/libsyntax/feature_gate.rs")
-        val text = featureGateUrl.openStream().bufferedReader().readText()
         val file = File("src/main/kotlin/org/rust/lang/core/CompilerFeatures.kt")
         file.bufferedWriter().use {
             it.writeln("""
@@ -560,21 +623,25 @@ task("updateCompilerFeatures") {
                 import org.rust.lang.core.FeatureState.ACTIVE
 
             """.trimIndent())
-            it.writeFeatures("active", text)
+            it.writeFeatures("active", "https://raw.githubusercontent.com/rust-lang/rust/master/src/librustc_feature/active.rs")
             it.writeln()
-            it.writeFeatures("accepted", text)
+            it.writeFeatures("accepted", "https://raw.githubusercontent.com/rust-lang/rust/master/src/librustc_feature/accepted.rs")
         }
     }
 }
 
-fun Writer.writeFeatures(featureSet: String, text: String) {
+fun Writer.writeFeatures(featureSet: String, remoteFileUrl: String) {
+    val text = URL(remoteFileUrl).openStream().bufferedReader().readText()
+    val commentRegex = "^/{2,}".toRegex()
     """((\s*//.*\n)*)\s*\($featureSet, (\w+), (\"\d+\.\d+\.\d+\"), .*\),"""
         .toRegex(RegexOption.MULTILINE)
         .findAll(text)
         .forEach { matcher ->
             val (comments, _, featureName, version) = matcher.destructured
             if (comments.isNotEmpty()) {
-                writeln(comments.trimIndent().trim())
+                comments.trimIndent().trim().lines().forEach { line ->
+                    writeln(line.replace(commentRegex, "//"))
+                }
             }
             writeln("""val ${featureName.toUpperCase()} = CompilerFeature("$featureName", ${featureSet.toUpperCase()}, $version)""")
         }

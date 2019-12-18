@@ -66,6 +66,8 @@ fn foo() {
         10, y = 30
     }
     panic!("division by zero");
+    unimplemented!("{} {} {}", 1, 2, 3);
+    todo!("it's too {epithet} to implement", epithet = "boring");
     eprintln!(Foo[]); // custom format macro
     // -------------------
 
@@ -114,5 +116,13 @@ fn foo() {
     concat!("abc", "def");
     concat!("abc", "def",);
     concat!(Foo[]); // custom concat macro
+    // ------------------
+
+    // - env macros
+    env!("FOO");
+    env!("FOO",);
+    env!("FOO", "error message");
+    env!("FOO", "error message", );
+    env!(Foo[]); // custom env macro
     // ------------------
 }

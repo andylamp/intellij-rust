@@ -271,7 +271,7 @@ inline fun <reified T : PsiElement> InsertionContext.getElementOfType(strict: Bo
 private val InsertionContext.isInUseGroup: Boolean
     get() = getElementOfType<RsUseGroup>() != null
 
-private val InsertionContext.alreadyHasCallParens: Boolean
+val InsertionContext.alreadyHasCallParens: Boolean
     get() = nextCharIs('(')
 
 private val InsertionContext.alreadyHasStructBraces: Boolean
@@ -317,5 +317,5 @@ private fun isCompatibleTypes(lookup: ImplLookup, actualTy: Ty?, expectedTy: Ty?
         }
     }
 
-    return lookup.ctx.combineTypesNoVars(actualTy.foldWith(folder), expectedTy.foldWith(folder))
+    return lookup.ctx.combineTypesNoVars(actualTy.foldWith(folder), expectedTy.foldWith(folder)).isOk
 }

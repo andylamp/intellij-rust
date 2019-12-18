@@ -9,12 +9,15 @@ import com.intellij.concurrency.SensitiveProgressWrapper
 import com.intellij.ide.plugins.IdeaPluginDescriptor
 import com.intellij.ide.plugins.PluginManager
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.TransactionGuard
 import com.intellij.openapi.application.ex.ApplicationUtil
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.impl.TrailingSpacesStripper
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -34,6 +37,7 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.*
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.stubs.StubIndex
@@ -146,9 +150,6 @@ class CachedVirtualFile(private val url: String?) {
         return file
     }
 }
-
-val isUnitTestMode: Boolean get() = ApplicationManager.getApplication().isUnitTestMode
-val isHeadlessEnvironment: Boolean get() = ApplicationManager.getApplication().isHeadlessEnvironment
 
 fun saveAllDocuments() = FileDocumentManager.getInstance().saveAllDocuments()
 
@@ -266,7 +267,7 @@ fun runWithWriteActionPriority(indicator: ProgressIndicator, action: () -> Unit)
 fun submitTransaction(parentDisposable: Disposable, runnable: Runnable) {
     ApplicationManager.getApplication().invokeLater(Runnable {
         TransactionGuard.submitTransaction(parentDisposable, runnable)
-    }, ModalityState.any(), Condition.FALSE)
+    }, ModalityState.any(), Conditions.alwaysFalse<Any>())
 }
 
 class TransactionExecutor(val project: Project) : Executor {
@@ -284,3 +285,30 @@ fun <T> executeUnderProgress(indicator: ProgressIndicator, action: () -> T): T {
 
 fun <T : PsiElement> T.createSmartPointer(): SmartPsiElementPointer<T> =
     SmartPointerManager.getInstance(project).createSmartPsiElementPointer(this)
+
+val DataContext.psiFile: PsiFile?
+    get() = getData(CommonDataKeys.PSI_FILE)
+
+val DataContext.editor: Editor?
+    get() = getData(CommonDataKeys.EDITOR)
+
+val DataContext.project: Project?
+    get() = getData(CommonDataKeys.PROJECT)
+
+val DataContext.elementUnderCaretInEditor: PsiElement?
+    get() {
+        val psiFile = psiFile ?: return null
+        val editor = editor ?: return null
+
+        return psiFile.findElementAt(editor.caretModel.offset)
+    }
+
+fun runWithEnabledFeature(featureId: String, action: () -> Unit) {
+    val currentValue = isFeatureEnabled(featureId)
+    setFeatureEnabled(featureId, true)
+    try {
+        action()
+    } finally {
+        setFeatureEnabled(featureId, currentValue)
+    }
+}

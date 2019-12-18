@@ -24,6 +24,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.PsiFile
 import com.intellij.psi.impl.AnyPsiChangeListener
 import com.intellij.psi.impl.PsiManagerImpl
@@ -39,7 +40,10 @@ import org.rust.ide.annotator.fixes.ApplySuggestionFix
 import org.rust.lang.RsConstants
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.ext.containingCargoPackage
-import org.rust.openapiext.*
+import org.rust.openapiext.ProjectCache
+import org.rust.openapiext.checkReadAccessAllowed
+import org.rust.openapiext.checkReadAccessNotAllowed
+import org.rust.openapiext.saveAllDocumentsAsTheyAre
 import java.io.StringReader
 import java.nio.file.Path
 import java.util.*
@@ -149,6 +153,8 @@ fun MessageBus.createDisposableOnAnyPsiChange(): Disposable {
     val disposable = Disposer.newDisposable("Dispose on PSI change")
     connect(disposable).subscribe(
         PsiManagerImpl.ANY_PSI_CHANGE_TOPIC,
+        // BACKCOMPAT: 2019.2
+        @Suppress("DEPRECATION")
         object : AnyPsiChangeListener.Adapter() {
             override fun beforePsiChanged(isPhysical: Boolean) {
                 Disposer.dispose(disposable)
@@ -216,11 +222,9 @@ private data class RsExternalLinterFilteredMessage(
                 else -> HighlightSeverity.INFORMATION
             }
 
-            val span = message.spans
-                .firstOrNull { it.is_primary && it.isValid() }
-                // Some error messages are global, and we *could* show then atop of the editor,
-                // but they look rather ugly, so just skip them.
-                ?: return null
+            // Some error messages are global, and we *could* show then atop of the editor,
+            // but they look rather ugly, so just skip them.
+            val span = message.mainSpan ?: return null
 
             val syntaxErrors = listOf("expected pattern", "unexpected token")
             if (syntaxErrors.any { it in span.label.orEmpty() || it in message.message }) {

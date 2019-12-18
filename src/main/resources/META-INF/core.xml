@@ -26,6 +26,11 @@
         <stubElementTypeHolder class="org.rust.lang.core.psi.RsElementTypes"/>
         <lang.ast.factory language="Rust" implementationClass="org.rust.lang.core.RsASTFactory"/>
 
+        <!-- Sources -->
+
+        <generatedSourcesFilter implementation="org.rust.cargo.project.model.RsGeneratedSourcesFilter"/>
+        <writingAccessProvider implementation="org.rust.cargo.project.model.RsGeneratedSourcesWritingAccessProvider"/>
+
         <!-- Code insight settings -->
 
         <applicationService serviceImplementation="org.rust.ide.settings.RsCodeInsightSettings"/>
@@ -94,7 +99,10 @@
         <findUsagesHandlerFactory implementation="org.rust.ide.search.RsFindUsagesHandlerFactory"/>
         <usageTypeProvider implementation="org.rust.ide.search.RsUsageTypeProvider"/>
         <readWriteAccessDetector implementation="org.rust.ide.search.RsReadWriteAccessDetector" id="rust"/>
-        <fileStructureGroupRuleProvider implementation="org.rust.ide.search.RsFunctionGroupingRuleProvider" id="rs-function"/>
+        <fileStructureGroupRuleProvider implementation="org.rust.ide.search.RsFunctionGroupingRuleProvider"
+                                        id="rs-function"/>
+        <fileStructureGroupRuleProvider implementation="org.rust.ide.search.RsTraitOrImplGroupingRuleProvider"
+                                        order="before rs-function"/>
 
         <!-- Todos -->
 
@@ -124,7 +132,6 @@
 
         <targetElementEvaluator language="Rust"
                                 implementationClass="org.rust.ide.navigation.goto.RsTargetElementEvaluator"/>
-        <generatedSourcesFilter implementation="org.rust.ide.navigation.goto.RsGeneratedSourcesFilter"/>
 
         <!-- Focus mode -->
         <focusModeProvider language="Rust" implementationClass="org.rust.ide.focusMode.RsFocusModeProvider"/>
@@ -696,6 +703,14 @@
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
+            <className>org.rust.ide.intentions.ChopLiteralFieldListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.JoinLiteralFieldListIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
             <className>org.rust.ide.intentions.ChopVariantListIntention</className>
             <category>Rust</category>
         </intentionAction>
@@ -852,6 +867,12 @@
         <writingAccessProvider implementation="org.rust.lang.core.macros.RsMacroExpansionWritingAccessProvider"/>
         <cachesInvalidator implementation="org.rust.lang.core.macros.RsMacroExpansionCachesInvalidator"/>
 
+        <!-- REPL Console -->
+
+        <toolWindow id="Rust Console" anchor="bottom" icon="AllIcons.Debugger.Console" canCloseContents="true"
+                    factoryClass="org.rust.ide.console.RsConsoleToolWindowFactory" secondary="false"
+                    conditionClass="org.rust.ide.console.RsConsoleToolWindowFactory"/>
+
     </extensions>
 
     <extensionPoints>
@@ -866,6 +887,12 @@
         <component>
             <implementation-class>org.rust.cargo.RustfmtWatcher</implementation-class>
         </component>
+        <component>
+            <implementation-class>org.rust.ide.console.RsConsoleRunnerFactory</implementation-class>
+        </component>
+        <component>
+            <implementation-class>org.rust.ide.todo.RsTodoApplicationComponent</implementation-class>
+        </component>
     </application-components>
 
     <project-components>
@@ -879,6 +906,9 @@
         <component>
             <interface-class>org.rust.lang.core.macros.MacroExpansionManager</interface-class>
             <implementation-class>org.rust.lang.core.macros.MacroExpansionManagerImpl</implementation-class>
+        </component>
+        <component>
+            <implementation-class>org.rust.ide.console.RsConsoleToolWindow</implementation-class>
         </component>
     </project-components>
 

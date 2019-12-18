@@ -5,13 +5,13 @@
 
 package org.rust.lang.core.completion
 
+import com.intellij.openapiext.Testmark
 import org.intellij.lang.annotations.Language
 import org.rust.ProjectDescriptor
 import org.rust.WithDependencyRustProjectDescriptor
 import org.rust.hasCaretMarker
 import org.rust.ide.settings.RsCodeInsightSettings
 import org.rust.lang.core.completion.RsCommonCompletionProvider.Testmarks
-import org.rust.openapiext.Testmark
 
 class RsPathCompletionFromIndexTest : RsCompletionTestBase() {
 
@@ -328,7 +328,7 @@ class RsPathCompletionFromIndexTest : RsCompletionTestBase() {
         @Language("Rust") after: String,
         suggestOutOfScopeItems: Boolean = true,
         importOutOfScopeItems: Boolean = true
-    ) = doTest(before, after, suggestOutOfScopeItems, importOutOfScopeItems, ::doSingleCompletionMultifile)
+    ) = doTest(before, after, suggestOutOfScopeItems, importOutOfScopeItems, ::doSingleCompletionByFileTree)
 
     private fun doTest(
         @Language("Rust") before: String,

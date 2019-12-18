@@ -10,7 +10,6 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.StubBuilder
 import com.intellij.psi.stubs.*
 import com.intellij.psi.tree.IStubFileElementType
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.BitUtil
 import com.intellij.util.io.DataInputOutputUtil.readNullable
 import com.intellij.util.io.DataInputOutputUtil.writeNullable
@@ -36,7 +35,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 181
+        override fun getStubVersion(): Int = 186
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -150,6 +149,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
 
     "INCLUDE_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("INCLUDE_MACRO_ARGUMENT", ::RsIncludeMacroArgumentImpl)
     "CONCAT_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("CONCAT_MACRO_ARGUMENT", ::RsConcatMacroArgumentImpl)
+    "ENV_MACRO_ARGUMENT" -> RsPlaceholderStub.Type("ENV_MACRO_ARGUMENT", ::RsEnvMacroArgumentImpl)
 
     "INNER_ATTR" -> RsInnerAttrStub.Type
     "OUTER_ATTR" -> RsPlaceholderStub.Type("OUTER_ATTR", ::RsOuterAttrImpl)
@@ -1187,7 +1187,7 @@ class RsBinaryOpStub(
 
 object RsBlockStubType : RsPlaceholderStub.Type<RsBlock>("BLOCK", ::RsBlockImpl) {
     override fun shouldCreateStub(node: ASTNode): Boolean =
-        createStubIfParentIsStub(node) || PsiTreeUtil.getChildOfType(node.psi, RsItemElement::class.java) != null
+        createStubIfParentIsStub(node) || node.psi.childOfType<RsItemElement>() != null
 }
 
 class RsExprStubType<PsiT : RsElement>(

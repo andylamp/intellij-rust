@@ -5,6 +5,7 @@
 
 package org.rust
 
+import com.intellij.TestCase
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.LanguageCommenters
 import com.intellij.lang.injection.InjectedLanguageManager
@@ -52,7 +53,7 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
 
     open val dataPath: String = ""
 
-    override fun getTestDataPath(): String = "${RsTestCase.testResourcesPath}/$dataPath"
+    override fun getTestDataPath(): String = "${TestCase.testResourcesPath}/$dataPath"
 
     override fun setUp() {
         super.setUp()
@@ -165,7 +166,12 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         get() = "$testName.rs"
 
     private val testName: String
-        get() = camelOrWordsToSnake(getTestName(true))
+        get() = getTestName(true)
+
+    override fun getTestName(lowercaseFirstLetter: Boolean): String {
+        val camelCase = super.getTestName(lowercaseFirstLetter)
+        return TestCase.camelOrWordsToSnake(camelCase)
+    }
 
     protected fun checkByFile(ignoreTrailingWhitespace: Boolean = true, action: () -> Unit) {
         val (before, after) = (fileName to fileName.replace(".rs", "_after.rs"))
@@ -221,18 +227,9 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         fail("No ${X::class.java} was thrown during the test")
     }
 
-    inner class InlineFile(@Language("Rust") private val code: String, val name: String = "main.rs") {
-        private val hasCaretMarker = "/*caret*/" in code
-
-        init {
-            myFixture.configureByText(name, replaceCaretMarker(code))
-        }
-
-        fun withCaret() {
-            check(hasCaretMarker) {
-                "Please, add `/*caret*/` marker to\n$code"
-            }
-        }
+    @Suppress("TestFunctionName")
+    protected fun InlineFile(@Language("Rust") code: String, name: String = "main.rs"): InlineFile {
+        return InlineFile(myFixture, code, name)
     }
 
     protected inline fun <reified T : PsiElement> findElementInEditor(marker: String = "^"): T =
@@ -328,11 +325,6 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         }
     }
 
-    protected fun applyQuickFix(name: String) {
-        val action = myFixture.findSingleIntention(name)
-        myFixture.launchAction(action)
-    }
-
     protected fun checkAstNotLoaded(fileFilter: VirtualFileFilter) {
         PsiManagerEx.getInstanceEx(project).setAssertOnFileLoadingFilter(fileFilter, testRootDisposable)
     }
@@ -353,13 +345,6 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         // XXX: hides `Assert.fail`
         fun fail(message: String): Nothing {
             throw AssertionFailedError(message)
-        }
-
-        @JvmStatic
-        fun camelOrWordsToSnake(name: String): String {
-            if (' ' in name) return name.trim().replace(" ", "_")
-
-            return name.split("(?=[A-Z])".toRegex()).joinToString("_", transform = String::toLowerCase)
         }
 
         @JvmStatic
@@ -385,16 +370,9 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         }
     }
 
-    protected fun FileTree.create(): TestProject =
-        create(myFixture.project, myFixture.findFileInTempDir("."))
-
-    protected fun FileTree.createAndOpenFileWithCaretMarker(): TestProject {
-        val testProject = create()
-        myFixture.configureFromTempProjectFile(testProject.fileWithCaret)
-        return testProject
-    }
+    protected fun FileTree.create(): TestProject = create(myFixture)
+    protected fun FileTree.createAndOpenFileWithCaretMarker(): TestProject = createAndOpenFileWithCaretMarker(myFixture)
 
     protected val PsiElement.lineNumber: Int
         get() = myFixture.getDocument(myFixture.file).getLineNumber(textOffset)
 }
-

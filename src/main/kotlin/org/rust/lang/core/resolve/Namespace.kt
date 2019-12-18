@@ -43,9 +43,18 @@ val RsNamedElement.namespaces: Set<Namespace> get() = when (this) {
 
     is RsLifetimeParameter -> LIFETIMES
 
-    is RsMacro -> MACROS
+    is RsMacro, is RsMacro2 -> MACROS
 
     else -> TYPES_N_VALUES
 }
 
+val RsUseSpeck.namespaces: Set<Namespace>
+    get() = path
+        ?.reference
+        ?.multiResolve()
+        ?.asSequence()
+        ?.filterIsInstance<RsNamedElement>()
+        ?.flatMap { it.namespaces.asSequence() }
+        ?.toSet()
+        .orEmpty()
 

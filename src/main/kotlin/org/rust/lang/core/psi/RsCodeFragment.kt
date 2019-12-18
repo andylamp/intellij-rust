@@ -13,22 +13,19 @@ import com.intellij.psi.impl.source.PsiFileImpl
 import com.intellij.psi.impl.source.tree.FileElement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.tree.IElementType
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.LightVirtualFile
 import org.rust.lang.RsFileType
 import org.rust.lang.RsLanguage
-import org.rust.lang.core.parser.RustParserUtil
 import org.rust.lang.core.parser.RustParserUtil.PathParsingMode
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.RsInferenceContextOwner
-import org.rust.lang.core.psi.ext.RsMod
-import org.rust.lang.core.psi.ext.RsNamedElement
+import org.rust.lang.core.parser.RustParserUtil.PathParsingMode.*
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 
 abstract class RsCodeFragment(
     fileViewProvider: FileViewProvider,
     contentElementType: IElementType,
-    private val context: RsElement
+    open val context: RsElement,
+    forceCachedPsi: Boolean = true
 ) : RsFileBase(fileViewProvider), PsiCodeFragment {
 
     constructor(
@@ -61,7 +58,9 @@ abstract class RsCodeFragment(
     private var isPhysical = true
 
     init {
-        getViewProvider().forceCachedPsi(this)
+        if (forceCachedPsi) {
+            getViewProvider().forceCachedPsi(this)
+        }
         init(TokenType.CODE_FRAGMENT, contentElementType)
     }
 
@@ -115,18 +114,26 @@ class RsExpressionCodeFragment : RsCodeFragment, RsInferenceContextOwner {
     constructor(project: Project, text: CharSequence, context: RsElement)
         : super(project, text, RsCodeFragmentElementType.EXPR, context)
 
-    val expr: RsExpr? get() = PsiTreeUtil.getChildOfType(this, RsExpr::class.java)
+    val expr: RsExpr? get() = childOfType()
 }
 
 class RsStatementCodeFragment(project: Project, text: CharSequence, context: RsElement)
     : RsCodeFragment(project, text, RsCodeFragmentElementType.STMT, context) {
-    val stmt: RsStmt? get() = PsiTreeUtil.getChildOfType(this, RsStmt::class.java)
+    val stmt: RsStmt? get() = childOfType()
+}
+
+class RsReplCodeFragment(fileViewProvider: FileViewProvider, override var context: RsElement)
+    : RsCodeFragment(fileViewProvider, RsCodeFragmentElementType.REPL, context, false),
+      RsInferenceContextOwner, RsItemsOwner {
+    val stmts: List<RsStmt> get() = childrenOfType()
+    val tailExpr: RsExpr? get() = children.lastOrNull()?.let { it as? RsExpr }
+    val namedElements: List<RsNamedElement> get() = childrenOfType()
 }
 
 class RsTypeReferenceCodeFragment(project: Project, text: CharSequence, context: RsElement)
     : RsCodeFragment(project, text, RsCodeFragmentElementType.TYPE_REF, context),
       RsNamedElement {
-    val typeReference: RsTypeReference? get() = PsiTreeUtil.getChildOfType(this, RsTypeReference::class.java)
+    val typeReference: RsTypeReference? get() = childOfType()
 }
 
 class RsPathCodeFragment(
@@ -144,14 +151,14 @@ class RsPathCodeFragment(
         ns: Set<Namespace>
     ) : this(createFileViewProvider(project, text, eventSystemEnabled), context, mode, ns)
 
-    val path: RsPath? get() = PsiTreeUtil.getChildOfType(this, RsPath::class.java)
+    val path: RsPath? get() = childOfType()
 
     companion object {
         @JvmStatic
         private fun PathParsingMode.elementType() = when (this) {
-            PathParsingMode.NO_COLONS -> RsCodeFragmentElementType.PATH_WITHOUT_COLONS
-            PathParsingMode.COLONS -> RsCodeFragmentElementType.PATH_WITH_COLONS
-            PathParsingMode.NO_TYPES -> error("NO_TYPES mode is not supported; use NO_COLONS")
+            TYPE -> RsCodeFragmentElementType.TYPE_PATH_CODE_FRAGMENT
+            VALUE -> RsCodeFragmentElementType.VALUE_PATH_CODE_FRAGMENT
+            NO_TYPE_ARGS -> error("$NO_TYPE_ARGS mode is not supported; use $TYPE")
         }
     }
 }

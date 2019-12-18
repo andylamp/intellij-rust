@@ -3,6 +3,10 @@
  * found in the LICENSE file.
  */
 
+
+// BACKCOMPAT: 2019.2
+@file:Suppress("DEPRECATION", "UnstableApiUsage")
+
 package org.rust.cargo.runconfig.buildtool
 
 import com.intellij.execution.ExecutorRegistry
@@ -13,6 +17,7 @@ import com.intellij.execution.runners.ProgramRunner
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.*
 import com.intellij.openapi.project.Project
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.task.*
 import com.intellij.task.impl.ProjectModelBuildTaskImpl
 import org.rust.cargo.project.model.cargoProjects
@@ -20,6 +25,8 @@ import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.runconfig.CargoCommandRunner
 import org.rust.cargo.runconfig.buildProject
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.CANCELED_BUILD_RESULT
+import org.rust.cargo.runconfig.buildtool.CargoBuildManager.createBuildEnvironment
+import org.rust.cargo.runconfig.buildtool.CargoBuildManager.getBuildConfiguration
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildToolWindowEnabled
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.createCargoCommandRunConfiguration
@@ -30,7 +37,6 @@ import java.util.concurrent.*
 
 private val LOG: Logger = Logger.getInstance(CargoBuildTaskRunner::class.java)
 
-@Suppress("UnstableApiUsage")
 class CargoBuildTaskRunner : ProjectTaskRunner() {
     private val buildSessionsQueue: BackgroundTaskQueue = BackgroundTaskQueue(null, "Building...")
 
@@ -56,7 +62,12 @@ class CargoBuildTaskRunner : ProjectTaskRunner() {
             waitingIndicator
         )
 
-        WaitingTask(project, waitingIndicator, queuedTask.executionStarted).queue()
+        if (isUnitTestMode) {
+            waitingIndicator.complete(EmptyProgressIndicator())
+        } else {
+            WaitingTask(project, waitingIndicator, queuedTask.executionStarted).queue()
+        }
+
         buildSessionsQueue.run(queuedTask, null, EmptyProgressIndicator())
     }
 
@@ -75,10 +86,19 @@ class CargoBuildTaskRunner : ProjectTaskRunner() {
         if (task !is ModuleBuildTask) return listOf(task)
 
         val project = task.module.project
+        val runManager = RunManager.getInstance(project)
+
+        val selectedConfiguration = runManager.selectedConfiguration?.configuration as? CargoCommandConfiguration
+        if (selectedConfiguration != null) {
+            val buildConfiguration = getBuildConfiguration(selectedConfiguration) ?: return emptyList()
+            val environment = createBuildEnvironment(buildConfiguration) ?: return emptyList()
+            val buildableElement = CargoBuildConfiguration(buildConfiguration, environment)
+            return listOf(ProjectModelBuildTaskImpl(buildableElement, false))
+        }
+
         val cargoProjects = project.cargoProjects.allProjects
         if (cargoProjects.isEmpty()) return emptyList()
 
-        val runManager = RunManager.getInstance(project)
         val executor = ExecutorRegistry.getInstance().getExecutorById(DefaultRunExecutor.EXECUTOR_ID)
         val runner = ProgramRunner.findRunnerById(CargoCommandRunner.RUNNER_ID) ?: return emptyList()
 

@@ -10,8 +10,10 @@ import com.intellij.lang.PsiBuilder
 import com.intellij.lang.PsiBuilderUtil
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.TokenType
+import com.intellij.psi.tree.IElementType
 import com.intellij.psi.tree.TokenSet
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
@@ -23,7 +25,6 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.doc.psi.RsDocKind
-import org.rust.openapiext.Testmark
 import org.rust.openapiext.forEachChild
 import org.rust.stdext.joinToWithBuffer
 import org.rust.stdext.mapNotNullToSet
@@ -94,26 +95,27 @@ private data class WithParent(
 data class MetaVarValue(
     val value: String,
     val kind: FragmentKind?,
+    val elementType: IElementType?,
     val offsetInCallBody: Int
 )
 
 class MacroExpander(val project: Project) {
     fun expandMacroAsText(def: RsMacro, call: RsMacroCall): Pair<CharSequence, RangeMap>? {
         val (case, subst, loweringRanges) = findMatchingPattern(def, call) ?: return null
-        val macroExpansion = case.macroExpansion ?: return null
+        val macroExpansion = case.macroExpansion?.macroExpansionContents ?: return null
 
         val substWithGlobalVars = WithParent(
             subst,
             WithParent(
                 MacroSubstitution(
-                    singletonMap("crate", MetaVarValue(expandDollarCrateVar(call, def), null, -1)),
+                    singletonMap("crate", MetaVarValue(expandDollarCrateVar(call, def), null, null, -1)),
                     emptyList()
                 ),
                 null
             )
         )
 
-        return substituteMacro(macroExpansion.macroExpansionContents, substWithGlobalVars)?.let { (text, ranges) ->
+        return substituteMacro(macroExpansion, substWithGlobalVars)?.let { (text, ranges) ->
             text to loweringRanges.mapAll(ranges)
         }
     }
@@ -211,6 +213,7 @@ class MacroExpander(val project: Project) {
                         return@forEachChild
                     }
                     val parensNeeded = value.kind == FragmentKind.Expr
+                        && value.elementType !in USELES_PARENS_EXPRS
                     if (parensNeeded) {
                         sb.append("(")
                         sb.append(value.value)
@@ -272,6 +275,13 @@ class MacroExpander(val project: Project) {
         } else {
             add(range)
         }
+    }
+
+    companion object {
+        const val EXPANDER_VERSION = 3
+        private val USELES_PARENS_EXPRS = tokenSetOf(
+            LIT_EXPR, MACRO_EXPR, PATH_EXPR, PAREN_EXPR, TUPLE_EXPR, ARRAY_EXPR, UNIT_EXPR
+        )
     }
 }
 
@@ -362,7 +372,8 @@ class MacroPattern private constructor(
                         return null
                     }
                     val text = macroCallBody.originalText.substring(lastOffset, macroCallBody.currentOffset)
-                    map[name] = MetaVarValue(text, kind, lastOffset)
+                    val elementType = macroCallBody.latestDoneMarker?.tokenType
+                    map[name] = MetaVarValue(text, kind, elementType, lastOffset)
                 }
                 MACRO_BINDING_GROUP -> {
                     val psi = node.psi as RsMacroBindingGroup
@@ -420,9 +431,10 @@ class MacroPattern private constructor(
                 break
             }
 
+            mark?.drop()
+            mark = macroCallBody.mark()
+
             if (separator != null) {
-                mark?.drop()
-                mark = macroCallBody.mark()
                 if (!macroCallBody.isSameToken(separator)) {
                     MacroExpansionMarks.failMatchGroupBySeparator.hit()
                     break
@@ -440,8 +452,8 @@ class MacroPattern private constructor(
     }
 
     companion object {
-        fun valueOf(psi: RsMacroPatternContents): MacroPattern =
-            MacroPattern(psi.node.childrenSkipWhitespaceAndComments().flatten())
+        fun valueOf(psi: RsMacroPatternContents?): MacroPattern =
+            MacroPattern(psi?.node?.childrenSkipWhitespaceAndComments()?.flatten() ?: emptySequence())
 
         private fun Sequence<ASTNode>.flatten(): Sequence<ASTNode> = flatMap {
             when (it.elementType) {

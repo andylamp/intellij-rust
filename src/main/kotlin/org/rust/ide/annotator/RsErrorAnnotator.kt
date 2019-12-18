@@ -6,17 +6,17 @@
 package org.rust.ide.annotator
 
 import com.intellij.codeInsight.daemon.impl.HighlightRangeExtension
+import com.intellij.codeInspection.ProblemHighlightType
+import com.intellij.ide.annotator.AnnotatorBase
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.AnnotationSession
 import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import com.intellij.psi.util.PsiTreeUtil
 import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.ide.annotator.fixes.AddModuleFileFix
-import org.rust.ide.annotator.fixes.AddTurbofishFix
-import org.rust.ide.annotator.fixes.CreateLifetimeParameterFromUsageFix
-import org.rust.ide.annotator.fixes.MakePublicFix
+import org.rust.ide.annotator.fixes.*
 import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
 import org.rust.ide.utils.isCfgUnknown
 import org.rust.ide.utils.isEnabledByCfg
@@ -24,6 +24,7 @@ import org.rust.lang.core.*
 import org.rust.lang.core.FeatureAvailability.CAN_BE_ADDED
 import org.rust.lang.core.FeatureAvailability.NOT_AVAILABLE
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsElementTypes.IDENTIFIER
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.knownItems
@@ -37,7 +38,7 @@ import org.rust.lang.utils.addToHolder
 import org.rust.lang.utils.evaluation.ExprValue
 import org.rust.lang.utils.evaluation.RsConstExprEvaluator
 
-class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
+class RsErrorAnnotator : AnnotatorBase(), HighlightRangeExtension {
     override fun isForceHighlightParents(file: PsiFile): Boolean = file is RsFile
 
     override fun annotateInternal(element: PsiElement, rawHolder: AnnotationHolder) {
@@ -46,6 +47,8 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitBaseType(o: RsBaseType) = checkBaseType(holder, o)
             override fun visitCondition(o: RsCondition) = checkCondition(holder, o)
             override fun visitConstant(o: RsConstant) = checkConstant(holder, o)
+            override fun visitTypeArgumentList(o: RsTypeArgumentList) = checkTypeArgumentList(holder, o)
+            override fun visitValueParameterList(o: RsValueParameterList) = checkValueParameterList(holder, o)
             override fun visitValueArgumentList(o: RsValueArgumentList) = checkValueArgumentList(holder, o)
             override fun visitStructItem(o: RsStructItem) = checkDuplicates(holder, o)
             override fun visitEnumItem(o: RsEnumItem) = checkEnumItem(holder, o)
@@ -56,6 +59,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             override fun visitLifetime(o: RsLifetime) = checkLifetime(holder, o)
             override fun visitModDeclItem(o: RsModDeclItem) = checkModDecl(holder, o)
             override fun visitModItem(o: RsModItem) = checkDuplicates(holder, o)
+            override fun visitUseSpeck(o: RsUseSpeck) = checkUseSpeck(holder,o)
             override fun visitPatBox(o: RsPatBox) = checkPatBox(holder, o)
             override fun visitPatField(o: RsPatField) = checkPatField(holder, o)
             override fun visitPatBinding(o: RsPatBinding) = checkPatBinding(holder, o)
@@ -93,6 +97,15 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         }
 
         element.accept(visitor)
+    }
+
+    private fun checkUseSpeck(holder: RsAnnotationHolder, useSpeck: RsUseSpeck) {
+        if (useSpeck.isStarImport || useSpeck.useGroup != null) return
+        val duplicates = holder.currentAnnotationSession.duplicatesByNamespace(useSpeck.containingMod, false)
+        if (useSpeck.namespaces.any { useSpeck in duplicates[it].orEmpty() }) {
+            val identifier = PsiTreeUtil.getDeepestLast(useSpeck)
+            RsDiagnostic.DuplicateImportError(identifier).addToHolder(holder)
+        }
     }
 
     private fun checkRsPatStruct(holder: RsAnnotationHolder, patStruct: RsPatStruct) {
@@ -234,6 +247,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
     private fun checkDotExpr(holder: RsAnnotationHolder, o: RsDotExpr) {
         val field = o.fieldLookup ?: o.methodCall ?: return
         checkReferenceIsPublic(field, o, holder)
+        checkUnstableAttribute(field, holder)
         if (field is RsMethodCall) {
             checkNotCallingDrop(field, holder)
         }
@@ -300,6 +314,21 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         error.addToHolder(holder)
     }
 
+    private fun checkUnstableAttribute(ref: RsReferenceElement, holder: RsAnnotationHolder) {
+        val startElement = ref.referenceNameElement.takeIf { it.elementType == IDENTIFIER } ?: return
+        if (ref.containingCargoPackage?.origin == PackageOrigin.STDLIB) return
+        val element = ref.reference.resolve() as? RsOuterAttributeOwner ?: return
+        for (attr in element.queryAttributes.unstableAttributes) {
+            val metaItems = attr.metaItemArgs?.metaItemList ?: continue
+            val featureName = metaItems.singleOrNull { it.name == "feature" }?.value ?: continue
+            val reason = metaItems.singleOrNull { it.name == "reason" }?.value
+            val reasonSuffix = if (reason != null) ": $reason" else ""
+            val feature = CompilerFeature.find(featureName)
+                ?: CompilerFeature(featureName, FeatureState.ACTIVE, null, cache = false)
+            feature.check(holder, startElement, null, "`$featureName` is unstable$reasonSuffix")
+        }
+    }
+
     private fun checkBaseType(holder: RsAnnotationHolder, type: RsBaseType) {
         if (type.underscore == null) return
         val owner = type.owner.parent
@@ -344,7 +373,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
 
         val crate = path.crate
         val useSpeck = path.ancestorStrict<RsUseSpeck>()
-        val edition = path.containingCargoTarget?.edition
+        val edition = path.edition
 
         // `pub(crate)` should be annotated
         if (crate != null && (qualifier != null || path.ancestorStrict<RsVisRestriction>() == null)) {
@@ -356,6 +385,7 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
         }
 
         checkReferenceIsPublic(path, path, holder)
+        checkUnstableAttribute(path, holder)
     }
 
     private fun checkConstParameter(holder: RsAnnotationHolder, constParameter: RsConstParameter) {
@@ -560,6 +590,26 @@ class RsErrorAnnotator : RsAnnotatorBase(), HighlightRangeExtension {
             val annotator = holder.createErrorAnnotation(o, "Chained comparison operator require parentheses")
             annotator?.registerFix(AddTurbofishFix())
         }
+    }
+
+    private fun checkTypeArgumentList(holder: RsAnnotationHolder, args: RsTypeArgumentList) {
+        checkRedundantColonColon(holder, args)
+    }
+
+    private fun checkValueParameterList(holder: RsAnnotationHolder, args: RsValueParameterList) {
+        checkRedundantColonColon(holder, args)
+    }
+
+    private fun checkRedundantColonColon(holder: RsAnnotationHolder, args: RsElement) {
+        // For some reason `::(i32) -> i32` in `Fn::(i32) -> i32` has `RsValueParameterList` instead of `RsTypeArgumentList`.
+        // `RsValueParameterList` and `RsTypeArgumentList` shouldn't have common interfaces
+        // So we have to use low level ASTNode API to avoid code duplication
+        val coloncolon = args.node.findChildByType(RsElementTypes.COLONCOLON)?.psi ?: return
+        // `::` is redundant only in types
+        if (PsiTreeUtil.getParentOfType(args, RsTypeReference::class.java, RsTraitRef::class.java) == null) return
+        val annotation = holder.createWeakWarningAnnotation(coloncolon, "Redundant `::`") ?: return
+        annotation.highlightType = ProblemHighlightType.LIKE_UNUSED_SYMBOL
+        annotation.registerFix(RemoveElementFix(coloncolon))
     }
 
     private fun checkValueArgumentList(holder: RsAnnotationHolder, args: RsValueArgumentList) {
@@ -808,13 +858,6 @@ private fun checkDuplicates(holder: RsAnnotationHolder, element: RsNameIdentifie
         ?: return
     val name = element.name!!
 
-    val elementDuplicates = duplicates.getValue(ns)
-        .minus(element)
-        .filterIsInstance<RsNamedElement>()
-        .filter { it.name == name }
-        .filter { !it.isCfgUnknown }
-    if (elementDuplicates.isEmpty()) return
-
     val identifier = element.nameIdentifier ?: element
     val message = when {
         element is RsNamedFieldDecl -> RsDiagnostic.DuplicateFieldError(identifier, name)
@@ -853,24 +896,45 @@ private fun checkParamAttrs(holder: RsAnnotationHolder, o: RsOuterAttributeOwner
     diagnostic.addToHolder(holder)
 }
 
+private fun PsiElement.nameOrImportedName(): String? =
+    when (this) {
+        is RsNamedElement -> name
+        is RsUseSpeck -> nameInScope
+        else -> null
+    }
+
 private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursively: Boolean): Map<Namespace, Set<PsiElement>> {
     if (owner.parent is RsFnPointerType) return emptyMap()
+
+    fun PsiElement.namespaced(): Sequence<Pair<Namespace, PsiElement>> =
+        when (this) {
+            is RsNamedElement -> namespaces
+            is RsUseSpeck -> namespaces
+            else -> emptySet()
+        }.asSequence().map { Pair(it, this) }
 
     val fileMap = fileDuplicatesMap()
     fileMap[owner]?.let { return it }
 
+    val importedNames = (owner as? RsItemsOwner)
+        ?.expandedItemsCached
+        ?.namedImports
+        ?.asSequence()
+        ?.mapNotNull { it.path.parent as? RsUseSpeck }
+        .orEmpty()
     val duplicates: Map<Namespace, Set<PsiElement>> =
-        owner.namedChildren(recursively, stopAt = RsFnPointerType::class.java)
+        (owner.namedChildren(recursively, stopAt = RsFnPointerType::class.java)
+            + importedNames)
             .filter { it !is RsExternCrateItem } // extern crates can have aliases.
-            .filter { it.name != null }
-            .filter { it !is RsDocAndAttributeOwner || it.isEnabledByCfg }
-            .flatMap { it.namespaced }
+            .filter { it.nameOrImportedName() != null }
+            .filter { it !is RsDocAndAttributeOwner || (it.isEnabledByCfg && !it.isCfgUnknown) }
+            .flatMap { it.namespaced() }
             .groupBy { it.first }       // Group by namespace
             .map { entry ->
                 val (namespace, items) = entry
                 namespace to items.asSequence()
                     .map { it.second }
-                    .groupBy { it.name }
+                    .groupBy { it.nameOrImportedName() }
                     .map { it.value }
                     .filter { it.size > 1 }
                     .flatten()
@@ -908,8 +972,6 @@ private fun AnnotationSession.fileDuplicatesMap(): MutableMap<PsiElement, Map<Na
     return map
 }
 
-private val RsNamedElement.namespaced: Sequence<Pair<Namespace, RsNamedElement>>
-    get() = namespaces.asSequence().map { Pair(it, this) }
 
 private fun RsCallExpr.expectedParamsCount(): Pair<Int, Boolean>? {
     val path = (expr as? RsPathExpr)?.path ?: return null

@@ -7,6 +7,7 @@ package org.rust.lang.core.types.infer
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
+import com.intellij.openapiext.Testmark
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import org.jetbrains.annotations.TestOnly
@@ -20,7 +21,6 @@ import org.rust.lang.core.types.ty.*
 import org.rust.lang.utils.RsDiagnostic
 import org.rust.lang.utils.snapshot.CombinedSnapshot
 import org.rust.lang.utils.snapshot.Snapshot
-import org.rust.openapiext.Testmark
 import org.rust.openapiext.recursionGuard
 import org.rust.stdext.zipValues
 
@@ -32,15 +32,15 @@ fun inferTypesIn(element: RsInferenceContextOwner): RsInferenceResult {
         ?: error("Can not run nested type inference")
 }
 
-sealed class Adjustment(val target: Ty) {
+sealed class Adjustment(open val target: Ty) {
     class Deref(target: Ty) : Adjustment(target)
     class BorrowReference(
-        target: Ty,
+        override val target: TyReference,
         val region: Region? = (target as? TyReference)?.region,
         val mutability: Mutability? = (target as? TyReference)?.mutability
     ) : Adjustment(target)
 
-    class BorrowPointer(target: Ty, val mutability: Mutability) : Adjustment(target)
+//    class BorrowPointer(target: Ty, val mutability: Mutability) : Adjustment(target)
 }
 
 interface RsInferenceData {
@@ -167,6 +167,15 @@ class RsInferenceContext(
             val fctx = RsTypeInferenceWalker(this, element.returnType)
             fctx.extractParameterBindings(element)
             element.block?.let { fctx.inferFnBody(it) }
+        } else if (element is RsReplCodeFragment) {
+            element.context.inference?.let {
+                patTypes.putAll(it.patTypes)
+                patFieldTypes.putAll(it.patFieldTypes)
+                exprTypes.putAll(it.exprTypes)
+            }
+
+            val walker = RsTypeInferenceWalker(this, TyUnknown)
+            walker.inferReplCodeFragment(element)
         } else {
             val (retTy, expr) = when (element) {
                 is RsConstant -> element.typeReference?.type to element.expr
@@ -176,7 +185,7 @@ class RsInferenceContext(
                     enum?.reprType to element.expr
                 }
                 is RsExpressionCodeFragment -> {
-                    element.context?.inference?.let {
+                    element.context.inference?.let {
                         patTypes.putAll(it.patTypes)
                         patFieldTypes.putAll(it.patFieldTypes)
                         exprTypes.putAll(it.exprTypes)
@@ -348,7 +357,7 @@ class RsInferenceContext(
     }
 
     fun canCombineTypes(ty1: Ty, ty2: Ty): Boolean {
-        return probe { combineTypesResolved(shallowResolve(ty1), shallowResolve(ty2)) }
+        return probe { combineTypesResolved(shallowResolve(ty1), shallowResolve(ty2)).isOk }
     }
 
     fun combineTypesIfOk(ty1: Ty, ty2: Ty): Boolean {
@@ -357,7 +366,7 @@ class RsInferenceContext(
 
     private fun combineTypesIfOkResolved(ty1: Ty, ty2: Ty): Boolean {
         val snapshot = startSnapshot()
-        val res = combineTypesResolved(ty1, ty2)
+        val res = combineTypesResolved(ty1, ty2).isOk
         if (res) {
             snapshot.commit()
         } else {
@@ -366,11 +375,11 @@ class RsInferenceContext(
         return res
     }
 
-    fun combineTypes(ty1: Ty, ty2: Ty): Boolean {
+    fun combineTypes(ty1: Ty, ty2: Ty): CoerceResult {
         return combineTypesResolved(shallowResolve(ty1), shallowResolve(ty2))
     }
 
-    private fun combineTypesResolved(ty1: Ty, ty2: Ty): Boolean {
+    private fun combineTypesResolved(ty1: Ty, ty2: Ty): CoerceResult {
         return when {
             ty1 is TyInfer.TyVar -> combineTyVar(ty1, ty2)
             ty2 is TyInfer.TyVar -> combineTyVar(ty2, ty1)
@@ -382,7 +391,7 @@ class RsInferenceContext(
         }
     }
 
-    private fun combineTyVar(ty1: TyInfer.TyVar, ty2: Ty): Boolean {
+    private fun combineTyVar(ty1: TyInfer.TyVar, ty2: Ty): CoerceResult {
         when (ty2) {
             is TyInfer.TyVar -> varUnificationTable.unifyVarVar(ty1, ty2)
             else -> {
@@ -403,31 +412,31 @@ class RsInferenceContext(
                 }
             }
         }
-        return true
+        return CoerceResult.Ok
     }
 
-    private fun combineIntOrFloatVar(ty1: TyInfer, ty2: Ty): Boolean {
+    private fun combineIntOrFloatVar(ty1: TyInfer, ty2: Ty): CoerceResult {
         when (ty1) {
             is TyInfer.IntVar -> when (ty2) {
                 is TyInfer.IntVar -> intUnificationTable.unifyVarVar(ty1, ty2)
                 is TyInteger -> intUnificationTable.unifyVarValue(ty1, ty2)
-                else -> return false
+                else -> return CoerceResult.Mismatch(ty1, ty2)
             }
             is TyInfer.FloatVar -> when (ty2) {
                 is TyInfer.FloatVar -> floatUnificationTable.unifyVarVar(ty1, ty2)
                 is TyFloat -> floatUnificationTable.unifyVarValue(ty1, ty2)
-                else -> return false
+                else -> return CoerceResult.Mismatch(ty1, ty2)
             }
             is TyInfer.TyVar -> error("unreachable")
         }
-        return true
+        return CoerceResult.Ok
     }
 
-    fun combineTypesNoVars(ty1: Ty, ty2: Ty): Boolean =
+    fun combineTypesNoVars(ty1: Ty, ty2: Ty): CoerceResult =
         when {
-            ty1 === ty2 -> true
-            ty1 is TyPrimitive && ty2 is TyPrimitive && ty1 == ty2 -> true
-            ty1 is TyTypeParameter && ty2 is TyTypeParameter && ty1 == ty2 -> true
+            ty1 === ty2 -> CoerceResult.Ok
+            ty1 is TyPrimitive && ty2 is TyPrimitive && ty1 == ty2 -> CoerceResult.Ok
+            ty1 is TyTypeParameter && ty2 is TyTypeParameter && ty1 == ty2 -> CoerceResult.Ok
             ty1 is TyReference && ty2 is TyReference && ty1.mutability == ty2.mutability -> {
                 combineTypes(ty1.referenced, ty2.referenced)
             }
@@ -441,36 +450,36 @@ class RsInferenceContext(
                 combinePairs(ty1.types.zip(ty2.types))
             }
             ty1 is TyFunction && ty2 is TyFunction && ty1.paramTypes.size == ty2.paramTypes.size -> {
-                combinePairs(ty1.paramTypes.zip(ty2.paramTypes)) && combineTypes(ty1.retType, ty2.retType)
+                combinePairs(ty1.paramTypes.zip(ty2.paramTypes)).and { combineTypes(ty1.retType, ty2.retType) }
             }
             ty1 is TyAdt && ty2 is TyAdt && ty1.item == ty2.item -> {
                 combinePairs(ty1.typeArguments.zip(ty2.typeArguments))
             }
-            ty1 is TyTraitObject && ty2 is TyTraitObject && ty1.trait == ty2.trait -> true
-            ty1 is TyAnon && ty2 is TyAnon && ty1.definition != null && ty1.definition == ty2.definition -> true
-            ty1 is TyNever || ty2 is TyNever -> true
-            else -> false
+            ty1 is TyTraitObject && ty2 is TyTraitObject && ty1.trait == ty2.trait -> CoerceResult.Ok
+            ty1 is TyAnon && ty2 is TyAnon && ty1.definition != null && ty1.definition == ty2.definition -> CoerceResult.Ok
+            ty1 is TyNever || ty2 is TyNever -> CoerceResult.Ok
+            else -> CoerceResult.Mismatch(ty1, ty2)
         }
 
-    fun combinePairs(pairs: List<Pair<Ty, Ty>>): Boolean {
-        var canUnify = true
+    fun combinePairs(pairs: List<Pair<Ty, Ty>>): CoerceResult {
+        var canUnify: CoerceResult = CoerceResult.Ok
         for ((t1, t2) in pairs) {
-            canUnify = combineTypes(t1, t2) && canUnify
+            canUnify = combineTypes(t1, t2).and { canUnify }
         }
         return canUnify
     }
 
     fun combineTraitRefs(ref1: TraitRef, ref2: TraitRef): Boolean =
         ref1.trait.element == ref2.trait.element &&
-            combineTypes(ref1.selfTy, ref2.selfTy) &&
+            combineTypes(ref1.selfTy, ref2.selfTy).isOk &&
             ref1.trait.subst.zipTypeValues(ref2.trait.subst).all { (a, b) ->
-                combineTypes(a, b)
+                combineTypes(a, b).isOk
             }
 
     fun <T : RsElement> combineBoundElements(be1: BoundElement<T>, be2: BoundElement<T>): Boolean =
         be1.element == be2.element &&
-            combinePairs(be1.subst.zipTypeValues(be2.subst)) &&
-            combinePairs(zipValues(be1.assoc, be2.assoc))
+            combinePairs(be1.subst.zipTypeValues(be2.subst)).isOk &&
+            combinePairs(zipValues(be1.assoc, be2.assoc)).isOk
 
     fun shallowResolve(ty: Ty): Ty {
         if (ty !is TyInfer) return ty
@@ -677,8 +686,20 @@ class RsInferenceContext(
         return map
     }
 
+    /** Checks that [selfTy] satisfies all trait bounds of the [source] */
+    fun canEvaluateBounds(source: TraitImplSource, selfTy: Ty): Boolean {
+        return when (source) {
+            is TraitImplSource.ExplicitImpl -> canEvaluateBounds(source.value, selfTy)
+            is TraitImplSource.Derived, is TraitImplSource.Hardcoded -> {
+                if (source.value.typeParameters.isNotEmpty()) return true
+                lookup.canSelect(TraitRef(selfTy, BoundElement(source.value as RsTraitItem)))
+            }
+            else -> return true
+        }
+    }
+
     /** Checks that [selfTy] satisfies all trait bounds of the [impl] */
-    fun canEvaluateBounds(impl: RsImplItem, selfTy: Ty): Boolean {
+    private fun canEvaluateBounds(impl: RsImplItem, selfTy: Ty): Boolean {
         val ff = FulfillmentContext(this, lookup)
         val subst = impl.generics.associateWith { typeVarForParam(it) }.toTypeSubst()
         return probe {
@@ -792,6 +813,18 @@ sealed class ResolvedPath {
         fun from(entry: AssocItemScopeEntry): ResolvedPath =
             AssocItem(entry.element, entry.source)
     }
+}
+
+sealed class CoerceResult {
+    object Ok : CoerceResult()
+    class Mismatch(val ty1: Ty, val ty2: Ty) : CoerceResult()
+
+    val isOk: Boolean get() = this == Ok
+}
+
+inline fun CoerceResult.and(rhs: () -> CoerceResult): CoerceResult = when (this) {
+    is CoerceResult.Mismatch -> this
+    CoerceResult.Ok -> rhs()
 }
 
 object TypeInferenceMarks {

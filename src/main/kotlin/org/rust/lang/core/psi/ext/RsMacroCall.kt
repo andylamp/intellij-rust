@@ -19,9 +19,9 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
 import org.rust.lang.core.stubs.RsMacroCallStub
+import org.rust.openapiext.findFileByMaybeRelativePath
 import org.rust.openapiext.toPsiFile
 import org.rust.stdext.HashCode
-
 
 abstract class RsMacroCallImplMixin : RsStubbedElementImpl<RsMacroCallStub>,
                                       RsMacroCall {
@@ -36,7 +36,8 @@ abstract class RsMacroCallImplMixin : RsStubbedElementImpl<RsMacroCallStub>,
 
     override fun incModificationCount(element: PsiElement): Boolean {
         modificationTracker.incModificationCount()
-        return false // force rustStructureModificationTracker to be incremented
+        val isStructureModification = ancestors.any { it is RsMacroCall && it.macroName == "include" }
+        return !isStructureModification // Note: RsMacroCall is a special case for RsPsiManagerImpl
     }
 }
 
@@ -46,14 +47,12 @@ val RsMacroCall.macroName: String
 val RsMacroCall.bracesKind: MacroBraces?
     get() = macroArgumentElement?.firstChild?.let { MacroBraces.fromToken(it.elementType) }
 
-val RsMacroCall.semicolon: PsiElement?
-    get() = node.findChildByType(SEMICOLON)?.psi
-
 val RsMacroCall.macroBody: String?
     get() {
         val stub = greenStub
         if (stub != null) return stub.macroBody
-        return bodyTextRange?.subSequence(containingFile.text)?.toString()
+        // Note: `node` is usually an instance of `LazyParseableElement` where `chars` is cached
+        return macroArgumentElement?.node?.chars?.let { it.subSequence(1, it.length - if (it.length == 1) 0 else 1) }?.toString()
     }
 
 val RsMacroCall.bodyTextRange: TextRange?
@@ -68,20 +67,18 @@ val RsMacroCall.bodyTextRange: TextRange?
                 null
             }
         } else {
-            macroArgumentElement?.braceListBodyTextRange()
+            macroArgumentElement?.textRange?.let { TextRange(it.startOffset + 1, it.endOffset - if (it.length == 1) 0 else 1) }
         }
     }
 
 private val MACRO_ARGUMENT_TYPES: TokenSet = tokenSetOf(
     MACRO_ARGUMENT, FORMAT_MACRO_ARGUMENT, LOG_MACRO_ARGUMENT,
     ASSERT_MACRO_ARGUMENT, EXPR_MACRO_ARGUMENT, VEC_MACRO_ARGUMENT,
-    CONCAT_MACRO_ARGUMENT
+    CONCAT_MACRO_ARGUMENT, ENV_MACRO_ARGUMENT
 )
 
 private val RsMacroCall.macroArgumentElement: RsElement?
     get() = node.findChildByType(MACRO_ARGUMENT_TYPES)?.psi as? RsElement
-
-val RsMacroCall.macroArgument: RsMacroArgument? get() = macroArgumentElement as? RsMacroArgument
 
 private val RsExpr.value: String? get() {
     return when (this) {
@@ -98,6 +95,11 @@ private val RsExpr.value: String? get() {
                         }
                     }
                 }
+                "env" -> {
+                    val expr = macroCall.envMacroArgument?.variableNameExpr as? RsLitExpr ?: return null
+                    // TODO: support more variables here
+                    if (expr.value == "OUT_DIR") expr.containingCargoTarget?.outDir?.path else null
+                }
                 else -> null
             }
         }
@@ -110,7 +112,7 @@ fun RsMacroCall.findIncludingFile(): RsFile? {
     val path = includeMacroArgument?.expr?.value ?: return null
     // TODO: it doesn't work if `include!()` macro call comes from other macro
     val file = containingFile?.originalFile?.virtualFile ?: return null
-    return file.parent?.findFileByRelativePath(path)?.toPsiFile(project)?.rustFile
+    return file.parent?.findFileByMaybeRelativePath(path)?.toPsiFile(project)?.rustFile
 }
 
 val RsMacroCall.bodyHash: HashCode?
@@ -131,10 +133,7 @@ val RsMacroCall.expansion: MacroExpansion?
             // will be different if completion invoked inside the macro body.
             it.macroBody == this.macroBody
         } ?: this
-        CachedValueProvider.Result.create(
-            project.macroExpansionManager.getExpansionFor(originalOrSelf),
-            rustStructureOrAnyPsiModificationTracker
-        )
+        project.macroExpansionManager.getExpansionFor(originalOrSelf)
     }
 
 val RsMacroCall.expansionFlatten: List<RsExpandedElement>
@@ -173,13 +172,10 @@ private fun RsMacroCall.processExpansionRecursively(processor: (RsExpandedElemen
 
 private fun RsExpandedElement.processRecursively(processor: (RsExpandedElement) -> Boolean, depth: Int): Boolean {
     return when (this) {
-        is RsMacroCall -> processExpansionRecursively(processor, depth + 1)
+        is RsMacroCall -> isEnabledByCfg && processExpansionRecursively(processor, depth + 1)
         else -> processor(this)
     }
 }
-
-private fun PsiElement.braceListBodyTextRange(): TextRange? =
-    textRange.let { TextRange(it.startOffset + 1, it.endOffset - 1) }
 
 fun RsMacroCall.replaceWithExpr(expr: RsExpr): RsElement {
     return when (val context = expansionContext) {
