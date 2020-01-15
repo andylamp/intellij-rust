@@ -4,13 +4,9 @@
 
     <vendor>JetBrains</vendor>
 
-    <description><![CDATA[
-      Rust language support
-    ]]></description>
-
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/12/16/changelog-112.html">
-                 https://intellij-rust.github.io/2019/12/16/changelog-112.html
+        <a href="https://intellij-rust.github.io/2019/12/30/changelog-113.html">
+                 https://intellij-rust.github.io/2019/12/30/changelog-113.html
     ]]>
     </change-notes>
 
