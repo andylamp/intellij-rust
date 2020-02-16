@@ -80,10 +80,10 @@ val RsDocAndAttributeOwner.queryAttributes: QueryAttributes
  * **Do not instantiate directly**, use [RsDocAndAttributeOwner.queryAttributes] instead.
  */
 class QueryAttributes(
-    private val psi: RsDocAndAttributeOwner
+    private val psi: RsDocAndAttributeOwner,
+    private val attributes: Sequence<RsAttr> = (psi as? RsInnerAttributeOwner)?.innerAttrList.orEmpty().asSequence() +
+        (psi as? RsOuterAttributeOwner)?.outerAttrList.orEmpty().asSequence()
 ) {
-    private val attributes: Sequence<RsAttr> = Sequence { (psi as? RsInnerAttributeOwner)?.innerAttrList.orEmpty().iterator() } +
-        Sequence { (psi as? RsOuterAttributeOwner)?.outerAttrList.orEmpty().iterator() }
 
     // #[doc(hidden)]
     val isDocHidden: Boolean get() = hasAttributeWithArg("doc", "hidden")
@@ -102,6 +102,11 @@ class QueryAttributes(
     // `#[attributeName]`, `#[attributeName(arg)]`, `#[attributeName = "Xxx"]`
     fun hasAttribute(attributeName: String): Boolean {
         val attrs = attrsByName(attributeName)
+        return attrs.any()
+    }
+
+    fun hasAttribute(regex: Regex): Boolean {
+        val attrs = attrsByText(regex)
         return attrs.any()
     }
 
@@ -177,6 +182,14 @@ class QueryAttributes(
      */
     private fun attrsByName(name: String): Sequence<RsMetaItem> = metaItems.filter { it.name == name }
 
+    /**
+     * Get a sequence of all attributes that match the given [regex]
+     */
+    private fun attrsByText(regex: Regex): Sequence<RsMetaItem> = metaItems.filter {
+        val text = it.text ?: return@filter false
+        text.matches(regex)
+    }
+
     override fun toString(): String =
         "QueryAttributes(${attributes.joinToString { it.text }})"
 }
@@ -208,5 +221,5 @@ private fun RsDocAndAttributeOwner.evaluateCfg(): ThreeValuedLogic {
     // we will evaluate features wrongly here
     val pkg = containingCargoPackage ?: return ThreeValuedLogic.True
     val features = pkg.features.associate { it.name to it.state }
-    return CfgEvaluator(pkg.cfgOptions, features, pkg.origin).evaluate(cfgAttributes)
+    return CfgEvaluator(pkg.workspace.cfgOptions, pkg.cfgOptions, features, pkg.origin).evaluate(cfgAttributes)
 }

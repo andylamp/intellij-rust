@@ -7,11 +7,12 @@ package org.rust.openapiext
 
 import com.intellij.concurrency.SensitiveProgressWrapper
 import com.intellij.ide.plugins.IdeaPluginDescriptor
-import com.intellij.ide.plugins.PluginManager
+import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.Experiments
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.TransactionGuard
 import com.intellij.openapi.application.ex.ApplicationUtil
@@ -232,7 +233,7 @@ inline fun <T> UserDataHolderEx.getOrPutSoft(key: Key<SoftReference<T>>, default
 
 const val PLUGIN_ID: String = "org.rust.lang"
 
-fun plugin(): IdeaPluginDescriptor = PluginManager.getPlugin(PluginId.getId(PLUGIN_ID))!!
+fun plugin(): IdeaPluginDescriptor = PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))!!
 
 val String.escaped: String get() = StringUtil.escapeXmlEntities(this)
 
@@ -266,6 +267,8 @@ fun runWithWriteActionPriority(indicator: ProgressIndicator, action: () -> Unit)
 
 fun submitTransaction(parentDisposable: Disposable, runnable: Runnable) {
     ApplicationManager.getApplication().invokeLater(Runnable {
+        // BACKCOMPAT: 2019.3
+        @Suppress("DEPRECATION")
         TransactionGuard.submitTransaction(parentDisposable, runnable)
     }, ModalityState.any(), Conditions.alwaysFalse<Any>())
 }
@@ -302,6 +305,9 @@ val DataContext.elementUnderCaretInEditor: PsiElement?
 
         return psiFile.findElementAt(editor.caretModel.offset)
     }
+
+fun isFeatureEnabled(featureId: String): Boolean = Experiments.getInstance().isFeatureEnabled(featureId)
+fun setFeatureEnabled(featureId: String, enabled: Boolean) = Experiments.getInstance().setFeatureEnabled(featureId, enabled)
 
 fun runWithEnabledFeature(featureId: String, action: () -> Unit) {
     val currentValue = isFeatureEnabled(featureId)

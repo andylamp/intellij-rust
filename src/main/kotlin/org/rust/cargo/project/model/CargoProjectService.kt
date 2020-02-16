@@ -47,6 +47,7 @@ interface CargoProjectsService {
     fun detachCargoProject(cargoProject: CargoProject)
     fun refreshAllProjects(): CompletableFuture<out List<CargoProject>>
     fun discoverAndRefresh(): CompletableFuture<out List<CargoProject>>
+    fun suggestManifests(): Sequence<VirtualFile>
 
     companion object {
         val CARGO_PROJECTS_TOPIC: Topic<CargoProjectsListener> = Topic(
@@ -63,11 +64,8 @@ interface CargoProjectsService {
 val Project.cargoProjects: CargoProjectsService get() = service()
 
 fun CargoProjectsService.isGeneratedFile(file: VirtualFile): Boolean {
-    val pkg = findPackageForFile(file) ?: return false
-    return pkg.targets.any {
-        val outDir = it.outDir ?: return false
-        VfsUtil.isAncestor(outDir, file, false)
-    }
+    val outDir = findPackageForFile(file)?.outDir ?: return false
+    return VfsUtil.isAncestor(outDir, file, false)
 }
 
 /**

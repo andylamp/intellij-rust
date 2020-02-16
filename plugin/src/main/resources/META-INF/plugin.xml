@@ -5,8 +5,8 @@
     <vendor>JetBrains</vendor>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2019/12/30/changelog-113.html">
-                 https://intellij-rust.github.io/2019/12/30/changelog-113.html
+        <a href="https://intellij-rust.github.io/2020/02/04/changelog-115.html">
+                 https://intellij-rust.github.io/2020/02/04/changelog-115.html
     ]]>
     </change-notes>
 
@@ -16,7 +16,7 @@
     <depends>com.intellij.modules.lang</depends>
     <depends>org.toml.lang</depends>
 
-    <xi:include href="/META-INF/core.xml" xpointer="xpointer(/idea-plugin/*)"/>
+    <xi:include href="/META-INF/rust-core.xml" xpointer="xpointer(/idea-plugin/*)"/>
 
     <depends optional="true" config-file="idea-only.xml">com.intellij.modules.java</depends>
     <depends optional="true" config-file="clion-only.xml">com.intellij.modules.clion</depends>

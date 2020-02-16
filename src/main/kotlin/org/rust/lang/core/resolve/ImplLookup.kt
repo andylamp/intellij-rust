@@ -137,6 +137,12 @@ sealed class TraitImplSource {
      */
     data class Collapsed(override val value: RsTraitItem) : TraitImplSource()
 
+    /**
+     * A trait is directly referenced in UFCS path `TraitName::foo`, an impl should be selected
+     * during type inference
+     */
+    data class Trait(override val value: RsTraitItem) : TraitImplSource()
+
     /** A trait impl hardcoded in Intellij-Rust. Mostly it's something defined with a macro in stdlib */
     data class Hardcoded(override val value: RsTraitItem) : TraitImplSource()
 }
@@ -157,20 +163,38 @@ data class ParamEnv(val callerBounds: List<TraitRef>) {
         val EMPTY: ParamEnv = ParamEnv(emptyList())
         val LEGACY: ParamEnv = ParamEnv(emptyList())
 
-        fun buildFor(decl: RsGenericDeclaration): ParamEnv = ParamEnv(buildList {
-            addAll(decl.bounds)
-            if (decl is RsAbstractable) {
-                when (val owner = decl.owner) {
-                    is RsAbstractableOwner.Trait -> {
-                        add(TraitRef(TyTypeParameter.self(), owner.trait.withDefaultSubst()))
-                        addAll(owner.trait.bounds)
-                    }
-                    is RsAbstractableOwner.Impl -> {
-                        addAll(owner.impl.bounds)
+        fun buildFor(decl: RsGenericDeclaration): ParamEnv {
+            val rawBounds = buildList<TraitRef> {
+                addAll(decl.bounds)
+                if (decl is RsAbstractable) {
+                    when (val owner = decl.owner) {
+                        is RsAbstractableOwner.Trait -> {
+                            add(TraitRef(TyTypeParameter.self(), owner.trait.withDefaultSubst()))
+                            addAll(owner.trait.bounds)
+                        }
+                        is RsAbstractableOwner.Impl -> {
+                            addAll(owner.impl.bounds)
+                        }
                     }
                 }
             }
-        })
+
+            when (rawBounds.size) {
+                0 -> return EMPTY
+                1 -> return ParamEnv(rawBounds)
+            }
+
+            val lookup = ImplLookup(decl.project, decl.cargoProject, decl.knownItems, ParamEnv(rawBounds))
+            val ctx = lookup.ctx
+            val bounds2 = rawBounds.map {
+                val (bound, obligations) = ctx.normalizeAssociatedTypesIn(it)
+                obligations.forEach(ctx.fulfill::registerPredicateObligation)
+                bound
+            }
+            ctx.fulfill.selectWherePossible()
+
+            return ParamEnv(bounds2.map { ctx.fullyResolve(it) })
+        }
     }
 }
 
@@ -242,8 +266,10 @@ class ImplLookup(
     private fun rawFindImplsAndTraits(ty: Ty): List<TraitImplSource> {
         val implsAndTraits = mutableListOf<TraitImplSource>()
         when (ty) {
-            is TyTraitObject ->
+            is TyTraitObject -> {
                 ty.trait.flattenHierarchy.mapTo(implsAndTraits) { TraitImplSource.Object(it.element) }
+                findExplicitImpls(ty) { implsAndTraits += TraitImplSource.ExplicitImpl(it); false }
+            }
             is TyFunction -> {
                 findExplicitImpls(ty) { implsAndTraits += TraitImplSource.ExplicitImpl(it); false }
                 implsAndTraits += fnTraits.map { TraitImplSource.Object(it) }
@@ -398,7 +424,10 @@ class ImplLookup(
             val isAppropriateImpl = ctx.canCombineTypes(formalSelfTy, selfTy) &&
                 // Check that trait is resolved if it's not an inherent impl; checking it after types because
                 // we assume that unresolved trait is a rare case
-                (cachedImpl.isInherent || cachedImpl.implementedTrait != null)
+                (cachedImpl.isInherent || cachedImpl.implementedTrait != null) &&
+                // Ignore `Sized` blanket implementations for trait objects.
+                // TODO remove it after support of completion results filtering by `Sized` trait
+                (selfTy !is TyTraitObject || type !is TyTypeParameter || !type.isSized)
             isAppropriateImpl && processor(cachedImpl)
         }
     }

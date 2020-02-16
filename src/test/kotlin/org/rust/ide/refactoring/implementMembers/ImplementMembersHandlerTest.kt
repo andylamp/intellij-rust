@@ -47,7 +47,6 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
     }
 
-
     fun `test not available outside of impl`() {
         InlineFile("""
             trait T { fn f1(); }
@@ -85,7 +84,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             fn f4() {
@@ -94,8 +93,35 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
     """)
 
-    // TODO: Support type aliases
     fun `test import unresolved types`() = doTest("""
+        use a::T;
+        mod a {
+            pub struct R;
+            pub trait T {
+                fn f() -> (R, R);
+            }
+        }
+        struct S;
+        impl T for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("f() -> (R, R)", true, true)
+    ), """
+        use a::{T, R};
+        mod a {
+            pub struct R;
+            pub trait T {
+                fn f() -> (R, R);
+            }
+        }
+        struct S;
+        impl T for S {
+            fn f() -> (R, R) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test import unresolved type aliases`() = doTest("""
         use a::T;
         mod a {
             pub struct R;
@@ -109,7 +135,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
     """, listOf(
         ImplementMemberSelection("f() -> (R, U)", true, true)
     ), """
-        use a::{T, R};
+        use a::{T, R, U};
         mod a {
             pub struct R;
             pub type U = R;
@@ -119,8 +145,32 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
         struct S;
         impl T for S {
-            fn f() -> (R, R) {
-                unimplemented!()
+            fn f() -> (R, U) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test support type aliases`() = doTest("""
+        pub struct R;
+        pub type U = R;
+        pub trait T {
+            fn f() -> (R, U);
+        }
+        struct S;
+        impl T for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("f() -> (R, U)", true, true)
+    ), """
+        pub struct R;
+        pub type U = R;
+        pub trait T {
+            fn f() -> (R, U);
+        }
+        struct S;
+        impl T for S {
+            fn f() -> (R, U) {
+                <selection>unimplemented!()</selection>
             }
         }
     """)
@@ -149,7 +199,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             unsafe fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             unsafe fn f4() {
@@ -182,7 +232,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             async fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             async fn f4() {
@@ -218,7 +268,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f1(a: i8, b: i16, c: i32, d: i64) {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             fn f2(a: (i32, u32)) {
@@ -262,7 +312,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
         struct S;
         impl T for S {
-            type T1 = ();
+            type T1 = <selection>()</selection>;
             type T4 = ();
         }
     """)
@@ -290,7 +340,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
         struct S;
         impl T for S {
-            const C1: i32 = unimplemented!();
+            const C1: i32 = <selection>unimplemented!()</selection>;
             const C4: &'static str = unimplemented!();
         }
     """)
@@ -325,7 +375,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             type T1 = ();
@@ -363,7 +413,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T<u8, u16> for S {
             fn f1(_: u8) -> u8 {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             const C1: u8 = unimplemented!();
@@ -441,7 +491,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
     }
     impl<'b> T<'b> for S<'b> {
         fn f1(&'b self) -> &'b str {
-            unimplemented!()
+            <selection>unimplemented!()</selection>
         }
 
         const C1: &'b str = unimplemented!();
@@ -452,23 +502,23 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         const C2: &'b S<'b> = unimplemented!();
 
-        fn f3(_: &'b S<'b>) -> &'b S<'b> {
+        fn f3(_: &'b A<'a>) -> &'b A<'a> {
             unimplemented!()
         }
 
-        const C3: &'b S<'b> = unimplemented!();
+        const C3: &'b A<'a> = unimplemented!();
 
-        fn f4(_: &'b S<'static>) -> &'b S<'static> {
+        fn f4(_: &'b B) -> &'b B {
             unimplemented!()
         }
 
-        const C4: &'b S<'static> = unimplemented!();
+        const C4: &'b B = unimplemented!();
 
-        fn f5(_: &'b S<'_>) -> &'b S<'_> {
+        fn f5(_: &'b C) -> &'b C {
             unimplemented!()
         }
 
-        const C5: &'b S<'_> = unimplemented!();
+        const C5: &'b C = unimplemented!();
 
         fn f6(_: &'b D<'b, D<'b, D<'b, S<'b>>>>) -> &'b D<'b, D<'b, D<'b, S<'b>>>> {
             unimplemented!()
@@ -507,7 +557,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
             fn f1() { }
 
             fn f2() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
         }
     """)
@@ -535,7 +585,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             fn f2() { }
@@ -572,7 +622,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             type T1 = u32;
@@ -617,7 +667,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
             type T1 = u32;
 
             fn f1() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             const C1: i32 = unimplemented!();
@@ -651,7 +701,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn x() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             type y = ();
@@ -681,7 +731,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
         struct S;
         impl T for S {
-            type Item = ();
+            type Item = <selection>()</selection>;
 
             fn foo() -> Self::Item {
                 unimplemented!()
@@ -719,7 +769,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
             foo!(foo, {});
 
             fn bar() {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
 
             fn baz() {}
@@ -745,7 +795,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         impl Baz for Foo {
             fn baz(&self, bar: &mut Bar) {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
         }
     """)
@@ -770,6 +820,31 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         impl Baz for Foo {
             fn baz(self: Box<Self>, bar: &mut Bar) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test Fn type`() = doTest("""
+        struct Foo;
+        struct Bar;
+        trait Baz {
+            fn baz(&self) -> Box<Fn(i32, i32) -> i32>;
+        }
+
+        impl Baz for Foo {
+            /*caret*/
+        }
+    """, listOf(ImplementMemberSelection("baz(&self) -> Box<Fn(i32, i32) -> i32>", true, isSelected = true)), """
+        struct Foo;
+        struct Bar;
+        trait Baz {
+            fn baz(&self) -> Box<Fn(i32, i32) -> i32>;
+        }
+
+        impl Baz for Foo {
+            fn baz(&self) -> Box<Fn(i32, i32) -> i32> {
                 unimplemented!()
             }
         }
@@ -794,7 +869,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         impl Baz for Foo {
             fn baz(self: *const Self, bar: &mut Bar) {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
         }
     """)
@@ -822,7 +897,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         impl Baz for Foo {
             fn baz(self: Pin<&mut Self>, bar: &mut Bar) {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
         }
     """)
@@ -850,7 +925,7 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         impl<'a> Baz<'a> for Foo {
             fn baz(self: Pin<&'a mut Self>, bar: &mut Bar) {
-                unimplemented!()
+                <selection>unimplemented!()</selection>
             }
         }
     """)

@@ -8,6 +8,7 @@ package org.rust.lang.core.types.infer
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Computable
 import com.intellij.openapiext.Testmark
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import org.jetbrains.annotations.TestOnly
@@ -469,7 +470,7 @@ class RsInferenceContext(
             ty1 is TyAdt && ty2 is TyAdt && ty1.item == ty2.item -> {
                 combinePairs(ty1.typeArguments.zip(ty2.typeArguments))
             }
-            ty1 is TyTraitObject && ty2 is TyTraitObject && ty1.trait == ty2.trait -> CoerceResult.Ok
+            ty1 is TyTraitObject && ty2 is TyTraitObject && combineBoundElements(ty1.trait, ty2.trait) -> CoerceResult.Ok
             ty1 is TyAnon && ty2 is TyAnon && ty1.definition != null && ty1.definition == ty2.definition -> CoerceResult.Ok
             ty1 is TyNever || ty2 is TyNever -> CoerceResult.Ok
             else -> CoerceResult.Mismatch(ty1, ty2)
@@ -509,7 +510,7 @@ class RsInferenceContext(
         return ty.foldTyInferWith(this::shallowResolve)
     }
 
-    private fun <T : TypeFoldable<T>> fullyResolve(ty: T): T {
+    fun <T : TypeFoldable<T>> fullyResolve(ty: T): T {
         fun go(ty: Ty): Ty {
             if (ty !is TyInfer) return ty
 
@@ -763,6 +764,10 @@ class RsInferenceContext(
                 registerMethodRefinement(methodCall, traitRef)
             }
             typeParameters
+        }
+        is TraitImplSource.Trait -> {
+            if (isUnitTestMode) error("unreachable")
+            emptySubstitution
         }
     }
 }

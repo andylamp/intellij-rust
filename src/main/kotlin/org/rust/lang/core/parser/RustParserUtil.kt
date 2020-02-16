@@ -198,6 +198,32 @@ object RustParserUtil : GeneratedParserUtilBase() {
     fun isPathMode(b: PsiBuilder, level: Int, mode: PathParsingMode): Boolean =
         mode == getPathMod(b.flags)
 
+    // !("union" identifier | "async" fn) identifier | self | super | 'Self' | crate
+    @JvmStatic
+    fun parsePathIdent(b: PsiBuilder, level: Int): Boolean {
+        val tokenType = b.tokenType
+        val result = when (tokenType) {
+            SELF, SUPER, CSELF, CRATE -> true
+            IDENTIFIER -> {
+                val tokenText = b.tokenText
+                !(tokenText == "union" && b.lookAhead(1) == IDENTIFIER || tokenText == "async" && b.lookAhead(1) == FN)
+            }
+            else -> {
+                // error message
+                val consumed = consumeToken(b, IDENTIFIER) || consumeToken(b, SELF) ||
+                    consumeToken(b, SUPER) || consumeToken(b, CSELF) || consumeToken(b, CRATE)
+                check(!consumed)
+                false
+            }
+        }
+
+        if (result) {
+            consumeToken(b, tokenType)
+        }
+
+        return result
+    }
+
     @JvmStatic
     fun unpairedToken(b: PsiBuilder, level: Int): Boolean =
         when (b.tokenType) {
@@ -226,7 +252,7 @@ object RustParserUtil : GeneratedParserUtilBase() {
     fun macroSemicolon(b: PsiBuilder, level: Int): Boolean {
         val m = b.latestDoneMarker ?: return false
         b.tokenText
-        if (b.originalText[m.endOffset - 1] == '}') return true
+        if (b.originalText[m.endOffset - b.offset - 1] == '}') return true
         return consumeToken(b, SEMICOLON)
     }
 
@@ -336,6 +362,9 @@ object RustParserUtil : GeneratedParserUtilBase() {
         put(RustParser::ConcatMacroArgument, true, "concat")
         put(RustParser::EnvMacroArgument, true, "env")
     }
+
+    fun isSpecialMacro(name: String): Boolean =
+        name in SPECIAL_MACRO_PARSERS
 
     @JvmStatic
     fun parseMacroCall(b: PsiBuilder, level: Int, mode: MacroCallParsingMode): Boolean {
@@ -486,9 +515,22 @@ object RustParserUtil : GeneratedParserUtilBase() {
         }
     }
 
-    private fun LighterASTNode.isBracedMacro(b: PsiBuilder): Boolean =
-        tokenType == RsElementTypes.MACRO_EXPR &&
-            '}' == b.originalText.subSequence(startOffset, endOffset).findLast { it == '}' || it == ']' || it == ')' }
+    private fun LighterASTNode.isBracedMacro(b: PsiBuilder): Boolean {
+        if (tokenType != RsElementTypes.MACRO_EXPR) return false
+        val offset = b.offset
+        val text = b.originalText.subSequence(startOffset - offset, endOffset - offset)
+        return '}' == text.findLast { it == '}' || it == ']' || it == ')' }
+    }
+
+    /**
+     * Non-zero if [this] is created with `LighterLazyParseableNode` chameleon.
+     * (Used this way in implementations of ILightLazyParseableElementType)
+     */
+    private val PsiBuilder.offset: Int
+        get() {
+            val firstMarker = (this as Builder).productions?.firstOrNull() ?: return 0
+            return firstMarker.startOffset
+        }
 
     private fun contextualKeyword(
         b: PsiBuilder,
@@ -584,5 +626,10 @@ object RustParserUtil : GeneratedParserUtilBase() {
         } finally {
             flags = oldFlags
         }
+    }
+
+    @JvmStatic
+    fun parseCodeBlockLazy(builder: PsiBuilder, level: Int): Boolean {
+        return PsiBuilderUtil.parseBlockLazy(builder, LBRACE, RBRACE, BLOCK) != null
     }
 }

@@ -5,22 +5,34 @@
 
 package org.rust.lang.core.stubs
 
-import com.intellij.lang.ASTNode
+import com.intellij.lang.*
+import com.intellij.lang.parser.GeneratedParserUtilBase
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiFile
 import com.intellij.psi.StubBuilder
+import com.intellij.psi.impl.source.tree.LazyParseableElement
+import com.intellij.psi.impl.source.tree.RecursiveTreeElementWalkingVisitor
+import com.intellij.psi.impl.source.tree.TreeElement
+import com.intellij.psi.impl.source.tree.TreeUtil
 import com.intellij.psi.stubs.*
-import com.intellij.psi.tree.IStubFileElementType
+import com.intellij.psi.tree.*
 import com.intellij.util.BitUtil
+import com.intellij.util.CharTable
+import com.intellij.util.diff.FlyweightCapableTreeStructure
 import com.intellij.util.io.DataInputOutputUtil.readNullable
 import com.intellij.util.io.DataInputOutputUtil.writeNullable
 import org.rust.lang.RsLanguage
+import org.rust.lang.core.lexer.RsLexer
+import org.rust.lang.core.parser.RustParser
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psi.impl.*
 import org.rust.lang.core.types.ty.TyFloat
 import org.rust.lang.core.types.ty.TyInteger
+import org.rust.openapiext.ancestors
 import org.rust.stdext.makeBitMask
-
 
 class RsFileStub : PsiFileStubImpl<RsFile> {
     val attributes: RsFile.Attributes
@@ -35,14 +47,23 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 188
+        override fun getStubVersion(): Int = 192
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
-            override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
-            override fun skipChildProcessingWhenBuildingStubs(parent: ASTNode, node: ASTNode): Boolean {
-                val elementType = node.elementType
-                return elementType == RsElementTypes.MACRO_ARGUMENT || elementType == RsElementTypes.MACRO_BODY
+            override fun createStubForFile(file: PsiFile): StubElement<*> {
+                TreeUtil.ensureParsed(file.node) // profiler hint
+                return RsFileStub(file as RsFile)
             }
+
+            override fun skipChildProcessingWhenBuildingStubs(parent: ASTNode, child: ASTNode): Boolean {
+                val elementType = child.elementType
+                return elementType == MACRO_ARGUMENT || elementType == MACRO_BODY ||
+                    elementType == BLOCK && parent.elementType == FUNCTION && skipChildForFunctionBody(child)
+            }
+
+            /** Note: if returns `true` then [RsBlockStubType.shouldCreateStub] MUST return `false` for the [child] */
+            private fun skipChildForFunctionBody(child: ASTNode): Boolean =
+                !BlockMayHaveStubsHeuristic.getAndClearCached(child)
         }
 
         override fun serialize(stub: RsFileStub, dataStream: StubOutputStream) {
@@ -74,6 +95,72 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
     }
 }
 
+/**
+ * A utility used in the stub builder to detect that a code block [RsBlockStubType] should not be
+ * traversed in order to find child stubs. Avoiding code blocks traversing is important because they
+ * are lazy parseable and will not be parsed during indexing if not traversed.
+ * The utility is heuristic based, i.e. it can strictly say that a block does NOT have stubs, but can't
+ * strictly say that block has stubs.
+ *
+ * The value is used in two places, so there are some tricks with UserData (cache) to avoid double computation.
+ * There are two functions that do mostly the same but differs in how they use the cache.
+ * - [computeAndCache] computes the value and then puts it in the cache. Used in [RsFunctionStub.Type.createStub]
+ * - [getAndClearCached] retrieves and removes the value from the cache or compute the value if it does not
+ *   present. Expected to be called after [computeAndCache] during indexing (because a function is a parent of a
+ *   block, so it is processed earlier). The value is then removed from the cache because it is no longer needed
+ *   and should be invalidated after each PSI change.
+ *
+ * See tests in `RsLazyCodeBlockIsNotExpandedDuringStubBuildingTest`
+ */
+private object BlockMayHaveStubsHeuristic {
+    private val RS_HAS_ITEMS_OR_ATTRS: Key<Boolean> = Key.create("RS_HAS_ITEMS_OR_ATTRS")
+    // TODO remove `USE`
+    private val ITEM_DEF_KWS = tokenSetOf(STATIC, ENUM, IMPL, MACRO_KW, MOD, STRUCT, UNION, TRAIT, TYPE_KW, USE)
+
+    fun computeAndCache(node: ASTNode): Boolean {
+        assertIsBlock(node)
+        val hasItemsOrAttrs = computeBlockMayHaveStubs(node)
+        node.putUserData(RS_HAS_ITEMS_OR_ATTRS, hasItemsOrAttrs)
+        return hasItemsOrAttrs
+    }
+
+    /** The value can be already computed and cached by [computeAndCache] */
+    fun getAndClearCached(node: ASTNode): Boolean {
+        assertIsBlock(node)
+        val cachedHasItemsOrAttrs = node.getUserData(RS_HAS_ITEMS_OR_ATTRS)
+        if (cachedHasItemsOrAttrs != null) {
+            node.putUserData(RS_HAS_ITEMS_OR_ATTRS, null)
+            return cachedHasItemsOrAttrs
+        }
+        return computeBlockMayHaveStubs(node)
+    }
+
+    private fun assertIsBlock(node: ASTNode) {
+        check(node.elementType == BLOCK) { "Expected block, found: ${node.elementType}, text: `${node.text}`" }
+    }
+
+    private fun computeBlockMayHaveStubs(node: ASTNode): Boolean {
+        // Use PsiBuilder instead of RsLexer b/c PsiBuilder reuses already lexed tokens.
+        // See `RsBlockStubType.reuseCollapsedTokens`
+        val b = PsiBuilderFactory.getInstance().createBuilder(node.psi.project, node, null, RsLanguage, node.chars)
+        var prevToken: IElementType? = null
+        while (true) {
+            val token = b.tokenType ?: break
+            val looksLikeStubElement = token in ITEM_DEF_KWS
+                || token == CONST && prevToken != MUL     // `const` but not `*const`
+                || token == EXCL && prevToken == SHA      // `#!`
+                || token == IDENTIFIER && prevToken == FN // `fn foo` (but not `fn()`)
+                || token == IDENTIFIER && b.tokenText == "union" && b.lookAhead(1) == IDENTIFIER
+            if (looksLikeStubElement) {
+                return true
+            }
+            b.advanceLexer()
+            prevToken = token
+        }
+
+        return false
+    }
+}
 
 fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "EXTERN_CRATE_ITEM" -> RsExternCrateItemStub.Type
@@ -566,11 +653,21 @@ class RsFunctionStub(
             RsFunctionImpl(stub, this)
 
         override fun createStub(psi: RsFunction, parentStub: StubElement<*>?): RsFunctionStub {
+            val block = psi.block
+            val useInnerAttrs = block != null && ((block.node as LazyParseableElement).isParsed ||
+                BlockMayHaveStubsHeuristic.computeAndCache(block.node))
+            val attrs = if (useInnerAttrs && block != null) {
+                TreeUtil.ensureParsed(block.node) // profiler hint
+                psi.queryAttributes
+            } else {
+                QueryAttributes(psi, psi.outerAttrList.asSequence())
+            }
+
             var flags = 0
-            flags = BitUtil.set(flags, ABSTRACT_MASK, psi.isAbstract)
-            flags = BitUtil.set(flags, TEST_MASK, psi.isTest)
-            flags = BitUtil.set(flags, BENCH_MASK, psi.isBench)
-            flags = BitUtil.set(flags, CFG_MASK, psi.queryAttributes.hasCfgAttr())
+            flags = BitUtil.set(flags, ABSTRACT_MASK, block == null)
+            flags = BitUtil.set(flags, TEST_MASK, attrs.isTest)
+            flags = BitUtil.set(flags, BENCH_MASK, attrs.isBench)
+            flags = BitUtil.set(flags, CFG_MASK, attrs.hasCfgAttr())
             flags = BitUtil.set(flags, CONST_MASK, psi.isConst)
             flags = BitUtil.set(flags, UNSAFE_MASK, psi.isUnsafe)
             flags = BitUtil.set(flags, EXTERN_MASK, psi.isExtern)
@@ -814,6 +911,8 @@ class RsValueParameterStub(
 ) : StubBase<RsValueParameter>(parent, elementType) {
 
     object Type : RsStubElementType<RsValueParameterStub, RsValueParameter>("VALUE_PARAMETER") {
+        override fun shouldCreateStub(node: ASTNode): Boolean = createStubIfParentIsStub(node)
+
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsValueParameterStub(parentStub, this,
                 dataStream.readNameAsString()
@@ -980,6 +1079,8 @@ class RsLifetimeStub(
     RsNamedStub {
 
     object Type : RsStubElementType<RsLifetimeStub, RsLifetime>("LIFETIME") {
+        override fun shouldCreateStub(node: ASTNode): Boolean = createStubIfParentIsStub(node)
+
         override fun createPsi(stub: RsLifetimeStub) =
             RsLifetimeImpl(stub, this)
 
@@ -1026,30 +1127,34 @@ class RsLifetimeParameterStub(
 class RsMacroStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val name: String?,
-    val macroBody: String?
+    val macroBody: String?,
+    val preferredBraces: MacroBraces
 ) : StubBase<RsMacro>(parent, elementType),
     RsNamedStub {
 
     object Type : RsStubElementType<RsMacroStub, RsMacro>("MACRO") {
-        override fun shouldCreateStub(node: ASTNode): Boolean = node.psi.parent is RsMod
+        override fun shouldCreateStub(node: ASTNode): Boolean =
+            node.treeParent.elementType in RS_MOD_OR_FILE
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsMacroStub(parentStub, this,
                 dataStream.readNameAsString(),
-                dataStream.readUTFFastAsNullable()
+                dataStream.readUTFFastAsNullable(),
+                dataStream.readEnum()
             )
 
         override fun serialize(stub: RsMacroStub, dataStream: StubOutputStream) =
             with(dataStream) {
                 writeName(stub.name)
                 writeUTFFastAsNullable(stub.macroBody)
+                writeEnum(stub.preferredBraces)
             }
 
         override fun createPsi(stub: RsMacroStub): RsMacro =
             RsMacroImpl(stub, this)
 
         override fun createStub(psi: RsMacro, parentStub: StubElement<*>?) =
-            RsMacroStub(parentStub, this, psi.name, psi.macroBody?.text)
+            RsMacroStub(parentStub, this, psi.name, psi.macroBody?.text, psi.preferredBraces)
 
         override fun indexStub(stub: RsMacroStub, sink: IndexSink) = sink.indexMacro(stub)
     }
@@ -1062,7 +1167,7 @@ class RsMacro2Stub(
     RsNamedStub {
 
     object Type : RsStubElementType<RsMacro2Stub, RsMacro2>("MACRO_2") {
-        override fun shouldCreateStub(node: ASTNode): Boolean = node.psi.parent is RsMod
+        override fun shouldCreateStub(node: ASTNode): Boolean = node.elementType in RS_MOD_OR_FILE
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsMacro2Stub(parentStub, this,
@@ -1092,8 +1197,8 @@ class RsMacroCallStub(
 
     object Type : RsStubElementType<RsMacroCallStub, RsMacroCall>("MACRO_CALL") {
         override fun shouldCreateStub(node: ASTNode): Boolean {
-            val parent = node.psi.parent
-            return parent is RsMod || parent is RsMembers || parent is RsMacroExpr && createStubIfParentIsStub(node)
+            val parent = node.treeParent.elementType
+            return parent in RS_MOD_OR_FILE || parent == MEMBERS || parent == MACRO_EXPR && createStubIfParentIsStub(node)
         }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
@@ -1123,6 +1228,9 @@ class RsInnerAttrStub(
 ) : StubBase<RsInnerAttr>(parent, elementType) {
 
     object Type : RsStubElementType<RsInnerAttrStub, RsInnerAttr>("INNER_ATTR") {
+        override fun shouldCreateStub(node: ASTNode): Boolean =
+            node.treeParent.isFunctionBody() || createStubIfParentIsStub(node)
+
         override fun createPsi(stub: RsInnerAttrStub): RsInnerAttr = RsInnerAttrImpl(stub, this)
 
         override fun serialize(stub: RsInnerAttrStub, dataStream: StubOutputStream) {}
@@ -1145,6 +1253,8 @@ class RsMetaItemStub(
     val hasEq: Boolean
 ) : StubBase<RsMetaItem>(parent, elementType) {
     object Type : RsStubElementType<RsMetaItemStub, RsMetaItem>("META_ITEM") {
+        override fun shouldCreateStub(node: ASTNode): Boolean = createStubIfParentIsStub(node)
+
         override fun createStub(psi: RsMetaItem, parentStub: StubElement<*>?): RsMetaItemStub =
             RsMetaItemStub(parentStub, this, psi.name, psi.eq != null)
 
@@ -1185,9 +1295,92 @@ class RsBinaryOpStub(
     }
 }
 
-object RsBlockStubType : RsPlaceholderStub.Type<RsBlock>("BLOCK", ::RsBlockImpl) {
-    override fun shouldCreateStub(node: ASTNode): Boolean =
-        createStubIfParentIsStub(node) || node.psi.childOfType<RsItemElement>() != null
+/**
+ * [IReparseableElementTypeBase] and [ICustomParsingType] are implemented to provide lazy and incremental
+ *  parsing of function bodies.
+ * [ICompositeElementType] - to create AST of type [LazyParseableElement] in the case of non-lazy parsing
+ *  (`if` bodies, `match` arms, etc), just to have the same AST class for all code blocks (I'm not sure
+ *  if that makes sense; made just in case)
+ * [ILightLazyParseableElementType] is needed to diff trees correctly (see `PsiBuilderImpl.MyComparator`).
+ */
+object RsBlockStubType : RsPlaceholderStub.Type<RsBlock>("BLOCK", ::RsBlockImpl),
+                         ICustomParsingType,
+                         ICompositeElementType,
+                         IReparseableElementTypeBase,
+                         ILightLazyParseableElementType {
+
+    /** Note: must return `false` if [StubBuilder.skipChildProcessingWhenBuildingStubs] returns `true` for the [node] */
+    override fun shouldCreateStub(node: ASTNode): Boolean {
+        return if (node.treeParent.elementType == FUNCTION) {
+            node.findChildByType(Holder.RS_ITEMS_AND_INNER_ATTR) != null || BlockVisitor.blockContainsItems(node)
+        } else {
+            createStubIfParentIsStub(node) || node.findChildByType(RS_ITEMS) != null
+        }
+    }
+
+    // Lazy parsed (function body)
+    override fun parse(text: CharSequence, table: CharTable): ASTNode = LazyParseableElement(this, text)
+
+    // Non-lazy case (`if` body, etc).
+    override fun createCompositeNode(): ASTNode = LazyParseableElement(this, null)
+
+    override fun parseContents(chameleon: ASTNode): ASTNode? {
+        val project = chameleon.treeParent.psi.project
+        val builder = PsiBuilderFactory.getInstance().createBuilder(project, chameleon, null, RsLanguage, chameleon.chars)
+        parseBlock(builder)
+        return builder.treeBuilt.firstChildNode
+    }
+
+    override fun parseContents(chameleon: LighterLazyParseableNode): FlyweightCapableTreeStructure<LighterASTNode> {
+        val project = chameleon.containingFile?.project ?: error("`containingFile` must not be null: $chameleon")
+        val builder = PsiBuilderFactory.getInstance().createBuilder(project, chameleon, null, RsLanguage, chameleon.text)
+        parseBlock(builder)
+        return builder.lightTree
+    }
+
+    private fun parseBlock(builder: PsiBuilder) {
+        // Should be `RustParser().parseLight(BLOCK, builder)`, but we don't have parsing rule for `BLOCK`.
+        // Here is a copy of `RustParser.parseLight` method with `RustParser.InnerAttrsAndBlock` parser.
+        // Note: we can't use `RustParser().parseLight(INNER_ATTRS_AND_BLOCK, builder)` because the root
+        // parsed node must be of BLOCK type. Otherwise, tree diff mechanizm works incorrectly
+        // (see `BlockSupport.ReparsedSuccessfullyException`)
+        val adaptBuilder = GeneratedParserUtilBase.adapt_builder_(BLOCK, builder, RustParser(), RustParser.EXTENDS_SETS_)
+        val marker = GeneratedParserUtilBase.enter_section_(adaptBuilder, 0, GeneratedParserUtilBase._COLLAPSE_, null)
+        val result = RustParser.InnerAttrsAndBlock(adaptBuilder, 0)
+        GeneratedParserUtilBase.exit_section_(adaptBuilder, 0, marker, BLOCK, result, true, GeneratedParserUtilBase.TRUE_CONDITION)
+    }
+
+    // Restricted to a function body only because it is well tested case. May be unrestricted to any block in future
+    override fun isParsable(parent: ASTNode?, buffer: CharSequence, fileLanguage: Language, project: Project): Boolean =
+        parent?.elementType == FUNCTION && PsiBuilderUtil.hasProperBraceBalance(buffer, RsLexer(), LBRACE, RBRACE)
+
+    // Avoid double lexing
+    override fun reuseCollapsedTokens(): Boolean = true
+
+    private class BlockVisitor private constructor(): RecursiveTreeElementWalkingVisitor() {
+        private var hasItemsOrAttrs = false
+
+        override fun visitNode(element: TreeElement) {
+            if (element.elementType in RS_ITEMS) {
+                hasItemsOrAttrs = true
+                stopWalking()
+            } else {
+                super.visitNode(element)
+            }
+        }
+
+        companion object {
+            fun blockContainsItems(node: ASTNode): Boolean {
+                val visitor = BlockVisitor()
+                (node as TreeElement).acceptTree(visitor)
+                return visitor.hasItemsOrAttrs
+            }
+        }
+    }
+
+    private object Holder {
+        val RS_ITEMS_AND_INNER_ATTR = TokenSet.orSet(RS_ITEMS, tokenSetOf(INNER_ATTR))
+    }
 }
 
 class RsExprStubType<PsiT : RsElement>(
@@ -1220,13 +1413,14 @@ class RsLitExprStub(
 }
 
 private fun shouldCreateExprStub(node: ASTNode): Boolean {
-    if (!createStubIfParentIsStub(node)) return false
-    val element = node.psi.ancestors.firstOrNull {
-        val parent = it.parent
-        parent is RsItemElement || parent is RsMod
+    val element = node.ancestors.firstOrNull {
+        val parent = it.treeParent
+        parent?.elementType in RS_ITEMS || parent is FileASTNode
     }
-    return element != null && !(element is RsBlock && element.parent is RsFunction)
+    return element != null && !element.isFunctionBody() && createStubIfParentIsStub(node)
 }
+
+private fun ASTNode.isFunctionBody() = this.elementType == BLOCK && treeParent?.elementType == FUNCTION
 
 class RsUnaryExprStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
@@ -1332,6 +1526,8 @@ class RsPolyboundStub(
 ) : StubBase<RsPolybound>(parent, elementType) {
 
     object Type : RsStubElementType<RsPolyboundStub, RsPolybound>("POLYBOUND") {
+        override fun shouldCreateStub(node: ASTNode): Boolean = createStubIfParentIsStub(node)
+
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsPolyboundStub(parentStub, this,
                 dataStream.readBoolean()

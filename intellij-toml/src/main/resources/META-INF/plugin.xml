@@ -11,9 +11,7 @@
     <!-- TODO: create normal change note list -->
     <change-notes><![CDATA[
         <ul>
-            <li>Provide color settings.</li>
-            <li>Highlight escape symbols like `\n` or `\u0020.</li>
-            <li>Highlight integer numbers, dates and keys properly.</li>
+            <li>Improve `Extend Selection` action to make it possible to select separate escape symbols and whole string literal without quotes.</li>
         </ul>
     ]]>
     </change-notes>
@@ -21,11 +19,16 @@
     <depends>com.intellij.modules.lang</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <fileTypeFactory implementation="org.toml.lang.TomlFileTypeFactory"/>
+        <fileType name="TOML"
+                  language="TOML"
+                  implementationClass="org.toml.lang.psi.TomlFileType"
+                  fieldName="INSTANCE"
+                  extensions="toml"
+                  fileNames="Cargo.lock;Gopkg.lock;Pipfile"/>
         <fileTypeDetector implementation="org.toml.lang.TomlFileTypeDetector"/>
         <lang.parserDefinition language="TOML" implementationClass="org.toml.lang.parse.TomlParserDefinition"/>
         <lang.ast.factory language="TOML" implementationClass="org.toml.lang.psi.impl.TomlASTFactory"/>
-        <lang.syntaxHighlighterFactory language="TOML" implementationClass="org.toml.ide.TomlHighlighterFactory"/>
+        <lang.syntaxHighlighter language="TOML" implementationClass="org.toml.ide.TomlHighlighter"/>
         <lang.commenter language="TOML" implementationClass="org.toml.ide.TomlCommenter"/>
         <lang.braceMatcher language="TOML" implementationClass="org.toml.ide.TomlBraceMatcher"/>
         <lang.quoteHandler language="TOML" implementationClass="org.toml.ide.TomlQuoteHandler"/>

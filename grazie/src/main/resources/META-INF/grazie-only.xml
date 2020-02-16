@@ -1,4 +1,5 @@
 <idea-plugin>
+    <depends>tanvd.grazi</depends>
     <extensions defaultExtensionNs="com.intellij.grazie">
         <grammar.strategy language="Rust" implementationClass="org.rust.grazie.RsGrammarCheckingStrategy"/>
     </extensions>

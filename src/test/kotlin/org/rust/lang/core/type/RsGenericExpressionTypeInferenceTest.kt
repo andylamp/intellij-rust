@@ -510,6 +510,31 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         } //^ S<u8>
     """)
 
+    fun `test enum with alias 1`() = testExpr("""
+        enum Foo<T, U> {
+            A(T),
+            B(U)
+        }
+        type Baz = Foo<i32, u8>;
+        fn main() {
+            let a = Baz::A(123);
+            a;
+        } //^ Foo<i32, u8>
+    """)
+
+    fun `test enum with alias 2`() = testExpr("""
+        enum Foo<T, U> {
+            A(T),
+            B(U)
+        }
+        type Bar<T> = Foo<T, u8>;
+        type Baz = Bar<i32>;
+        fn main() {
+            let a = Baz::A(123);
+            a;
+        } //^ Foo<i32, u8>
+    """)
+
     fun `test generic struct arg`() = testExpr("""
         struct Foo<F>(F);
         fn foo<T>(xs: Foo<T>) -> T { unimplemented!() }
@@ -1685,5 +1710,28 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         fn foo(s: S<u8>) {
             s;
         } //^ S<u8, <unknown>>
+    """)
+
+    fun `test UFCS explicit trait type parameter`() = testExpr("""
+        struct S;
+        trait Foo<T> { fn foo(_: Self) -> T; }
+        impl Foo<i32> for S { fn foo(_: Self) -> i32 { unimplemented!() } }
+        impl Foo<u32> for S { fn foo(_: Self) -> u32 { unimplemented!() } }
+        fn main() {
+            let a = Foo::<i32>::foo(S);
+            let b = Foo::<u32>::foo(S);
+            (a, b);
+        } //^ (i32, u32)
+    """)
+
+    fun `test trait bounds normalization`() = testExpr("""
+        struct X;
+        trait Foo<T> {  }
+        fn foo<A: Foo<B>, B>(_: A) -> B { unimplemented!() }
+        trait Bar { type Item; }
+        fn bar<A: Bar<Item=B>, B>(b: B) where A::Item: Foo<X> {
+            let a = foo(b);
+            a;
+        } //^ X
     """)
 }

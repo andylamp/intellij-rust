@@ -715,6 +715,29 @@ class RsTypeAwareResolveTest : RsResolveTestBase() {
         }
     """)
 
+    fun `test trait object inherent impl`() = checkByCode("""
+        trait Test{}
+        impl dyn Test{
+            fn test(&self){}
+              //X
+        }
+        fn main(){
+            let a:&dyn Test = unimplemented!();
+            a.test()
+             //^
+        }
+    """)
+
+    fun `test trait object method wins over non-inherent trait impl`() = checkByCode("""
+        trait Foo { fn bar(&self) {} }
+                     //X
+        trait Bar { fn bar(&self); }
+        impl Bar for dyn Foo { fn bar(&self) {} }
+        fn foo(a: &(dyn Foo + 'static)) {
+            (*a).bar()
+        }      //^
+    """)
+
     fun `test filter methods from dangling (not attached to some crate) rust files`() = stubOnlyResolve("""
     //- dangling.rs
         trait Tr { fn foo(self); }

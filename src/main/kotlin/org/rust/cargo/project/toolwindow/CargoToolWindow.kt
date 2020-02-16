@@ -9,11 +9,16 @@ import com.intellij.ide.DefaultTreeExpander
 import com.intellij.ide.TreeExpander
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.util.Condition
 import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowEP
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.wm.ex.ToolWindowManagerEx
 import com.intellij.ui.ColorUtil
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.content.ContentFactory
@@ -26,13 +31,18 @@ import org.rust.cargo.runconfig.hasCargoProject
 import javax.swing.JComponent
 import javax.swing.JEditorPane
 
-class CargoToolWindowFactory : ToolWindowFactory, DumbAware {
+class CargoToolWindowFactory : ToolWindowFactory, Condition<Project>, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         guessAndSetupRustProject(project)
         val toolwindowPanel = CargoToolWindowPanel(project)
         val tab = ContentFactory.SERVICE.getInstance()
             .createContent(toolwindowPanel, "", false)
         toolWindow.contentManager.addContent(tab)
+    }
+
+    override fun value(project: Project): Boolean {
+        val cargoProjects = project.cargoProjects
+        return cargoProjects.hasAtLeastOneValidProject || cargoProjects.suggestManifests().any()
     }
 }
 
@@ -58,7 +68,7 @@ class CargoToolWindow(
 ) {
     val toolbar: ActionToolbar = run {
         val actionManager = ActionManager.getInstance()
-        actionManager.createActionToolbar("Cargo Toolbar", actionManager.getAction("Rust.Cargo") as DefaultActionGroup, true)
+        actionManager.createActionToolbar(CARGO_TOOLBAR_PLACE, actionManager.getAction("Rust.Cargo") as DefaultActionGroup, true)
     }
 
     val note = JEditorPane("text/html", html("")).apply {
@@ -108,5 +118,26 @@ class CargoToolWindow(
     companion object {
         @JvmStatic
         val SELECTED_CARGO_PROJECT: DataKey<CargoProject> = DataKey.create<CargoProject>("SELECTED_CARGO_PROJECT")
+
+        const val CARGO_TOOLBAR_PLACE: String = "Cargo Toolbar"
+
+        private const val ID: String = "Cargo"
+
+        private val LOG: Logger = Logger.getInstance(CargoToolWindow::class.java)
+
+        fun initializeToolWindowIfNeeded(project: Project) {
+            try {
+                val manager = ToolWindowManager.getInstance(project) as? ToolWindowManagerEx ?: return
+                val window = manager.getToolWindow(ID)
+                if (window != null) return
+                for (bean in ToolWindowEP.EP_NAME.extensionList) {
+                    if (ID == bean.id) {
+                        manager.initToolWindow(bean)
+                    }
+                }
+            } catch (e: Exception) {
+                LOG.error("Unable to initialize $ID tool window", e)
+            }
+        }
     }
 }

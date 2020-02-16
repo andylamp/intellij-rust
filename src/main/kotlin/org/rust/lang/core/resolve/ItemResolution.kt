@@ -11,14 +11,12 @@ import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.CachedValue
-import com.intellij.psi.util.CachedValueProvider
-import com.intellij.psi.util.CachedValuesManager
-import com.intellij.util.SmartList
 import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
+import org.rust.lang.core.resolve.ref.advancedDeepResolve
 import org.rust.openapiext.recursionGuard
 import org.rust.stdext.intersects
 import java.util.*
@@ -30,6 +28,14 @@ fun processItemOrEnumVariantDeclarations(
     withPrivateImports: Boolean = false
 ): Boolean {
     when (scope) {
+        // https://github.com/rust-lang/rfcs/blob/master/text/2338-type-alias-enum-variants.md
+        is RsTypeAlias -> {
+            val (item, subst) = (scope.typeReference?.typeElement as? RsBaseType)
+                ?.path?.reference?.advancedDeepResolve() ?: return false
+            if (item is RsEnumItem) {
+                if (processAllWithSubst(item.variants, subst, processor)) return true
+            }
+        }
         is RsEnumItem -> {
             if (processAll(scope.variants, processor)) return true
         }
@@ -230,8 +236,7 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
     // TODO fix after enabling #[cfg(...)] evaluation
 
     if (ns.size == 1) {
-        // Optimized version for single namespace.
-        // Also this provides ability to cache ScopeEntries and so necessary for [processItemDeclarationsWithCache]
+        // An optimized version for single namespace.
         return processor.lazy(name) {
             ref.multiResolve().find { it is RsNamedElement && ns.intersects(it.namespaces) }
         }
@@ -258,37 +263,6 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
         if (processor(name, element)) return true
     }
     return false
-}
-
-/**
- * A cached version of [processItemDeclarations]. Exists only for optimization purposes and can be safely
- * replaced with [processItemDeclarations]. The cached version is used only when [ns] consists of the
- * single element that is [Namespace.Types]. This is due to the following reasons:
- * 1. Types namespace is an absolute record holder in name resolution invocations and time
- * 2. We can cache only single namespace due to [processMultiResolveWithNs] implementation
- */
-fun processItemDeclarationsWithCache(
-    scope: RsMod,
-    ns: Set<Namespace>,
-    processor: RsResolveProcessor,
-    ipm: ItemProcessingMode = ItemProcessingMode.WITH_PRIVATE_IMPORTS
-): Boolean {
-    return if (ns == TYPES) {
-        val cached = CachedValuesManager.getCachedValue(scope, ipm.cacheKey) {
-            val scopeEntryList = SmartList<ScopeEntry>()
-            processItemDeclarations(scope, TYPES, {
-                scopeEntryList.add(it)
-                false
-            }, ipm)
-            CachedValueProvider.Result.create(scopeEntryList, scope.rustStructureOrAnyPsiModificationTracker)
-        }
-        for (e in cached) {
-            if (processor(e)) return true
-        }
-        false
-    } else {
-        processItemDeclarations(scope, ns, processor, ipm)
-    }
 }
 
 enum class ItemProcessingMode(val withExternCrates: Boolean) {

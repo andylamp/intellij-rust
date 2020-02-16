@@ -46,6 +46,7 @@ import org.rust.cargo.project.model.setup
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
+import org.rust.cargo.project.toolwindow.CargoToolWindow.Companion.initializeToolWindowIfNeeded
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.project.workspace.StandardLibrary
@@ -62,7 +63,6 @@ import org.rust.stdext.joinAll
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
 
@@ -83,6 +83,12 @@ open class CargoProjectsServiceImpl(
             subscribe(RustProjectSettingsService.TOOLCHAIN_TOPIC, object : RustProjectSettingsService.ToolchainListener {
                 override fun toolchainChanged() {
                     refreshAllProjects()
+                }
+            })
+
+            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
+                override fun cargoProjectsUpdated(projects: Collection<CargoProject>) {
+                    initializeToolWindowIfNeeded(project)
                 }
             })
         }
@@ -121,9 +127,9 @@ open class CargoProjectsServiceImpl(
 
             fun CargoWorkspace.Package.put(cargoProject: CargoProjectImpl) {
                 contentRoot?.put(cargoProject)
+                outDir?.put(cargoProject)
                 for (target in targets) {
                     target.crateRoot?.parent?.put(cargoProject)
-                    target.outDir?.put(cargoProject)
                 }
             }
 
@@ -180,11 +186,7 @@ open class CargoProjectsServiceImpl(
         modifyProjects { doRefresh(project, it) }
 
     override fun discoverAndRefresh(): CompletableFuture<out List<CargoProject>> {
-        val guessManifest = project.modules
-            .asSequence()
-            .flatMap { ModuleRootManager.getInstance(it).contentRoots.asSequence() }
-            .mapNotNull { it.findChild(RustToolchain.CARGO_TOML) }
-            .firstOrNull()
+        val guessManifest = suggestManifests().firstOrNull()
             ?: return CompletableFuture.completedFuture(projects.currentState)
 
         return modifyProjects { projects ->
@@ -192,6 +194,12 @@ open class CargoProjectsServiceImpl(
             doRefresh(project, listOf(CargoProjectImpl(guessManifest.pathAsPath, this)))
         }
     }
+
+    override fun suggestManifests(): Sequence<VirtualFile> =
+        project.modules
+            .asSequence()
+            .flatMap { ModuleRootManager.getInstance(it).contentRoots.asSequence() }
+            .mapNotNull { it.findChild(RustToolchain.CARGO_TOML) }
 
     /**
      * All modifications to project model except for low-level `loadState` should
@@ -336,8 +344,8 @@ data class CargoProjectImpl(
     }
 
     private fun refreshWorkspace(): CompletableFuture<CargoProjectImpl> {
-        val toolchain = toolchain ?:
-            return CompletableFuture.completedFuture(copy(workspaceStatus = UpdateStatus.UpdateFailed(
+        val toolchain = toolchain
+            ?: return CompletableFuture.completedFuture(copy(workspaceStatus = UpdateStatus.UpdateFailed(
                 "Can't update Cargo project, no Rust toolchain"
             )))
 
@@ -423,8 +431,8 @@ private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject
                         if (pkg.origin == PackageOrigin.WORKSPACE) {
                             pkg.contentRoot?.setupContentRoots(module, ContentEntry::setup)
                         }
-                        for (target in pkg.targets) {
-                            val outDir = target.outDir ?: continue
+                        val outDir = pkg.outDir
+                        if (outDir != null) {
                             ModuleRootModificationUtil.updateModel(module) { rootModel ->
                                 val entry = rootModel.contentEntries.singleOrNull() ?: return@updateModel
                                 entry.addSourceFolder(outDir, false)

@@ -402,10 +402,17 @@ private fun processQualifiedPathResolveVariants(
     if (processItemOrEnumVariantDeclarations(base, ns - MACROS, processor, withPrivateImports = isSuperChain)) {
         return true
     }
-    if (base is RsTypeDeclarationElement && parent !is RsUseSpeck) { // Foo::<Bar>::baz
-        val baseTy = if (base is RsImplItem && qualifier.hasCself) {
-            // impl S { fn foo() { Self::bar() } }
-            base.typeReference?.type ?: TyUnknown
+
+    if (base is RsTraitItem && parent !is RsUseSpeck && !qualifier.hasCself) {
+        if (processTraitRelativePath(BoundElement(base, subst), ns, processor)) return true
+    } else if (base is RsTypeDeclarationElement && parent !is RsUseSpeck) { // Foo::<Bar>::baz
+        val baseTy = if (qualifier.hasCself) {
+            when (base) {
+                // impl S { fn foo() { Self::bar() } }
+                is RsImplItem -> base.typeReference?.type ?: TyUnknown
+                is RsTraitItem -> TyTypeParameter.self(base)
+                else -> TyUnknown
+            }
         } else {
             val realSubst = if (qualifier.typeArgumentList != null) {
                 // If the path contains explicit type arguments `Foo::<_, Bar, _>::baz`
@@ -563,6 +570,28 @@ private fun processTypeQualifiedPathResolveVariants(
         emptySubstitution
     }
     if (processAssociatedItemsWithSelfSubst(lookup, baseTy, ns, selfSubst, shadowingProcessor)) return true
+    return false
+}
+
+/** `TraitName::foo` */
+private fun processTraitRelativePath(
+    baseBoundTrait: BoundElement<RsTraitItem>,
+    ns: Set<Namespace>,
+    processor: RsResolveProcessor
+): Boolean {
+    for (boundTrait in baseBoundTrait.flattenHierarchy) {
+        val trait = boundTrait.element
+        val source = TraitImplSource.Trait(trait)
+        for (item in trait.members?.expandedMembers.orEmpty()) {
+            val itemNs = when (item) {
+                is RsTypeAlias -> Namespace.Types
+                else -> Namespace.Values // RsFunction, RsConstant
+            }
+            if (itemNs !in ns) continue
+            val name = item.name ?: continue
+            if (processor(AssocItemScopeEntry(name, item, boundTrait.subst, TyUnknown, source))) return true
+        }
+    }
     return false
 }
 
@@ -757,9 +786,7 @@ fun processMacrosExportedByCrateName(context: RsElement, crateName: String, proc
 }
 
 fun processMacroCallVariantsInScope(context: PsiElement, processor: RsResolveProcessor): Boolean {
-    val result = context.project.macroExpansionManager.withResolvingMacro {
-        MacroResolver.processMacrosInLexicalOrderUpward(context, processor)
-    }
+    val result = MacroResolver.processMacrosInLexicalOrderUpward(context, processor)
     if (result) return true
 
     val prelude = context.contextOrSelf<RsElement>()?.findDependencyCrateRoot(STD) ?: return false
@@ -970,7 +997,7 @@ private fun exportedMacrosAsScopeEntries(scope: RsFile): List<ScopeEntry> {
         LOG.warn("`${scope.virtualFile}` should be crate root")
         return emptyList()
     }
-    val cacheKey = if (scope.project.macroExpansionManager.isResolvingMacro) EXPORTED_MACROS_KEY else EXPORTED_KEY
+    val cacheKey = if (scope.project.macroExpansionManager.expansionState != null) EXPORTED_MACROS_KEY else EXPORTED_KEY
     return CachedValuesManager.getCachedValue(scope, cacheKey) {
         val macros = exportedMacrosInternal(scope)
         CachedValueProvider.Result.create(macros, scope.rustStructureOrAnyPsiModificationTracker)
@@ -1148,6 +1175,7 @@ private fun processAssociatedItems(
 
     for (traitOrImpl in lookup.findImplsAndTraits(type)) {
         val isInherentImpl = traitOrImpl is TraitImplSource.ExplicitImpl && traitOrImpl.isInherent
+            || traitOrImpl is TraitImplSource.Object
 
         for (member in traitOrImpl.implAndTraitExpandedMembers) {
             if (!nsFilter(member)) continue
@@ -1226,7 +1254,7 @@ private fun processLexicalDeclarations(
 
     when (scope) {
         is RsMod -> {
-            if (processItemDeclarationsWithCache(scope, ns, processor, ipm = ipm)) return true
+            if (processItemDeclarations(scope, ns, processor, ipm = ipm)) return true
         }
 
         is RsTypeAlias -> {
@@ -1252,10 +1280,9 @@ private fun processLexicalDeclarations(
         is RsFunction -> {
             if (Namespace.Types in ns && processAll(scope.typeParameters, processor)) return true
             if (Namespace.Values in ns && processAll(scope.constParameters, processor)) return true
-            // XXX: `cameFrom !is RsValueParameterList` prevents switches to AST in cases like
-            // `fn foo(a: usize, b: [u8; SIZE])`. Note that rustc really process them and show
-            // [E0435] on this: `fn foo(a: usize, b: [u8; a])`.
-            if (Namespace.Values in ns && cameFrom !is RsValueParameterList) {
+            // XXX: `cameFrom is RsBlock` prevents switches to AST in cases like `fn foo(a: usize, b: [u8; SIZE])`.
+            // Note that rustc really process them and show [E0435] on this: `fn foo(a: usize, b: [u8; a])`.
+            if (Namespace.Values in ns && cameFrom is RsBlock) {
                 val selfParam = scope.selfParameter
                 if (selfParam != null && processor("self", selfParam)) return true
 
@@ -1373,7 +1400,7 @@ fun processNestedScopesUpwards(
         // XXX: fix prelude items resolve on the nightly. Revert it to `v -> v.name !in prevScope`
         //   after cfg attrs support or when `#[cfg(bootstrap)]` will be removed from the prelude
         val preludeProcessor: (ScopeEntry) -> Boolean = { v -> prevScope.add(v.name) && processor(v) }
-        return processItemDeclarationsWithCache(prelude, ns, preludeProcessor, ItemProcessingMode.WITHOUT_PRIVATE_IMPORTS)
+        return processItemDeclarations(prelude, ns, preludeProcessor, ItemProcessingMode.WITHOUT_PRIVATE_IMPORTS)
     }
 
     return false

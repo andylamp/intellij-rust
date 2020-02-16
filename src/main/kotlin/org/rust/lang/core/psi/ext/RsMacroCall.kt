@@ -77,7 +77,7 @@ private val MACRO_ARGUMENT_TYPES: TokenSet = tokenSetOf(
     CONCAT_MACRO_ARGUMENT, ENV_MACRO_ARGUMENT
 )
 
-private val RsMacroCall.macroArgumentElement: RsElement?
+val RsMacroCall.macroArgumentElement: RsElement?
     get() = node.findChildByType(MACRO_ARGUMENT_TYPES)?.psi as? RsElement
 
 private val RsExpr.value: String? get() {
@@ -97,8 +97,11 @@ private val RsExpr.value: String? get() {
                 }
                 "env" -> {
                     val expr = macroCall.envMacroArgument?.variableNameExpr as? RsLitExpr ?: return null
-                    // TODO: support more variables here
-                    if (expr.value == "OUT_DIR") expr.containingCargoTarget?.outDir?.path else null
+                    val pkg = expr.containingCargoPackage ?: return null
+                    when (val variableName = expr.value) {
+                        "OUT_DIR" -> pkg.outDir?.path
+                        else -> pkg.env[variableName]
+                    }
                 }
                 else -> null
             }

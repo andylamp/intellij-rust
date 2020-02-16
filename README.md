@@ -27,14 +27,14 @@ Unstable master branch builds can be downloaded from [TeamCity].
 
 ## Compatible IDEs
 
-The plugin is compatible with all IntelliJ-based IDEs starting from the version 2019.2, with the following differences in the sets of the available features:
+The plugin is compatible with all IntelliJ-based IDEs starting from the version 2019.3, with the following differences in the sets of the available features:
 
 
 |                        | Open-source and Educational IDEs<sup>*</sup> | [CLion] (commercial) | [IntelliJ IDEA] Ultimate, [PyCharm] Professional, other commercial IDEs |
 |------------------------|---|---|---|
 | Language support       | + | + | + |
 | Cargo support          | + | + | + |
-| Code coverage          | + | +<sup>**</sup> | + |
+| Code coverage          | + | + | + |
 | Debugger               | - | + | - |
 | Profiler               | - | + | - |
 | Valgrind Memcheck      | - | + | - |
@@ -42,9 +42,6 @@ The plugin is compatible with all IntelliJ-based IDEs starting from the version 
 
 
 \* [IntelliJ IDEA] Community Edition, [PyCharm] Community Edition, [PyCharm Edu and IntelliJ IDEA Edu].
-
-<!-- BACKCOMPAT: 2019.2 -->
-\** Since CLion 2019.3
 
 ## TOML
 

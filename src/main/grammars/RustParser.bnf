@@ -172,9 +172,10 @@ MetaItemArgs ::= '(' ( [ <<comma_separated_list (LitExpr | MetaItemWithoutTT )>>
 // Paths
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-private PathIdent ::= !("union" identifier | "async" fn) identifier | self | super | 'Self' | crate
+// private PathIdent ::= !("union" identifier | "async" fn) identifier | self | super | 'Self' | crate
+private PathIdent ::= <<parsePathIdent>>
 
-fake Path ::= (Path '::' | '::' | TypeQual)? PathIdent PathTypeArguments? {
+fake Path ::= (Path '::' | '::' | TypeQual)? (identifier | self | super | 'Self' | crate) PathTypeArguments? {
   implements = [ "org.rust.lang.core.psi.ext.RsPathReferenceElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsPathImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsPathStub"
@@ -255,6 +256,10 @@ Vis ::= crate | pub VisRestriction? {
   stubClass = "org.rust.lang.core.stubs.RsVisStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
+TupleFieldVis ::= crate !'::' | pub VisRestriction? {
+  elementType = Vis
+  name = "vis"
+}
 VisRestriction ::= '(' in? PathWithoutTypeArgs ')' {
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
@@ -272,6 +277,7 @@ private try ::= <<tryKeyword>>
 
 private AttrsAndVis ::= OuterAttr* Vis?
 
+// Note: don't forget to add new item element types to [org.rust.lang.core.psi.RS_ITEMS]
 private Item ::= Constant
                | TypeAlias
                | Function
@@ -444,16 +450,15 @@ RetType ::= '->' TypeReferenceNoImplicitTraitType {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-Function ::= OuterAttr*
+Function ::= AttrsAndVis
              default_?
-             Vis?
              async? const? unsafe? ExternAbi?
              fn identifier
              TypeParameterList?
              FnParameters
              RetType?
              WhereClause?
-             (';' | InnerAttrsAndBlock)
+             (';' | ShallowBlock)
 {
   pin = 'identifier'
   implements = [ "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
@@ -536,7 +541,7 @@ BindingMode ::= ref mut? | mut
 
 OrPats ::= '|'? Pat ('|' Pat)*
 
-Constant ::= OuterAttr* default_? Vis? (static mut? | const) (identifier | '_') TypeAscription [ '=' AnyExpr ] ';' {
+Constant ::= AttrsAndVis default_? (static mut? | const) (identifier | '_') TypeAscription [ '=' AnyExpr ] ';' {
   pin = 5
   implements = [ "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
                  "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
@@ -723,7 +728,7 @@ NamedFieldDecl ::= AttrsAndVis identifier TypeAscription {
 }
 private Field_recover ::= !('}' | ',')
 
-TupleFieldDecl ::= AttrsAndVis TypeReference {
+TupleFieldDecl ::= OuterAttr* TupleFieldVis? TypeReference {
   implements = [ "org.rust.lang.core.psi.ext.RsFieldDecl" ]
   mixin = "org.rust.lang.core.psi.ext.RsTupleFieldDeclImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
@@ -921,7 +926,7 @@ private ImplicitTraitTypeInner ::= Polybound ('+' Polybound)+
 
 private TraitType_upper ::= ('+' Polybound)+
 
-TypeAlias ::= OuterAttr* default_? Vis? TYPE_KW identifier
+TypeAlias ::= AttrsAndVis default_? TYPE_KW identifier
               [ TypeParameterList WhereClause? | WhereClause | TypeParamBounds ]
               [ '=' TypeReference ] ';' {
   pin = 'identifier'
@@ -1449,6 +1454,8 @@ InnerAttrsAndBlock ::= '{' InnerAttr* BlockElement* '}' {
   pin = 1
   elementType = Block
 }
+
+private ShallowBlock ::= <<parseCodeBlockLazy>>
 
 private BlockElement ::= !'}' (Macro | BlockElementMacroCall | ExprStmtOrLastExpr | Stmt | Item) {
   pin = 1

@@ -19,7 +19,7 @@ val CI = System.getenv("CI") != null
 val TEAMCITY = System.getenv("TEAMCITY_VERSION") != null
 
 val channel = prop("publishChannel")
-val platformVersion = prop("platformVersion")
+val platformVersion = prop("platformVersion").toInt()
 val baseIDE = prop("baseIDE")
 val ideaVersion = prop("ideaVersion")
 val clionVersion = prop("clionVersion")
@@ -29,8 +29,7 @@ val baseVersion = when (baseIDE) {
     else -> error("Unexpected IDE name: `$baseIDE`")
 }
 
-val isAtLeast192 = platformVersion.toInt() >= 192
-val isAtLeast193 = platformVersion.toInt() >= 193
+val isAtLeast193 = platformVersion >= 193
 
 val nativeDebugPlugin = "com.intellij.nativeDebug:${prop("nativeDebugPluginVersion")}"
 val graziePlugin = "tanvd.grazi:${prop("graziePluginVersion")}"
@@ -40,7 +39,7 @@ plugins {
     idea
     kotlin("jvm") version "1.3.60"
     id("org.jetbrains.intellij") version "0.4.13"
-    id("org.jetbrains.grammarkit") version "2019.3"
+    id("org.jetbrains.grammarkit") version "2020.1"
     id("de.undercouch.download") version "3.4.3"
     id("net.saliman.properties") version "1.4.6"
 }
@@ -178,9 +177,7 @@ project(":plugin") {
         if (baseIDE == "idea") {
             plugins += "copyright"
             plugins += "coverage"
-            if (isAtLeast192) {
-                plugins += "java"
-            }
+            plugins += "java"
         }
         setPlugins(*plugins.toTypedArray())
     }
@@ -309,9 +306,7 @@ project(":") {
 project(":idea") {
     intellij {
         version = ideaVersion
-        if (isAtLeast192) {
-            setPlugins("java")
-        }
+        setPlugins("java")
     }
     dependencies {
         compile(project(":"))
@@ -336,10 +331,8 @@ project(":clion") {
 
 project(":debugger") {
     intellij {
-        if (isAtLeast193) {
-            if (baseIDE == "idea") {
-                setPlugins(nativeDebugPlugin)
-            }
+        if (baseIDE == "idea") {
+            setPlugins(nativeDebugPlugin)
         } else {
             version = clionVersion
         }
@@ -354,7 +347,7 @@ project(":debugger") {
 
 project(":toml") {
     intellij {
-        if (isAtLeast192 && baseIDE == "idea") {
+        if (baseIDE == "idea") {
             setPlugins(project(":intellij-toml"), "java")
         } else {
             setPlugins(project(":intellij-toml"))
@@ -370,7 +363,7 @@ project(":toml") {
 
 project(":intelliLang") {
     intellij {
-        if (isAtLeast192 && baseIDE == "idea") {
+        if (baseIDE == "idea") {
             setPlugins("IntelliLang", "java")
         } else {
             setPlugins("IntelliLang")
@@ -387,11 +380,7 @@ project(":intelliLang") {
 project(":copyright") {
     intellij {
         version = ideaVersion
-        if (isAtLeast192) {
-            setPlugins("copyright", "java")
-        } else {
-            setPlugins("copyright")
-        }
+        setPlugins("copyright", "java")
     }
     dependencies {
         compile(project(":"))
@@ -403,7 +392,7 @@ project(":copyright") {
 
 project(":duplicates") {
     intellij {
-        if (isAtLeast192 && baseIDE == "idea") {
+        if (baseIDE == "idea") {
             setPlugins("java")
         }
     }
@@ -448,7 +437,7 @@ project(":intellij-toml") {
     version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
 
     intellij {
-        if (isAtLeast192 && baseIDE == "idea") {
+        if (baseIDE == "idea") {
             setPlugins("java")
         }
     }
@@ -473,7 +462,7 @@ project(":intellij-toml") {
         purgeOldFiles = true
     }
 
-    tasks{
+    tasks {
         withType<KotlinCompile> {
             dependsOn(generateTomlLexer, generateTomlParser)
         }
@@ -500,7 +489,7 @@ task("runPrettyPrintersTests") {
             isFamily(FAMILY_UNIX) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/lldb/linux/lib/python3.6/site-packages"
             else -> error("Unsupported OS")
         }
-        "cargo run --package pretty_printers_test --bin pretty_printers_test -- lldb $lldbPath".execute("pretty_printers_tests")
+        "cargo run --package pretty_printers_test --bin pretty_printers_test -- lldb $lldbPath $platformVersion".execute("pretty_printers_tests")
 
         val gdbBinary = when {
             isFamily(FAMILY_MAC) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/gdb/mac/bin/gdb"
