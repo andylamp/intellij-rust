@@ -2005,7 +2005,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             fn drop(&mut self) {}
         }
         // E0120 should not be triggered
-        impl Drop for<error descr="'..' or <type reference> expected, got '{'"> </error>{}
+        impl Drop for<error descr="'..' or <type> expected, got '{'"> </error>{}
     """)
 
     fun `test impl for struct E0120`() = checkErrors("""
@@ -3020,5 +3020,20 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
     fun `test no E0428 multiple underscore constants`() = checkErrors("""
         const _: i32 = 1;
         const _: i32 = 1;
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test no E0603 for module with multiple declarations under cfg attributes`() = checkByFileTree("""
+    //- lib.rs
+        #[cfg(not(intellij_rust))]
+        mod foo;
+        #[cfg(intellij_rust)]
+        pub mod foo;
+    //- foo.rs
+        pub fn foo() {}
+    //- main.rs
+        extern crate test_package;
+        use test_package::foo::bar;/*caret*/
     """)
 }

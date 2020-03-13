@@ -25,10 +25,13 @@ import com.intellij.util.io.DataInputOutputUtil.writeNullable
 import org.rust.lang.RsLanguage
 import org.rust.lang.core.lexer.RsLexer
 import org.rust.lang.core.parser.RustParser
+import org.rust.lang.core.parser.RustParserDefinition
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psi.impl.*
+import org.rust.lang.core.stubs.BlockMayHaveStubsHeuristic.computeAndCache
+import org.rust.lang.core.stubs.BlockMayHaveStubsHeuristic.getAndClearCached
 import org.rust.lang.core.types.ty.TyFloat
 import org.rust.lang.core.types.ty.TyInteger
 import org.rust.openapiext.ancestors
@@ -46,8 +49,10 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
     override fun getType() = Type
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
+        private const val STUB_VERSION = 194
+
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 192
+        override fun getStubVersion(): Int = RustParserDefinition.PARSER_VERSION + STUB_VERSION
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> {
@@ -250,13 +255,12 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
 
     "ARRAY_EXPR" -> RsExprStubType("ARRAY_EXPR", ::RsArrayExprImpl)
     "BINARY_EXPR" -> RsExprStubType("BINARY_EXPR", ::RsBinaryExprImpl)
-    "BLOCK_EXPR" -> RsExprStubType("BLOCK_EXPR", ::RsBlockExprImpl)
+    "BLOCK_EXPR" -> RsBlockExprStub.Type
     "BREAK_EXPR" -> RsExprStubType("BREAK_EXPR", ::RsBreakExprImpl)
     "CALL_EXPR" -> RsExprStubType("CALL_EXPR", ::RsCallExprImpl)
     "CAST_EXPR" -> RsExprStubType("CAST_EXPR", ::RsCastExprImpl)
     "CONT_EXPR" -> RsExprStubType("CONT_EXPR", ::RsContExprImpl)
     "DOT_EXPR" -> RsExprStubType("DOT_EXPR", ::RsDotExprImpl)
-    "EXPR_STMT_OR_LAST_EXPR" -> RsExprStubType("EXPR_STMT_OR_LAST_EXPR", ::RsExprStmtOrLastExprImpl)
     "FOR_EXPR" -> RsExprStubType("FOR_EXPR", ::RsForExprImpl)
     "IF_EXPR" -> RsExprStubType("IF_EXPR", ::RsIfExprImpl)
     "INDEX_EXPR" -> RsExprStubType("INDEX_EXPR", ::RsIndexExprImpl)
@@ -273,7 +277,6 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "STRUCT_LITERAL" -> RsExprStubType("STRUCT_LITERAL", ::RsStructLiteralImpl)
     "TRY_EXPR" -> RsExprStubType("TRY_EXPR", ::RsTryExprImpl)
     "TUPLE_EXPR" -> RsExprStubType("TUPLE_EXPR", ::RsTupleExprImpl)
-    "TUPLE_OR_PAREN_EXPR" -> RsExprStubType("TUPLE_OR_PAREN_EXPR", ::RsTupleOrParenExprImpl)
     "UNARY_EXPR" -> RsUnaryExprStub.Type
     "UNIT_EXPR" -> RsExprStubType("UNIT_EXPR", ::RsUnitExprImpl)
     "WHILE_EXPR" -> RsExprStubType("WHILE_EXPR", ::RsWhileExprImpl)
@@ -1388,6 +1391,43 @@ class RsExprStubType<PsiT : RsElement>(
     psiCtor: (RsPlaceholderStub, IStubElementType<*, *>) -> PsiT
 ) : RsPlaceholderStub.Type<PsiT>(debugName, psiCtor) {
     override fun shouldCreateStub(node: ASTNode): Boolean = shouldCreateExprStub(node)
+}
+
+class RsBlockExprStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    private val flags: Int
+) : RsPlaceholderStub(parent, elementType) {
+    val isUnsafe: Boolean get() = BitUtil.isSet(flags, UNSAFE_MASK)
+    val isAsync: Boolean get() = BitUtil.isSet(flags, ASYNC_MASK)
+    val isTry: Boolean get() = BitUtil.isSet(flags, TRY_MASK)
+
+    object Type : RsStubElementType<RsBlockExprStub, RsBlockExpr>("BLOCK_EXPR") {
+
+        override fun shouldCreateStub(node: ASTNode): Boolean = shouldCreateExprStub(node)
+
+        override fun serialize(stub: RsBlockExprStub, dataStream: StubOutputStream) {
+            dataStream.writeInt(stub.flags)
+        }
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsBlockExprStub =
+            RsBlockExprStub(parentStub, this, dataStream.readInt())
+
+        override fun createStub(psi: RsBlockExpr, parentStub: StubElement<*>?): RsBlockExprStub {
+            var flags = 0
+            flags = BitUtil.set(flags, UNSAFE_MASK, psi.isUnsafe)
+            flags = BitUtil.set(flags, ASYNC_MASK, psi.isAsync)
+            flags = BitUtil.set(flags, TRY_MASK, psi.isTry)
+            return RsBlockExprStub(parentStub, this, flags)
+        }
+
+        override fun createPsi(stub: RsBlockExprStub): RsBlockExpr = RsBlockExprImpl(stub, this)
+    }
+
+    companion object {
+        private val UNSAFE_MASK: Int = makeBitMask(0)
+        private val ASYNC_MASK: Int = makeBitMask(1)
+        private val TRY_MASK: Int = makeBitMask(2)
+    }
 }
 
 class RsLitExprStub(

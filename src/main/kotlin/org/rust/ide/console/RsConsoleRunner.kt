@@ -5,26 +5,28 @@
 
 package org.rust.ide.console
 
-import com.intellij.execution.Executor
+import com.intellij.execution.actions.EOFAction
 import com.intellij.execution.configurations.GeneralCommandLine
+import com.intellij.execution.console.ConsoleHistoryController
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.runners.AbstractConsoleRunnerWithHistory
 import com.intellij.execution.ui.RunContentDescriptor
+import com.intellij.execution.ui.actions.CloseAction
 import com.intellij.ide.errorTreeView.NewErrorTreeViewPanel
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.DefaultActionGroup
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.TransactionGuard
+import com.intellij.openapi.application.*
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.actions.ScrollToTheEndToolbarAction
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
-import com.intellij.ui.GuiUtils
+import com.intellij.openapi.util.Disposer
+import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBEmptyBorder
 import com.intellij.util.ui.MessageCategory
-import com.intellij.util.ui.UIUtil
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.workingDirectory
@@ -32,6 +34,7 @@ import org.rust.cargo.toolchain.Cargo
 import org.rust.openapiext.saveAllDocuments
 import java.awt.BorderLayout
 import java.nio.charset.StandardCharsets
+import javax.swing.BorderFactory
 import javax.swing.JPanel
 
 class RsConsoleRunner(project: Project) :
@@ -39,8 +42,6 @@ class RsConsoleRunner(project: Project) :
 
     private lateinit var commandLine: GeneralCommandLine
     private lateinit var consoleCommunication: RsConsoleCommunication
-
-    val commandHistory: CommandHistory = CommandHistory()
 
     override fun getConsoleExecuteActionHandler(): RsConsoleExecuteActionHandler {
         return super.getConsoleExecuteActionHandler() as RsConsoleExecuteActionHandler
@@ -53,26 +54,63 @@ class RsConsoleRunner(project: Project) :
     override fun createConsoleView(): RsConsoleView {
         val consoleView = RsConsoleView(project)
         consoleCommunication = RsConsoleCommunication(consoleView)
-
-        val consoleEditor = consoleView.consoleEditor
-        val historyKeyListener = HistoryKeyListener(project, consoleEditor, commandHistory)
-        consoleEditor.contentComponent.addKeyListener(historyKeyListener)
-        commandHistory.listeners.add(historyKeyListener)
-
         return consoleView
     }
 
-    override fun fillToolBarActions(
-        toolbarActions: DefaultActionGroup,
-        defaultExecutor: Executor,
-        contentDescriptor: RunContentDescriptor
-    ): MutableList<AnAction> {
-        val actionList = arrayListOf<AnAction>(
+    override fun createContentDescriptorAndActions() {
+        val actionManager = ActionManager.getInstance()
+
+        val runActionGroup = DefaultActionGroup()
+        val runToolbar = actionManager.createActionToolbar("RustConsoleRunner", runActionGroup, false)
+
+        val outputActionGroup = DefaultActionGroup()
+        val outputToolbar = actionManager.createActionToolbar("RustConsoleRunner", outputActionGroup, false).apply {
+            val emptyBorderSize = component.border.getBorderInsets(component).left
+            val outsideBorder = BorderFactory.createMatteBorder(0, 1, 0, 0, JBColor.border())
+            val insideBorder = JBEmptyBorder(emptyBorderSize)
+            component.border = BorderFactory.createCompoundBorder(outsideBorder, insideBorder)
+        }
+
+        val actionsPanel = JPanel(BorderLayout()).apply {
+            add(runToolbar.component, BorderLayout.WEST)
+            add(outputToolbar.component, BorderLayout.CENTER)
+        }
+
+        val mainPanel = JPanel(BorderLayout()).apply {
+            add(actionsPanel, BorderLayout.WEST)
+            add(consoleView.component, BorderLayout.CENTER)
+            runToolbar.setTargetComponent(this)
+            outputToolbar.setTargetComponent(this)
+        }
+
+        val title = constructConsoleTitle(consoleTitle)
+        val contentDescriptor = RunContentDescriptor(consoleView, processHandler, mainPanel, title, consoleIcon).apply {
+            setFocusComputable { consoleView.consoleEditor.contentComponent }
+            isAutoFocusContent = isAutoFocusContent
+            Disposer.register(project, this)
+        }
+
+        val runActions = listOf(
+            RestartAction(this),
             createConsoleExecAction(consoleExecuteActionHandler),
-            RestartAction(this)
+            StopAction(processHandler!!),
+            CloseAction(executor, contentDescriptor, project)
         )
-        toolbarActions.addAll(actionList)
-        return actionList
+        runActionGroup.addAll(runActions)
+
+        val outputActions = listOf<AnAction>(
+            SoftWrapAction(consoleView),
+            ScrollToTheEndToolbarAction(consoleView.editor),
+            PrintAction(consoleView),
+            ConsoleHistoryController.getController(consoleView)!!.browseHistory
+        )
+        outputActionGroup.addAll(outputActions)
+
+        val actions = outputActions + runActions + EOFAction()
+        registerActionShortcuts(actions, consoleView.consoleEditor.component)
+        registerActionShortcuts(actions, mainPanel)
+
+        showConsole(executor, contentDescriptor)
     }
 
     fun runSync(requestEditorFocus: Boolean) {
@@ -113,7 +151,7 @@ class RsConsoleRunner(project: Project) :
                         }
                     } catch (e: Exception) {
                         LOG.warn("Error running console", e)
-                        UIUtil.invokeAndWaitIfNeeded(Runnable { showErrorsInConsole(e) })
+                        invokeAndWaitIfNeeded { showErrorsInConsole(e) }
                     }
                 }
             })
@@ -121,9 +159,9 @@ class RsConsoleRunner(project: Project) :
     }
 
     override fun initAndRun() {
-        UIUtil.invokeAndWaitIfNeeded(Runnable {
+        invokeAndWaitIfNeeded {
             super.initAndRun()
-        })
+        }
     }
 
     override fun createProcessHandler(process: Process): OSProcessHandler =
@@ -153,7 +191,7 @@ class RsConsoleRunner(project: Project) :
     }
 
     private fun connect() {
-        ApplicationManager.getApplication().invokeLater {
+        invokeLater {
             consoleView.executeActionHandler = consoleExecuteActionHandler
 
             consoleExecuteActionHandler.isEnabled = true
@@ -164,8 +202,9 @@ class RsConsoleRunner(project: Project) :
 
     override fun createExecuteActionHandler(): RsConsoleExecuteActionHandler {
         val consoleExecuteActionHandler =
-            RsConsoleExecuteActionHandler(processHandler!!, this, consoleCommunication)
+            RsConsoleExecuteActionHandler(processHandler!!, consoleCommunication)
         consoleExecuteActionHandler.isEnabled = false
+        ConsoleHistoryController(RsConsoleRootType.instance, "", consoleView).install()
         return consoleExecuteActionHandler
     }
 
@@ -178,9 +217,9 @@ class RsConsoleRunner(project: Project) :
                     processHandler.waitFor()
                 }
 
-                GuiUtils.invokeLaterIfNeeded({
+                runInEdt {
                     RsConsoleRunner(project).run(true)
-                }, ModalityState.defaultModalityState())
+                }
             }
         }.queue()
     }

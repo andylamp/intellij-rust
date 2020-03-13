@@ -9,7 +9,8 @@ import com.intellij.execution.ExecutionException
 import com.intellij.execution.process.ProcessAdapter
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.invokeAndWaitIfNeeded
+import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
@@ -44,6 +45,8 @@ import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.setup
 import org.rust.cargo.project.settings.RustProjectSettingsService
+import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsChangedEvent
+import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsListener
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.toolwindow.CargoToolWindow.Companion.initializeToolWindowIfNeeded
@@ -80,9 +83,11 @@ open class CargoProjectsServiceImpl(
                 refreshAllProjects()
             }))
 
-            subscribe(RustProjectSettingsService.TOOLCHAIN_TOPIC, object : RustProjectSettingsService.ToolchainListener {
-                override fun toolchainChanged() {
-                    refreshAllProjects()
+            subscribe(RustProjectSettingsService.RUST_SETTINGS_TOPIC, object : RustSettingsListener {
+                override fun rustSettingsChanged(e: RustSettingsChangedEvent) {
+                    if (e.affectsCargoMetadata) {
+                        refreshAllProjects()
+                    }
                 }
             })
 
@@ -159,6 +164,9 @@ open class CargoProjectsServiceImpl(
     override val hasAtLeastOneValidProject: Boolean
         get() = hasAtLeastOneValidProject(allProjects)
 
+    // Guarded by the platform RWLock
+    override var initialized: Boolean = false
+
     override fun findProjectForFile(file: VirtualFile): CargoProject? =
         file.applyWithSymlink { directoryIndex.getInfoForFile(it).takeIf { it !== noProjectMarker } }
 
@@ -211,13 +219,14 @@ open class CargoProjectsServiceImpl(
     ): CompletableFuture<List<CargoProjectImpl>> =
         projects.updateAsync(f)
             .thenApply { projects ->
-                ApplicationManager.getApplication().invokeAndWait {
+                invokeAndWaitIfNeeded {
                     runWriteAction {
                         directoryIndex.resetIndex()
                         ProjectRootManagerEx.getInstanceEx(project)
                             .makeRootsChange(EmptyRunnable.getInstance(), false, true)
                         project.messageBus.syncPublisher(CargoProjectsService.CARGO_PROJECTS_TOPIC)
                             .cargoProjectsUpdated(projects)
+                        initialized = true
                     }
                 }
 
@@ -243,7 +252,7 @@ open class CargoProjectsServiceImpl(
         // instead of `modifyProjects` for this reason
         projects.updateSync { _ -> loaded }
             .whenComplete { _, _ ->
-                ApplicationManager.getApplication().invokeLater { refreshAllProjects() }
+                invokeLater { refreshAllProjects() }
             }
     }
 
@@ -414,7 +423,7 @@ private fun doRefresh(project: Project, projects: List<CargoProjectImpl>): Compl
 }
 
 private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject>) {
-    ApplicationManager.getApplication().invokeAndWait {
+    invokeAndWaitIfNeeded {
         runWriteAction {
             if (project.isDisposed) return@runWriteAction
             ProjectRootManagerEx.getInstanceEx(project).mergeRootsChangesDuring {

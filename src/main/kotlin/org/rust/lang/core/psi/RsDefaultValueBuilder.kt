@@ -160,15 +160,16 @@ class RsDefaultValueBuilder(
         val type = fieldDecl.typeReference?.type ?: return null
 
         val binding = bindings[name] ?: return null
+        val escapedName = fieldDecl.escapedName ?: return null
         return when {
             type == binding.type -> {
-                val field = psiFactory.createStructLiteralField(name, psiFactory.createExpression(name))
+                val field = psiFactory.createStructLiteralField(escapedName, psiFactory.createExpression(escapedName))
                 RsFieldInitShorthandInspection.applyShorthandInit(field)
                 field
             }
             isRefContainer(type, binding.type) -> {
-                val expr = buildReference(type, psiFactory.createExpression(name))
-                psiFactory.createStructLiteralField(name, expr)
+                val expr = buildReference(type, psiFactory.createExpression(escapedName))
+                psiFactory.createStructLiteralField(escapedName, expr)
             }
             else -> null
         }
@@ -233,7 +234,7 @@ class RsDefaultValueBuilder(
     }
 
     private fun specializedCreateStructLiteralField(fieldDecl: RsFieldDecl, bindings: Map<String, RsPatBinding>): RsStructLiteralField? {
-        val fieldName = fieldDecl.name ?: return null
+        val fieldName = fieldDecl.escapedName ?: return null
         val fieldType = fieldDecl.typeReference?.type ?: return null
         val fieldLiteral = buildFor(fieldType, bindings)
         return psiFactory.createStructLiteralField(fieldName, fieldLiteral)

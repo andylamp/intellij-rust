@@ -48,6 +48,8 @@ import org.rust.lang.core.resolve.indexes.RsMacroIndex
 import org.rust.lang.core.resolve.ref.*
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.types.*
+import org.rust.lang.core.types.consts.CtInferVar
+import org.rust.lang.core.types.infer.foldCtConstParameterWith
 import org.rust.lang.core.types.infer.foldTyTypeParameterWith
 import org.rust.lang.core.types.infer.substitute
 import org.rust.lang.core.types.ty.*
@@ -419,7 +421,12 @@ private fun processQualifiedPathResolveVariants(
                 // it means that all possible `TyInfer` has already substituted (with `_`)
                 subst
             } else {
-                subst.mapTypeValues { (_, v) -> v.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
+                subst
+                    .mapTypeValues { (_, v) ->
+                        v.foldTyTypeParameterWith { TyInfer.TyVar(it) }
+                            .foldCtConstParameterWith { CtInferVar(it) }
+                    }
+                    .mapConstValues { (_, v) -> v.foldCtConstParameterWith { CtInferVar(it) } }
             }
             base.declaredType.substitute(realSubst)
         }
@@ -429,7 +436,11 @@ private fun processQualifiedPathResolveVariants(
         val restrictedTraits = if (Namespace.Types in ns && base is RsImplItem && qualifier.hasCself) {
             NameResolutionTestmarks.selfRelatedTypeSpecialCase.hit()
             base.implementedTrait?.flattenHierarchy
-                ?.map { it.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
+                ?.map { value ->
+                    value
+                        .foldTyTypeParameterWith { TyInfer.TyVar(it) }
+                        .foldCtConstParameterWith { CtInferVar(it) }
+                }
         } else {
             null
         }
@@ -451,7 +462,11 @@ private fun processExplicitTypeQualifiedPathResolveVariants(
         // TODO this is a hack to fix completion test `test associated type in explicit UFCS form`.
         // Looks like we should use getOriginalOrSelf during resolve
         ?.let { BoundElement(CompletionUtil.getOriginalOrSelf(it.element), it.subst) }
-        ?.let { it.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
+        ?.let { value ->
+            value
+                .foldTyTypeParameterWith { TyInfer.TyVar(it) }
+                .foldCtConstParameterWith { CtInferVar(it) }
+        }
     val type = typeQual.typeReference.type
     return processTypeQualifiedPathResolveVariants(lookup, path, processor, ns, type, trait?.let { listOf(it) })
 }
@@ -546,6 +561,7 @@ private fun processTypeQualifiedPathResolveVariants(
 
             val implementedTrait = e.source.implementedTrait
                 ?.foldTyTypeParameterWith { TyInfer.TyVar(it) }
+                ?.foldCtConstParameterWith { CtInferVar(it) }
                 ?: return processor(e)
 
             val isAppropriateTrait = restrictedTraits.any {
@@ -733,9 +749,9 @@ fun processBinaryOpVariants(element: RsBinaryOp, operator: OverloadableBinaryOpe
     val lhsType = binaryExpr.left.type
     val lookup = ImplLookup.relativeTo(element)
     val function = lookup.findOverloadedOpImpl(lhsType, rhsType, operator)
-        ?.members
-        ?.functionList
-        ?.find { it.name == operator.fnName }
+        ?.expandedMembers.orEmpty()
+        .functions
+        .find { it.name == operator.fnName }
         ?: return false
     return processor(function)
 }
@@ -920,14 +936,14 @@ private class MacroResolvingVisitor(
     }
 
     override fun visitModItem(item: RsModItem) {
-        if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
+        if (missingMacroUse.hitOnFalse(item.hasMacroUse) && item.isEnabledByCfg) {
             val elements = visibleMacros(item)
             visitorResult = processAll(if (reverse) elements.asReversed() else elements, processor)
         }
     }
 
     override fun visitModDeclItem(item: RsModDeclItem) {
-        if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
+        if (missingMacroUse.hitOnFalse(item.hasMacroUse) && item.isEnabledByCfg) {
             val mod = item.reference.resolve() as? RsMod ?: return
             val elements = visibleMacros(mod)
             visitorResult = processAll(if (reverse) elements.asReversed() else elements, processor)
@@ -935,6 +951,7 @@ private class MacroResolvingVisitor(
     }
 
     override fun visitExternCrateItem(item: RsExternCrateItem) {
+        if (!item.isEnabledByCfg) return
         val mod = item.reference.resolve() as? RsFile ?: return
         if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
             // If extern crate has `#[macro_use]` attribute
@@ -954,6 +971,7 @@ private class MacroResolvingVisitor(
     }
 
     override fun visitUseItem(item: RsUseItem) {
+        // Cfg attributes are evaluated later
         useItems += item
     }
 
@@ -1021,6 +1039,7 @@ private fun exportedMacrosInternal(scope: RsFile): List<ScopeEntry> {
 
         val externCrates = scope.stubChildrenOfType<RsExternCrateItem>()
         for (item in externCrates) {
+            if (!item.isEnabledByCfg) continue
             val reexportedMacros = reexportedMacros(item)
             if (reexportedMacros != null) {
                 addAll(reexportedMacros.toScopeEntries())
@@ -1090,10 +1109,14 @@ private fun collectMacrosImportedWithUseItem(
     // macro resolve and so be slow and incorrect).
     // We assume that macro can only be imported by 2-segment path (`foo::bar`), where the first segment
     // is a name of the crate (may be aliased) and the second segment is the name of the macro.
-    return buildList {
-        val root = useItem.useSpeck ?: return@buildList
+    val root = useItem.useSpeck ?: return emptyList()
+    val twoSegmentPaths = collect2segmentPaths(root)
 
-        for ((crateName, macroName) in collect2segmentPaths(root)) {
+    // Check cfg only if there are paths we interested in
+    if (twoSegmentPaths.isEmpty() || !useItem.isEnabledByCfg) return emptyList()
+
+    return buildList {
+        for ((crateName, macroName) in twoSegmentPaths) {
             val crateRoot = exportingMacrosCrates[crateName] as? RsFile
                 ?: findDependencyCrateByName(useItem, crateName)
                 ?: continue
@@ -1164,9 +1187,15 @@ private fun processAssociatedItems(
     processor: (AssocItemScopeEntry) -> Boolean
 ): Boolean {
     val nsFilter: (RsAbstractable) -> Boolean = when {
-        Namespace.Types in ns && Namespace.Values in ns -> {{ true }}
-        Namespace.Types in ns -> {{ it is RsTypeAlias }}
-        Namespace.Values in ns -> {{ it !is RsTypeAlias }}
+        Namespace.Types in ns && Namespace.Values in ns -> {
+            { true }
+        }
+        Namespace.Types in ns -> {
+            { it is RsTypeAlias }
+        }
+        Namespace.Values in ns -> {
+            { it !is RsTypeAlias }
+        }
         else -> return false
     }
 
@@ -1174,8 +1203,7 @@ private fun processAssociatedItems(
     val visitedInherent = mutableSetOf<String>()
 
     for (traitOrImpl in lookup.findImplsAndTraits(type)) {
-        val isInherentImpl = traitOrImpl is TraitImplSource.ExplicitImpl && traitOrImpl.isInherent
-            || traitOrImpl is TraitImplSource.Object
+        val isInherent = traitOrImpl.isInherent
 
         for (member in traitOrImpl.implAndTraitExpandedMembers) {
             if (!nsFilter(member)) continue
@@ -1183,7 +1211,7 @@ private fun processAssociatedItems(
 
             // In Rust, inherent impl members (`impl Foo {}`) wins over trait impl members (`impl T for Foo {}`).
             // Note that `findImplsAndTraits` returns ordered sequence: inherent impls are placed to the head
-            if (isInherentImpl) {
+            if (isInherent) {
                 visitedInherent.add(name)
             } else if (name in visitedInherent) {
                 continue
@@ -1315,7 +1343,7 @@ private fun processLexicalDeclarations(
                 val letDecls = mutableListOf<RsLetDecl>()
                 val stmts = when (scope) {
                     is RsBlock -> scope.expandedStmtsAndTailExpr.first
-                    is RsReplCodeFragment -> scope.stmts.toList()
+                    is RsReplCodeFragment -> scope.stmts
                     else -> emptyList()  // unreachable
                 }
                 for (stmt in stmts) {
@@ -1421,7 +1449,7 @@ private fun makeHygieneFilter(anchor: PsiElement): (RsPatBinding) -> Boolean {
         val nameIdentifier = binding.nameIdentifier ?: return false
         val bindingHygienicScope =
             (nameIdentifier.findMacroCallFromWhichLeafIsExpanded() ?: nameIdentifier).containingFile
-            .unwrapCodeFragments()
+                .unwrapCodeFragments()
         return anchorHygienicScope == bindingHygienicScope
     }
 }

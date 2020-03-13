@@ -32,10 +32,11 @@ FILE
       RsLetDeclImpl(LET_DECL)
         PsiElement(let)('let')
         PsiWhiteSpace(' ')
-        RsPatIdentImpl(PAT_IDENT)
-          RsPatBindingImpl(PAT_BINDING)
-            PsiElement(identifier)('S')
-      PsiErrorElement:'!', '(', ':', '::', ';', '=', '@' or '{' expected, got '{'
+        RsPatConstImpl(PAT_CONST)
+          RsPathExprImpl(PATH_EXPR)
+            RsPathImpl(PATH)
+              PsiElement(identifier)('S')
+      PsiErrorElement:'!', '(', ':', '::', ';', '=' or '{' expected, got '{'
         <empty list>
       PsiWhiteSpace(' ')
       RsExprStmtImpl(EXPR_STMT)
@@ -43,7 +44,7 @@ FILE
           RsBlockExprImpl(BLOCK_EXPR)
             RsBlockImpl(BLOCK)
               PsiElement({)('{')
-              PsiErrorElement:<constant>, <enum item>, <extern crate item>, <foreign mod item>, <function>, <impl item>, <macro 2>, <macro call>, <macro>, <mod decl item>, <mod item>, <stmt mode expr>, <stmt>, <struct item>, <trait alias>, <trait item>, <type alias> or <use item> expected, got 'mut'
+              PsiErrorElement:<expr>, <item>, <macro call>, <macro> or <stmt> expected, got 'mut'
                 PsiElement(mut)('mut')
               PsiWhiteSpace(' ')
               RsCastExprImpl(CAST_EXPR)

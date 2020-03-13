@@ -244,6 +244,26 @@ class RsSyntaxErrorsAnnotatorTest : RsAnnotatorTestBase(RsSyntaxErrorsAnnotator:
         fn foo<T, <error descr="Lifetime parameters must be declared prior to type parameters">'a</error>>(bar: &'a T) {}
     """)
 
+    fun `test type arguments order`() = checkErrors("""
+        type A1 = B<C, <error descr="Lifetime arguments must be declared prior to type arguments">'d</error>>;
+
+        type A2 = B<C, <error descr="Lifetime arguments must be declared prior to type arguments">'d</error>,
+                      <error descr="Lifetime arguments must be declared prior to type arguments">'e</error>>;
+
+        type A3 = B<C=D, <error descr="Type arguments must be declared prior to associated type bindings">E</error>>;
+
+        type A4 = B<C=D, <error descr="Type arguments must be declared prior to associated type bindings">E</error>,
+                         <error descr="Type arguments must be declared prior to associated type bindings">F</error>>;
+
+        type A3 = B<C=D, <error descr="Lifetime arguments must be declared prior to associated type bindings">'e</error>>;
+
+        type A4 = B<C=D, <error descr="Lifetime arguments must be declared prior to associated type bindings">'e</error>,
+                         <error descr="Lifetime arguments must be declared prior to associated type bindings">'f</error>>;
+
+        type A5 = B<1, <error descr="Type arguments must be declared prior to const arguments">C</error>,
+                         <error descr="Lifetime arguments must be declared prior to const arguments">'d</error>>;
+    """)
+
     fun `test default type parameters in impl`() = checkErrors("""
         struct S<T=String>{ f: T }
         impl<T=<error descr="Defaults for type parameters are only allowed in `struct`, `enum`, `type`, or `trait` definitions">String</error>> S<T> {}
@@ -265,5 +285,67 @@ class RsSyntaxErrorsAnnotatorTest : RsAnnotatorTestBase(RsSyntaxErrorsAnnotator:
         #![feature(c_variadic)]
         unsafe extern "C" fn ext_fn1(a: bool, ...) {}
         unsafe extern "C" fn ext_fn2(a: bool, args: ...) {}
+    """)
+
+    fun `test illegal items inside trait, impl or foreign mod`() = checkErrors("""
+        trait T {
+            <error descr="Structs are not allowed inside a trait">struct</error> A;
+            <error descr="Unions are not allowed inside a trait">union</error> B {}
+            <error descr="Modules are not allowed inside a trait">mod</error> c {}
+            <error descr="Modules are not allowed inside a trait">mod</error> d;
+            <error descr="Enums are not allowed inside a trait">enum</error> E {}
+            <error descr="Traits are not allowed inside a trait">trait</error> F {}
+            <error descr="Trait aliases are not allowed inside a trait">trait</error> G = F;
+            <error descr="Impls are not allowed inside a trait">impl</error> A {}
+            <error descr="Use items are not allowed inside a trait">use</error> A;
+            <error descr="Foreign modules are not allowed inside a trait">extern</error> "C" {}
+            <error descr="Extern crates are not allowed inside a trait">extern</error> crate H;
+            <error descr="Macros are not allowed inside a trait">macro_rules</error>! i {}
+            <error descr="Macros are not allowed inside a trait">macro</error> j() {}
+        }
+        impl S {
+            <error descr="Structs are not allowed inside an impl">struct</error> A;
+            <error descr="Unions are not allowed inside an impl">union</error> B {}
+            <error descr="Modules are not allowed inside an impl">mod</error> c {}
+            <error descr="Modules are not allowed inside an impl">mod</error> d;
+            <error descr="Enums are not allowed inside an impl">enum</error> E {}
+            <error descr="Traits are not allowed inside an impl">trait</error> F {}
+            <error descr="Trait aliases are not allowed inside an impl">trait</error> G = F;
+            <error descr="Impls are not allowed inside an impl">impl</error> A {}
+            <error descr="Use items are not allowed inside an impl">use</error> A;
+            <error descr="Foreign modules are not allowed inside an impl">extern</error> "C" {}
+            <error descr="Extern crates are not allowed inside an impl">extern</error> crate H;
+            <error descr="Macros are not allowed inside an impl">macro_rules</error>! i {}
+            <error descr="Macros are not allowed inside an impl">macro</error> j() {}
+        }
+        extern "C" {
+            <error descr="Structs are not allowed inside a foreign module">struct</error> A;
+            <error descr="Unions are not allowed inside a foreign module">union</error> B {}
+            <error descr="Modules are not allowed inside a foreign module">mod</error> c {}
+            <error descr="Modules are not allowed inside a foreign module">mod</error> d;
+            <error descr="Enums are not allowed inside a foreign module">enum</error> E {}
+            <error descr="Traits are not allowed inside a foreign module">trait</error> F {}
+            <error descr="Trait aliases are not allowed inside a foreign module">trait</error> G = F;
+            <error descr="Impls are not allowed inside a foreign module">impl</error> A {}
+            <error descr="Use items are not allowed inside a foreign module">use</error> A;
+            <error descr="Foreign modules are not allowed inside a foreign module">extern</error> "C" {}
+            <error descr="Extern crates are not allowed inside a foreign module">extern</error> crate H;
+            <error descr="Macros are not allowed inside a foreign module">macro_rules</error>! i {}
+            <error descr="Macros are not allowed inside a foreign module">macro</error> j() {}
+        }
+    """)
+
+    fun `test 'default' keyword`() = checkErrors("""
+        <error descr="Structs cannot have the `default` qualifier">default</error> struct A;
+        <error descr="Unions cannot have the `default` qualifier">default</error> union B {}
+        <error descr="Modules cannot have the `default` qualifier">default</error> mod c {}
+        <error descr="Modules cannot have the `default` qualifier">default</error> mod d;
+        <error descr="Enums cannot have the `default` qualifier">default</error> enum E {}
+        <error descr="Use items cannot have the `default` qualifier">default</error> use A;
+        <error descr="Foreign modules cannot have the `default` qualifier">default</error> extern "C" {}
+        <error descr="Extern crates cannot have the `default` qualifier">default</error> extern crate H;
+        <error descr="Macros cannot have the `default` qualifier">default</error> macro_rules! i {}
+        <error descr="Macros cannot have the `default` qualifier">default</error> macro j() {}
+        <error descr="Macro invocations cannot have the `default` qualifier">default</error> foo!();
     """)
 }

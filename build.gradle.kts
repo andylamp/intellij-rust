@@ -14,6 +14,13 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.io.Writer
 import java.net.URL
 import kotlin.concurrent.thread
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+
+// The same as `--full-stacktrace` param
+gradle.startParameter.showStacktrace = ShowStacktrace.ALWAYS_FULL
 
 val CI = System.getenv("CI") != null
 val TEAMCITY = System.getenv("TEAMCITY_VERSION") != null
@@ -29,11 +36,23 @@ val baseVersion = when (baseIDE) {
     else -> error("Unexpected IDE name: `$baseIDE`")
 }
 
-val isAtLeast193 = platformVersion >= 193
+val isAtLeast201 = platformVersion >= 201
 
+val intelliLangPlugin = if (isAtLeast201) "platform-langInjection" else "IntelliLang"
 val nativeDebugPlugin = "com.intellij.nativeDebug:${prop("nativeDebugPluginVersion")}"
 val graziePlugin = "tanvd.grazi:${prop("graziePluginVersion")}"
 val psiViewerPlugin = "PsiViewer:${prop("psiViewerPluginVersion")}"
+
+val httpClient: OkHttpClient by lazy { OkHttpClient() }
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.squareup.okhttp3:okhttp:4.4.0")
+    }
+}
 
 plugins {
     idea
@@ -89,12 +108,6 @@ allprojects {
         }
     }
 
-    grammarKit {
-        if (!isAtLeast193) {
-            grammarKitRelease = "2019.1"
-        }
-    }
-
     tasks.withType<KotlinCompile> {
         kotlinOptions {
             jvmTarget = "1.8"
@@ -132,6 +145,7 @@ allprojects {
         }
 
         tasks.withType<Test>().configureEach {
+            jvmArgs = listOf("-Xmx2g", "-XX:-OmitStackTraceInFastThrow")
             // We need to prevent the platform-specific shared JNA library to loading from the system library paths,
             // because otherwise it can lead to compatibility issues.
             // Also note that IDEA does the same thing at startup, and not only for tests.
@@ -170,7 +184,7 @@ project(":plugin") {
         pluginName = "intellij-rust"
         val plugins = mutableListOf(
             project(":intellij-toml"),
-            "IntelliLang",
+            intelliLangPlugin,
             graziePlugin,
             psiViewerPlugin
         )
@@ -183,16 +197,16 @@ project(":plugin") {
     }
 
     dependencies {
-        compile(project(":"))
-        compile(project(":idea"))
-        compile(project(":clion"))
-        compile(project(":debugger"))
-        compile(project(":toml"))
-        compile(project(":copyright"))
-        compile(project(":coverage"))
-        compile(project(":intelliLang"))
-        compile(project(":duplicates"))
-        compile(project(":grazie"))
+        implementation(project(":"))
+        implementation(project(":idea"))
+        implementation(project(":clion"))
+        implementation(project(":debugger"))
+        implementation(project(":toml"))
+        implementation(project(":copyright"))
+        implementation(project(":coverage"))
+        implementation(project(":intelliLang"))
+        implementation(project(":duplicates"))
+        implementation(project(":grazie"))
     }
 
     tasks {
@@ -249,12 +263,12 @@ project(":") {
     val testOutput = configurations.create("testOutput")
 
     dependencies {
-        compile(project(":common"))
-        compile("org.jetbrains:markdown:0.1.30") {
+        implementation(project(":common"))
+        implementation("org.jetbrains:markdown:0.1.30") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
-        testCompile(project(":common", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
         testOutput(sourceSets.getByName("test").output.classesDirs)
     }
 
@@ -309,10 +323,10 @@ project(":idea") {
         setPlugins("java")
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
@@ -321,11 +335,11 @@ project(":clion") {
         version = clionVersion
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        compile(project(":debugger"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        implementation(project(":debugger"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
@@ -338,86 +352,70 @@ project(":debugger") {
         }
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":toml") {
     intellij {
-        if (baseIDE == "idea") {
-            setPlugins(project(":intellij-toml"), "java")
-        } else {
-            setPlugins(project(":intellij-toml"))
-        }
+        setPlugins(project(":intellij-toml"))
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":intelliLang") {
     intellij {
-        if (baseIDE == "idea") {
-            setPlugins("IntelliLang", "java")
-        } else {
-            setPlugins("IntelliLang")
-        }
+        setPlugins(intelliLangPlugin)
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":copyright") {
     intellij {
         version = ideaVersion
-        setPlugins("copyright", "java")
+        setPlugins("copyright")
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":duplicates") {
-    intellij {
-        if (baseIDE == "idea") {
-            setPlugins("java")
-        }
-    }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":coverage") {
     intellij {
-        if (!isAtLeast193) {
-            version = ideaVersion
-        }
         if (baseIDE == "idea") {
             setPlugins("coverage")
         }
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
@@ -426,25 +424,19 @@ project(":grazie") {
         setPlugins(graziePlugin)
     }
     dependencies {
-        compile(project(":"))
-        compile(project(":common"))
-        testCompile(project(":", "testOutput"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
     }
 }
 
 project(":intellij-toml") {
     version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
 
-    intellij {
-        if (baseIDE == "idea") {
-            setPlugins("java")
-        }
-    }
-
     dependencies {
-        compile(project(":common"))
-        testCompile(project(":common", "testOutput"))
+        implementation(project(":common"))
+        testImplementation(project(":common", "testOutput"))
     }
 
     val generateTomlLexer = task<GenerateLexer>("generateTomlLexer") {
@@ -528,7 +520,11 @@ task("makeReleaseBranch") {
 
 task("makeRelease") {
     doLast {
-        val newChangelog = commitChangelog()
+        val website = "../intellij-rust.github.io"
+        val newChangelog = File("$website/_posts").listFiles()
+            .orEmpty()
+            .map { it.name }
+            .max()!!
         val newChangelogPath = newChangelog
             .replace(".markdown", "")
             .replaceFirst("-", "/").replaceFirst("-", "/").replaceFirst("-", "/")
@@ -555,23 +551,23 @@ task("makeRelease") {
     }
 }
 
-fun commitChangelog(): String {
-    val website = "../intellij-rust.github.io"
-    val lastPost = File("$website/_posts").listFiles()
-        .map { it.name }
-        .sorted()
-        .last()
-    val postNumber = lastPost.substringAfterLast("-").substringBefore(".").toInt()
-    "python3 changelog.py -c".execute(website)
-    "git add _posts/$lastPost".execute(website)
-    listOf("git", "commit", "-m", "Changelog $postNumber").execute(website)
-    println()
-    "git show HEAD".execute(website)
-    println("Does ^^ look right? Answer `yes` to push changes\n")
-    val yes = readLine()!!.trim() == "yes"
-    if (!yes) error("Human says no")
-    "git push".execute(website)
-    return lastPost
+task("makeNightlyRelease") {
+    doLast {
+        sendReleaseEvent("nightly-release")
+    }
+}
+
+fun sendReleaseEvent(eventName: String) {
+    val contentType = "application/json; charset=utf-8".toMediaType()
+    val body = """{"event_type": "$eventName"}""".toRequestBody(contentType)
+    val request = Request.Builder()
+        .url("https://api.github.com/repos/intellij-rust/intellij-rust/dispatches")
+        .header("Authorization", "token ${prop("githubToken")}")
+        .header("Accept", "application/vnd.github.v3+json")
+        .post(body)
+        .build()
+    val response = httpClient.newCall(request).execute()
+    println("Response code: ${response.code}")
 }
 
 fun commitNightly() {
