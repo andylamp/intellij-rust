@@ -500,6 +500,9 @@ object RustParserUtil : GeneratedParserUtilBase() {
         contextualKeyword(b, "try", TRY) { it in TRY_NEXT_ELEMENTS }
 
     @JvmStatic
+    fun rawKeyword(b: PsiBuilder, level: Int): Boolean = contextualKeywordWithRollback(b, "raw", RAW)
+
+    @JvmStatic
     private fun collapse(b: PsiBuilder, tokenType: IElementType, vararg parts: IElementType): Boolean {
         // We do not want whitespace between parts, so firstly we do raw lookup for each part,
         // and when we make sure that we have desired token, we consume and collapse it.
@@ -568,9 +571,19 @@ object RustParserUtil : GeneratedParserUtilBase() {
     ): Boolean {
         // Tricky: the token can be already remapped by some previous rule that was backtracked
         if (b.tokenType == elementType ||
-            b.tokenText == keyword && b.tokenType == IDENTIFIER && nextElementPredicate(b.lookAhead(1))) {
+            b.tokenType == IDENTIFIER && b.tokenText == keyword && nextElementPredicate(b.lookAhead(1))) {
             b.remapCurrentToken(elementType)
             b.advanceLexer()
+            return true
+        }
+        return false
+    }
+
+    private fun contextualKeywordWithRollback(b: PsiBuilder, keyword: String, elementType: IElementType): Boolean {
+        if (b.tokenType == IDENTIFIER && b.tokenText == keyword) {
+            val marker = b.mark()
+            b.advanceLexer()
+            marker.collapse(elementType)
             return true
         }
         return false

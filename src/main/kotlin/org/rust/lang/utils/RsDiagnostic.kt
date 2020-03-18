@@ -129,6 +129,12 @@ sealed class RsDiagnostic(
                                 add(ConvertToMutStrFix(element))
                             }
                         }
+
+                        val retFix = ChangeReturnTypeFix.createIfCompatible(element, actualTy)
+                        if (retFix != null) {
+                            add(retFix)
+                        }
+
                         val derefsRefsToExpected = derefRefPathFromActualToExpected(lookup, element)
                         if (derefsRefsToExpected != null) {
                             add(ConvertToTyWithDerefsRefsFix(element, expectedTy, derefsRefsToExpected))
@@ -556,7 +562,7 @@ sealed class RsDiagnostic(
 
     class ReprForEmptyEnumError(
         val attr: RsAttr,
-        element: PsiElement = attr.metaItem.identifier ?: attr.metaItem
+        element: PsiElement = attr.metaItem.path?.referenceNameElement ?: attr.metaItem
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
@@ -836,7 +842,7 @@ sealed class RsDiagnostic(
     }
 
     class UndeclaredLabelError(
-        element: RsReferenceElement
+        element: RsMandatoryReferenceElement
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
