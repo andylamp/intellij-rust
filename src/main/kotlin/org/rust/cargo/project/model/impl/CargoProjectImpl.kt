@@ -16,14 +16,16 @@ import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
+import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleUtilCore
-import com.intellij.openapi.progress.BackgroundTaskQueue
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ex.ProjectEx
 import com.intellij.openapi.roots.ContentEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx
+import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.util.EmptyRunnable
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.UserDataHolderBase
@@ -31,6 +33,7 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.util.Consumer
 import com.intellij.util.indexing.LightDirectoryIndex
 import com.intellij.util.io.exists
@@ -49,20 +52,24 @@ import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsCh
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsListener
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
-import org.rust.cargo.project.toolwindow.CargoToolWindow.Companion.initializeToolWindowIfNeeded
+import org.rust.cargo.project.toolwindow.CargoToolWindow.Companion.initializeToolWindow
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.project.workspace.StandardLibrary
+import org.rust.cargo.project.workspace.additionalRoots
 import org.rust.cargo.runconfig.command.workingDirectory
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.cargo.toolchain.Rustup
 import org.rust.cargo.util.AutoInjectedCrates
 import org.rust.cargo.util.DownloadResult
 import org.rust.ide.notifications.showBalloon
+import org.rust.lang.RsFileType
+import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.openapiext.*
 import org.rust.stdext.AsyncValue
 import org.rust.stdext.applyWithSymlink
 import org.rust.stdext.joinAll
+import org.rust.taskQueue
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
@@ -74,14 +81,16 @@ import java.util.concurrent.atomic.AtomicReference
     Storage("misc.xml", deprecated = true)
 ])
 open class CargoProjectsServiceImpl(
-    val project: Project
+    final override val project: Project
 ) : CargoProjectsService, PersistentStateComponent<Element> {
     init {
         with(project.messageBus.connect()) {
-            subscribe(VirtualFileManager.VFS_CHANGES, CargoTomlWatcher(fun() {
-                if (!project.rustSettings.autoUpdateEnabled) return
-                refreshAllProjects()
-            }))
+            if (!isUnitTestMode) {
+                subscribe(VirtualFileManager.VFS_CHANGES, CargoTomlWatcher(this@CargoProjectsServiceImpl, fun() {
+                    if (!project.rustSettings.autoUpdateEnabled) return
+                    refreshAllProjects()
+                }))
+            }
 
             subscribe(RustProjectSettingsService.RUST_SETTINGS_TOPIC, object : RustSettingsListener {
                 override fun rustSettingsChanged(e: RustSettingsChangedEvent) {
@@ -92,20 +101,14 @@ open class CargoProjectsServiceImpl(
             })
 
             subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(projects: Collection<CargoProject>) {
-                    initializeToolWindowIfNeeded(project)
+                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
+                    StartupManager.getInstance(project).runAfterOpened {
+                        initializeToolWindow(project)
+                    }
                 }
             })
         }
     }
-
-    /**
-     * While in theory Cargo and rustup are concurrency-safe, in practice
-     * it's better to serialize their execution, and this queue does
-     * exactly that. Not that [AsyncValue] [projects] also provides
-     * serialization grantees, so this queue is no strictly necessary.
-     */
-    val taskQueue = BackgroundTaskQueue(project, "Cargo update")
 
     /**
      * The heart of the plugin Project model. Care must be taken to ensure
@@ -133,6 +136,9 @@ open class CargoProjectsServiceImpl(
             fun CargoWorkspace.Package.put(cargoProject: CargoProjectImpl) {
                 contentRoot?.put(cargoProject)
                 outDir?.put(cargoProject)
+                for (additionalRoot in additionalRoots()) {
+                    additionalRoot.put(cargoProject)
+                }
                 for (target in targets) {
                     target.crateRoot?.parent?.put(cargoProject)
                 }
@@ -166,6 +172,8 @@ open class CargoProjectsServiceImpl(
 
     // Guarded by the platform RWLock
     override var initialized: Boolean = false
+
+    private var isLegacyRustNotificationShowed: Boolean = false
 
     override fun findProjectForFile(file: VirtualFile): CargoProject? =
         file.applyWithSymlink { directoryIndex.getInfoForFile(it).takeIf { it !== noProjectMarker } }
@@ -221,17 +229,51 @@ open class CargoProjectsServiceImpl(
             .thenApply { projects ->
                 invokeAndWaitIfNeeded {
                     runWriteAction {
+                        if (projects.isNotEmpty()) {
+                            checkRustVersion(projects)
+
+                            // Android RenderScript (from Android plugin) files has the same extension (.rs) as Rust files.
+                            // In some cases, IDEA determines `*.rs` files have RenderScript file type instead of Rust one
+                            // that leads any code insight features don't work in Rust projects.
+                            // See https://youtrack.jetbrains.com/issue/IDEA-237376
+                            //
+                            // It's a hack to provide proper mapping when we are sure that it's Rust project
+                            FileTypeManager.getInstance().associateExtension(RsFileType, RsFileType.defaultExtension)
+                        }
+
                         directoryIndex.resetIndex()
-                        ProjectRootManagerEx.getInstanceEx(project)
-                            .makeRootsChange(EmptyRunnable.getInstance(), false, true)
+                        // In unit tests roots change is done by the test framework in most cases
+                        runWithNonLightProject(project) {
+                            ProjectRootManagerEx.getInstanceEx(project)
+                                .makeRootsChange(EmptyRunnable.getInstance(), false, true)
+                        }
                         project.messageBus.syncPublisher(CargoProjectsService.CARGO_PROJECTS_TOPIC)
-                            .cargoProjectsUpdated(projects)
+                            .cargoProjectsUpdated(this, projects)
                         initialized = true
                     }
                 }
 
                 projects
             }
+
+    private fun checkRustVersion(projects: List<CargoProjectImpl>) {
+        val minToolchainVersion = projects.asSequence()
+            .mapNotNull { it.rustcInfo?.version?.semver }
+            .min()
+        val isUnsupportedRust = minToolchainVersion != null &&
+            minToolchainVersion < RustToolchain.MIN_SUPPORTED_TOOLCHAIN
+        if (isUnsupportedRust) {
+            if (!isLegacyRustNotificationShowed) {
+                val content = "Rust <b>$minToolchainVersion</b> is no longer supported. " +
+                    "It may lead to unexpected errors. " +
+                    "Consider upgrading your toolchain to at least <b>${RustToolchain.MIN_SUPPORTED_TOOLCHAIN}</b>"
+                project.showBalloon(content, NotificationType.WARNING)
+            }
+            isLegacyRustNotificationShowed = true
+        } else {
+            isLegacyRustNotificationShowed = false
+        }
+    }
 
     override fun getState(): Element {
         val state = Element("state")
@@ -240,28 +282,45 @@ open class CargoProjectsServiceImpl(
             cargoProjectElement.setAttribute("FILE", cargoProject.manifest.systemIndependentPath)
             state.addContent(cargoProjectElement)
         }
+
+        // Note that if [state] is empty (there are no cargo projects), [noStateLoaded] will be called on the next load
+
         return state
     }
 
     override fun loadState(state: Element) {
+        // [loaded] is non-empty here. Otherwise, [noStateLoaded] is called instead of [loadState]
         val loaded = state.getChildren("cargoProject")
             .mapNotNull { it.getAttributeValue("FILE") }
             .map { CargoProjectImpl(Paths.get(it), this) }
+
+        // Wake the macro expansion service as soon as possible.
+        project.macroExpansionManager
+
         // Refresh projects via `invokeLater` to avoid model modifications
         // while the project is being opened. Use `updateSync` directly
         // instead of `modifyProjects` for this reason
         projects.updateSync { _ -> loaded }
             .whenComplete { _, _ ->
-                invokeLater { refreshAllProjects() }
+                invokeLater {
+                    if (project.isDisposed) return@invokeLater
+                    refreshAllProjects()
+                }
             }
     }
 
+    /**
+     * Note that [noStateLoaded] is called not only during the first service creation, but on any
+     * service load if [getState] returned empty state during previous save (i.e. there are no cargo project)
+     */
     override fun noStateLoaded() {
         // Do nothing: in theory, we might try to do [discoverAndRefresh]
         // here, but the `RustToolchain` is most likely not ready.
         //
         // So the actual "Let's guess a project model if it is not imported
         // explicitly" happens in [org.rust.ide.notifications.MissingToolchainNotificationProvider]
+
+        initialized = true // No lock required b/c it's service init time
     }
 
     override fun toString(): String =
@@ -286,8 +345,11 @@ data class CargoProjectImpl(
         rawWorkspace.withStdlib(stdlib, rawWorkspace.cfgOptions, rustcInfo)
     }
 
-    override val presentableName: String
-        get() = workingDirectory.fileName.toString()
+    override val presentableName: String by lazy {
+        workspace?.packages?.singleOrNull {
+            it.origin == PackageOrigin.WORKSPACE && it.rootDirectory == workingDirectory
+        }?.name ?: workingDirectory.fileName.toString()
+    }
 
     private val rootDirCache = AtomicReference<VirtualFile>()
     override val rootDir: VirtualFile?
@@ -319,6 +381,7 @@ data class CargoProjectImpl(
         if (doesProjectLooksLikeRustc()) {
             // rust-lang/rust contains stdlib inside the project
             val std = StandardLibrary.fromPath(manifest.parent.toString())
+                ?.asPartOfCargoProject()
             if (std != null) {
                 return CompletableFuture.completedFuture(withStdlib(TaskResult.Ok(std)))
             }
@@ -336,15 +399,18 @@ data class CargoProjectImpl(
             return CompletableFuture.completedFuture(withStdlib(result))
         }
 
-        return fetchStdlib(project, projectService.taskQueue, rustup).thenApply(this::withStdlib)
+        return fetchStdlib(project, rustup).thenApply(this::withStdlib)
     }
 
     // Checks that the project is https://github.com/rust-lang/rust
-    private fun doesProjectLooksLikeRustc(): Boolean {
-        val workspace = workspace
-        return workspace?.findPackage(AutoInjectedCrates.STD) != null &&
+    fun doesProjectLooksLikeRustc(): Boolean {
+        val workspace = rawWorkspace ?: return false
+        // "rustc" package was renamed to "rustc_middle" in https://github.com/rust-lang/rust/pull/70536
+        // so starting with rustc 1.42 a stable way to identify it is to try to find any of some possible packages
+        val possiblePackages = listOf("rustc", "rustc_middle", "rustc_typeck")
+        return workspace.findPackage(AutoInjectedCrates.STD) != null &&
             workspace.findPackage(AutoInjectedCrates.CORE) != null &&
-            workspace.findPackage("rustc") != null
+            possiblePackages.any { workspace.findPackage(it) != null }
     }
 
     private fun withStdlib(result: TaskResult<StandardLibrary>): CargoProjectImpl = when (result) {
@@ -358,7 +424,7 @@ data class CargoProjectImpl(
                 "Can't update Cargo project, no Rust toolchain"
             )))
 
-        return fetchCargoWorkspace(project, projectService.taskQueue, toolchain, workingDirectory)
+        return fetchCargoWorkspace(project, toolchain, workingDirectory)
             .thenApply(this::withWorkspace)
     }
 
@@ -373,7 +439,7 @@ data class CargoProjectImpl(
                 "Can't get rustc info, no Rust toolchain"
             )))
 
-        return fetchRustcInfo(project, projectService.taskQueue, toolchain, workingDirectory)
+        return fetchRustcInfo(project, toolchain, workingDirectory)
             .thenApply(this::withRustcInfo)
     }
 
@@ -417,9 +483,19 @@ private fun doRefresh(project: Project, projects: List<CargoProjectImpl>): Compl
                 }
             }
 
-            setupProjectRoots(project, updatedProjects)
+            runWithNonLightProject(project) {
+                setupProjectRoots(project, updatedProjects)
+            }
             updatedProjects
         }
+}
+
+private inline fun runWithNonLightProject(project: Project, action: () -> Unit) {
+    if ((project as? ProjectEx)?.isLight != true) {
+        action()
+    } else {
+        check(isUnitTestMode)
+    }
 }
 
 private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject>) {
@@ -430,6 +506,12 @@ private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject
                 for (cargoProject in cargoProjects) {
                     cargoProject.workspaceRootDir?.setupContentRoots(project) { contentRoot ->
                         addExcludeFolder(FileUtil.join(contentRoot.url, CargoConstants.ProjectLayout.target))
+                    }
+
+                    if ((cargoProject as? CargoProjectImpl)?.doesProjectLooksLikeRustc() == true) {
+                        cargoProject.workspaceRootDir?.setupContentRoots(project) { contentRoot ->
+                            addExcludeFolder(FileUtil.join(contentRoot.url, "build"))
+                        }
                     }
 
                     val alreadySetUp = hashSetOf<CargoWorkspace.Package>()
@@ -480,10 +562,9 @@ private fun VirtualFile.setupContentRoots(packageModule: Module, setup: ContentE
 
 private fun fetchStdlib(
     project: Project,
-    queue: BackgroundTaskQueue,
     rustup: Rustup
 ): CompletableFuture<TaskResult<StandardLibrary>> {
-    return runAsyncTask(project, queue, "Getting Rust stdlib") {
+    return runAsyncTask(project, project.taskQueue::run, "Getting Rust stdlib") {
         progress.isIndeterminate = true
         when (val download = rustup.downloadStdlib()) {
             is DownloadResult.Ok -> {
@@ -505,11 +586,10 @@ private fun fetchStdlib(
 
 private fun fetchCargoWorkspace(
     project: Project,
-    queue: BackgroundTaskQueue,
     toolchain: RustToolchain,
     projectDirectory: Path
 ): CompletableFuture<TaskResult<CargoWorkspace>> {
-    return runAsyncTask(project, queue, "Updating cargo") {
+    return runAsyncTask(project, project.taskQueue::run, "Updating cargo") {
         progress.isIndeterminate = true
         if (!toolchain.looksLikeValidToolchain()) {
             return@runAsyncTask err(
@@ -546,11 +626,10 @@ private fun fetchCargoWorkspace(
 
 private fun fetchRustcInfo(
     project: Project,
-    queue: BackgroundTaskQueue,
     toolchain: RustToolchain,
     projectDirectory: Path
 ): CompletableFuture<TaskResult<RustcInfo>> {
-    return runAsyncTask(project, queue, "Getting toolchain version") {
+    return runAsyncTask(project, project.taskQueue::run, "Getting toolchain version") {
         progress.isIndeterminate = true
         if (!toolchain.looksLikeValidToolchain()) {
             return@runAsyncTask err(

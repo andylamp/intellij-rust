@@ -5,13 +5,15 @@
 
 package org.rust.lang.core.psi.ext
 
+import com.intellij.psi.impl.ElementBase
 import com.intellij.psi.util.PsiTreeUtil
-import org.rust.ide.icons.addVisibilityIcon
+import com.intellij.util.PlatformIcons
 import org.rust.lang.core.psi.*
 import javax.swing.Icon
 
 interface RsVisible : RsElement {
     val visibility: RsVisibility
+    val isPublic: Boolean  // restricted visibility considered as public
 }
 
 interface RsVisibilityOwner : RsVisible {
@@ -22,17 +24,26 @@ interface RsVisibilityOwner : RsVisible {
     @JvmDefault
     override val visibility: RsVisibility
         get() = vis?.visibility ?: RsVisibility.Private
+
+    @JvmDefault
+    override val isPublic: Boolean
+        get() = vis != null
 }
 
-val RsVisible.isPublic get() = visibility != RsVisibility.Private
-
-fun RsVisibilityOwner.iconWithVisibility(flags: Int, icon: Icon): Icon =
-    if ((flags and com.intellij.openapi.util.Iconable.ICON_FLAG_VISIBILITY) == 0)
-        icon
-    else
-        icon.addVisibilityIcon(isPublic)
+fun RsVisibilityOwner.iconWithVisibility(flags: Int, icon: Icon): Icon {
+    val visibilityIcon = when (vis?.stubKind) {
+        RsVisStubKind.PUB -> PlatformIcons.PUBLIC_ICON
+        RsVisStubKind.CRATE, RsVisStubKind.RESTRICTED -> PlatformIcons.PROTECTED_ICON
+        null -> PlatformIcons.PRIVATE_ICON
+    }
+    return ElementBase.iconWithVisibilityIfNeeded(flags, icon, visibilityIcon)
+}
 
 fun RsVisible.isVisibleFrom(mod: RsMod): Boolean {
+    // XXX: this hack fixes false-positive "E0603 module is private" for modules with multiple
+    // declarations. It produces false-negatives, see
+    if (this is RsFile && declarations.size > 1) return true
+
     val elementMod = when (val visibility = visibility) {
         RsVisibility.Public -> return true
         RsVisibility.Private -> (if (this is RsMod) this.`super` else containingMod) ?: return true
@@ -43,6 +54,9 @@ fun RsVisible.isVisibleFrom(mod: RsMod): Boolean {
     // Note: `mod.superMods` contains `mod`
     if (mod.superMods.contains(elementMod)) return true
     if (mod is RsFile && mod.originalFile == elementMod) return true
+
+    // Enum variants in a pub enum are public by default
+    if (this is RsNamedFieldDecl && parent.parent is RsEnumVariant) return true
 
     val members = this.context as? RsMembers ?: return false
     val parent = members.context ?: return true

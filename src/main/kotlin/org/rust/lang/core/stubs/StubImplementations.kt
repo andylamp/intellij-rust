@@ -49,7 +49,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
     override fun getType() = Type
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
-        private const val STUB_VERSION = 196
+        private const val STUB_VERSION = 201
 
         // Bump this number if Stub structure changes
         override fun getStubVersion(): Int = RustParserDefinition.PARSER_VERSION + STUB_VERSION
@@ -57,7 +57,11 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> {
                 TreeUtil.ensureParsed(file.node) // profiler hint
-                return RsFileStub(file as RsFile)
+                return when (file) {
+                    // for tests related to rust console
+                    is RsReplCodeFragment -> RsFileStub(null, RsFile.Attributes.NONE)
+                    else -> RsFileStub(file as RsFile)
+                }
             }
 
             override fun skipChildProcessingWhenBuildingStubs(parent: ASTNode, child: ASTNode): Boolean {
@@ -115,7 +119,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
  *   block, so it is processed earlier). The value is then removed from the cache because it is no longer needed
  *   and should be invalidated after each PSI change.
  *
- * See tests in `RsLazyCodeBlockIsNotExpandedDuringStubBuildingTest`
+ * See tests in `RsCodeBlockStubCreationTest`
  */
 private object BlockMayHaveStubsHeuristic {
     private val RS_HAS_ITEMS_OR_ATTRS: Key<Boolean> = Key.create("RS_HAS_ITEMS_OR_ATTRS")
@@ -149,18 +153,23 @@ private object BlockMayHaveStubsHeuristic {
         // See `RsBlockStubType.reuseCollapsedTokens`
         val b = PsiBuilderFactory.getInstance().createBuilder(node.psi.project, node, null, RsLanguage, node.chars)
         var prevToken: IElementType? = null
+        var prevTokenText: String? = null
         while (true) {
             val token = b.tokenType ?: break
             val looksLikeStubElement = token in ITEM_DEF_KWS
-                || token == CONST && prevToken != MUL     // `const` but not `*const`
-                || token == EXCL && prevToken == SHA      // `#!`
-                || token == IDENTIFIER && prevToken == FN // `fn foo` (but not `fn()`)
+                // `const` but not `*const` and not `raw const`
+                || token == CONST && !(prevToken == MUL || prevToken == IDENTIFIER && prevTokenText == "raw")
+                // `#!`
+                || token == EXCL && prevToken == SHA
+                // `fn foo` (but not `fn()`)
+                || token == IDENTIFIER && prevToken == FN
                 || token == IDENTIFIER && b.tokenText == "union" && b.lookAhead(1) == IDENTIFIER
             if (looksLikeStubElement) {
                 return true
             }
-            b.advanceLexer()
             prevToken = token
+            prevTokenText = if (token == IDENTIFIER) b.tokenText else null
+            b.advanceLexer()
         }
 
         return false
@@ -209,6 +218,7 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "REF_LIKE_TYPE" -> RsRefLikeTypeStub.Type
     "FN_POINTER_TYPE" -> RsPlaceholderStub.Type("FN_POINTER_TYPE", ::RsFnPointerTypeImpl)
     "TUPLE_TYPE" -> RsPlaceholderStub.Type("TUPLE_TYPE", ::RsTupleTypeImpl)
+    "PAREN_TYPE" -> RsPlaceholderStub.Type("PAREN_TYPE", ::RsParenTypeImpl)
     "BASE_TYPE" -> RsBaseTypeStub.Type
     "FOR_IN_TYPE" -> RsPlaceholderStub.Type("FOR_IN_TYPE", ::RsForInTypeImpl)
     "TRAIT_TYPE" -> RsTraitTypeStub.Type
@@ -306,7 +316,7 @@ abstract class RsAttributeOwnerStubBase<T: RsElement>(
 
 class RsExternCrateItemStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    override val name: String?,
+    override val name: String,
     override val flags: Int
 ) : RsAttributeOwnerStubBase<RsExternCrateItem>(parent, elementType),
     RsNamedStub {
@@ -315,7 +325,7 @@ class RsExternCrateItemStub(
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsExternCrateItemStub(parentStub, this,
-                dataStream.readNameAsString(),
+                dataStream.readNameAsString()!!,
                 dataStream.readUnsignedByte()
             )
 
@@ -329,7 +339,7 @@ class RsExternCrateItemStub(
             RsExternCrateItemImpl(stub, this)
 
         override fun createStub(psi: RsExternCrateItem, parentStub: StubElement<*>?) =
-            RsExternCrateItemStub(parentStub, this, psi.name, RsAttributeOwnerStub.extractFlags(psi))
+            RsExternCrateItemStub(parentStub, this, psi.referenceName, RsAttributeOwnerStub.extractFlags(psi))
 
         override fun indexStub(stub: RsExternCrateItemStub, sink: IndexSink) = sink.indexExternCrate(stub)
     }
@@ -608,6 +618,10 @@ class RsImplItemStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val flags: Int
 ) : RsAttributeOwnerStubBase<RsImplItem>(parent, elementType) {
+
+    val isNegativeImpl: Boolean
+        get() = BitUtil.isSet(flags, NEGATIVE_IMPL_MASK)
+
     object Type : RsStubElementType<RsImplItemStub, RsImplItem>("IMPL_ITEM") {
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
@@ -620,10 +634,17 @@ class RsImplItemStub(
         override fun createPsi(stub: RsImplItemStub): RsImplItem =
             RsImplItemImpl(stub, this)
 
-        override fun createStub(psi: RsImplItem, parentStub: StubElement<*>?) =
-            RsImplItemStub(parentStub, this, RsAttributeOwnerStub.extractFlags(psi))
+        override fun createStub(psi: RsImplItem, parentStub: StubElement<*>?): RsImplItemStub {
+            var flags = RsAttributeOwnerStub.extractFlags(psi)
+            flags = BitUtil.set(flags, NEGATIVE_IMPL_MASK, psi.isNegativeImpl)
+            return RsImplItemStub(parentStub, this, flags)
+        }
 
         override fun indexStub(stub: RsImplItemStub, sink: IndexSink) = sink.indexImplItem(stub)
+    }
+
+    companion object {
+        private val NEGATIVE_IMPL_MASK: Int = makeBitMask(RsAttributeOwnerStub.USED_BITS + 0)
     }
 }
 
@@ -1078,7 +1099,7 @@ class RsRefLikeTypeStub(
     val isMut: Boolean,
     val isRef: Boolean,
     val isPointer: Boolean
-) : StubBase<RsTypeElement>(parent, elementType) {
+) : StubBase<RsRefLikeType>(parent, elementType) {
 
     object Type : RsStubElementType<RsRefLikeTypeStub, RsRefLikeType>("REF_LIKE_TYPE") {
 
@@ -1112,7 +1133,7 @@ class RsRefLikeTypeStub(
 class RsTraitTypeStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     val isImpl: Boolean
-) : StubBase<RsTypeElement>(parent, elementType) {
+) : StubBase<RsTraitType>(parent, elementType) {
 
     object Type : RsStubElementType<RsTraitTypeStub, RsTraitType>("TRAIT_TYPE") {
 
@@ -1662,26 +1683,25 @@ private fun RsStubLiteralKind?.serialize(dataStream: StubOutputStream) {
 
 class RsAssocTypeBindingStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    override val name: String?
-) : StubBase<RsAssocTypeBinding>(parent, elementType),
-    RsNamedStub {
+    val referenceName: String
+) : StubBase<RsAssocTypeBinding>(parent, elementType) {
 
     object Type : RsStubElementType<RsAssocTypeBindingStub, RsAssocTypeBinding>("ASSOC_TYPE_BINDING") {
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
             RsAssocTypeBindingStub(parentStub, this,
-                dataStream.readNameAsString()
+                dataStream.readNameAsString()!!
             )
 
         override fun serialize(stub: RsAssocTypeBindingStub, dataStream: StubOutputStream) =
             with(dataStream) {
-                writeName(stub.name)
+                writeName(stub.referenceName)
             }
 
         override fun createPsi(stub: RsAssocTypeBindingStub): RsAssocTypeBinding =
             RsAssocTypeBindingImpl(stub, this)
 
         override fun createStub(psi: RsAssocTypeBinding, parentStub: StubElement<*>?) =
-            RsAssocTypeBindingStub(parentStub, this, psi.identifier.text)
+            RsAssocTypeBindingStub(parentStub, this, psi.referenceName)
     }
 }
 

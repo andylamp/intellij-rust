@@ -22,14 +22,15 @@ import org.rust.lang.utils.evaluation.tryEvaluate
 
 
 // Keep in sync with TyFingerprint-create
-fun inferTypeReferenceType(ref: RsTypeReference, defaultTraitObjectRegion: Region? = null): Ty {
-    return when (val type = ref.typeElement) {
+fun inferTypeReferenceType(type: RsTypeReference, defaultTraitObjectRegion: Region? = null): Ty {
+    return when (type) {
+        is RsParenType -> type.typeReference?.let { inferTypeReferenceType(it, defaultTraitObjectRegion) } ?: TyUnknown
         is RsTupleType -> TyTuple(type.typeReferenceList.map { inferTypeReferenceType(it) })
 
         is RsBaseType -> when (val kind = type.kind) {
             RsBaseTypeKind.Unit -> TyUnit
             RsBaseTypeKind.Never -> TyNever
-            RsBaseTypeKind.Underscore -> TyInfer.TyVar()
+            RsBaseTypeKind.Underscore -> TyInfer.TyVar(type)
             is RsBaseTypeKind.Path -> {
                 val path = kind.path
                 val primitiveType = TyPrimitive.fromPath(path)
@@ -52,7 +53,7 @@ fun inferTypeReferenceType(ref: RsTypeReference, defaultTraitObjectRegion: Regio
                         }
                     }
                     target is RsTraitItem -> {
-                        TyTraitObject(boundElement.downcast()!!, defaultTraitObjectRegion ?: ReUnknown)
+                        TyTraitObject(listOfNotNull(boundElement.downcast()), defaultTraitObjectRegion ?: ReUnknown)
                     }
                     target is RsTypeDeclarationElement -> {
                         val ty = target.declaredType
@@ -101,15 +102,11 @@ fun inferTypeReferenceType(ref: RsTypeReference, defaultTraitObjectRegion: Regio
 
         is RsTraitType -> {
             val traitBounds = type.polyboundList.mapNotNull { it.bound.traitRef?.resolveToBoundTrait() }
+            if (type.isImpl) return TyAnon(type, traitBounds)
+            if (traitBounds.isEmpty()) return TyUnknown
             val lifetimeBounds = type.polyboundList.mapNotNull { it.bound.lifetime }
-            if (type.isImpl) {
-                TyAnon(type, traitBounds)
-            } else {  // TODO: use all bounds
-                TyTraitObject(
-                    traitBounds.firstOrNull() ?: return TyUnknown,
-                    lifetimeBounds.firstOrNull()?.resolve() ?: defaultTraitObjectRegion ?: ReStatic
-                )
-            }
+            val regionBound = lifetimeBounds.firstOrNull()?.resolve() ?: defaultTraitObjectRegion ?: ReStatic
+            TyTraitObject(traitBounds, regionBound)
         }
 
         else -> TyUnknown
@@ -151,6 +148,6 @@ private fun <T : TypeFoldable<T>> TypeFoldable<T>.substituteWithTraitObjectRegio
             1 -> bounds.single().substitute(subst)
             else -> ReUnknown
         }
-        return TyTraitObject(ty.trait, region)
+        return TyTraitObject(ty.traits, region)
     }
 }).tryEvaluate()

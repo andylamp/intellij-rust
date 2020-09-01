@@ -5,9 +5,12 @@
 
 package org.rust
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.roots.ContentEntry
 import com.intellij.openapi.roots.ModifiableRootModel
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.VfsTestUtil
@@ -16,6 +19,7 @@ import com.intellij.util.Urls
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.impl.testCargoProjects
+import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.CargoWorkspace.*
 import org.rust.cargo.project.workspace.CargoWorkspaceData
@@ -26,7 +30,9 @@ import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.project.workspace.StandardLibrary
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.cargo.util.DownloadResult
+import java.io.File
 import java.nio.file.Paths
+import java.util.*
 
 object DefaultDescriptor : RustProjectDescriptorBase()
 
@@ -37,7 +43,12 @@ object WithStdlibRustProjectDescriptor : WithRustup(DefaultDescriptor)
 object WithStdlibAndDependencyRustProjectDescriptor : WithRustup(WithDependencyRustProjectDescriptor)
 
 object WithStdlibWithSymlinkRustProjectDescriptor : WithCustomStdlibRustProjectDescriptor(DefaultDescriptor, {
-    System.getenv("RUST_SRC_WITH_SYMLINK")
+    val path = System.getenv("RUST_SRC_WITH_SYMLINK")
+    if (System.getenv("CI") != null) {
+        if (path == null) error("`RUST_SRC_WITH_SYMLINK` environment variable is not set")
+        if (!File(path).exists()) error("`$path` doesn't exist")
+    }
+    path
 })
 
 open class RustProjectDescriptorBase : LightProjectDescriptor() {
@@ -63,14 +74,19 @@ open class RustProjectDescriptorBase : LightProjectDescriptor() {
             CargoWorkspaceData(packages, emptyMap()), CfgOptions.DEFAULT)
     }
 
-    protected fun testCargoPackage(contentRoot: String, name: String = "test-package") = CargoWorkspaceData.Package(
+    protected fun testCargoPackage(contentRoot: String, name: String = "test-package") = Package(
         id = "$name 0.0.1",
         contentRootUrl = contentRoot,
         name = name,
         version = "0.0.1",
         targets = listOf(
             Target("$contentRoot/main.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/lib.rs", name, TargetKind.Lib(LibKind.LIB), edition = Edition.EDITION_2015, doctest = true)
+            Target("$contentRoot/lib.rs", name, TargetKind.Lib(LibKind.LIB), edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/bin/a.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/bench/a.rs", name, TargetKind.Bench, edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/example/a.rs", name, TargetKind.ExampleBin, edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/example-lib/a.rs", name, TargetKind.ExampleLib(EnumSet.of(LibKind.LIB)), edition = Edition.EDITION_2015, doctest = true),
+            Target("$contentRoot/build.rs", "build_script_build", TargetKind.CustomBuild, edition = Edition.EDITION_2015, doctest = false)
         ),
         source = null,
         origin = PackageOrigin.WORKSPACE,
@@ -111,6 +127,16 @@ open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustPro
     override fun setUp(fixture: CodeInsightTestFixture) {
         delegate.setUp(fixture)
         stdlib?.let { VfsRootAccess.allowRootAccess(fixture.testRootDisposable, it.path) }
+        // TODO: use RustupTestFixture somehow
+        val rustSettings = fixture.project.rustSettings
+        rustSettings.modify {
+            it.toolchain = toolchain
+        }
+        Disposer.register(fixture.testRootDisposable, Disposable {
+            rustSettings.modify {
+                it.toolchain = null
+            }
+        })
     }
 }
 
@@ -124,16 +150,20 @@ open class WithCustomStdlibRustProjectDescriptor(
         StandardLibrary.fromPath(path)
     }
 
-    override val skipTestReason: String? get() {
-        if (stdlib == null) return "No stdlib"
-        return delegate.skipTestReason
-    }
+    override val skipTestReason: String?
+        get() {
+            if (stdlib == null) return "No stdlib"
+            return delegate.skipTestReason
+        }
 
     override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace =
         delegate.testCargoProject(module, contentRoot).withStdlib(stdlib!!, CfgOptions.DEFAULT)
 
     override fun setUp(fixture: CodeInsightTestFixture) {
         delegate.setUp(fixture)
+        val stdlibPath = explicitStdlibPath() ?: return
+        val file = LocalFileSystem.getInstance().findFileByPath(stdlibPath)
+        VfsRootAccess.allowRootAccess(fixture.testRootDisposable, *listOfNotNull(file?.path, file?.canonicalPath).toTypedArray())
     }
 }
 
@@ -180,14 +210,12 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
             testCargoPackage(contentRoot),
             externalPackage("$contentRoot/dep-lib", "lib.rs", "dep-lib", "dep-lib-target"),
             externalPackage("", null, "nosrc-lib", "nosrc-lib-target"),
-            externalPackage("$contentRoot/trans-lib", "lib.rs", "trans-lib",
-                origin = PackageOrigin.TRANSITIVE_DEPENDENCY),
+            externalPackage("$contentRoot/trans-lib", "lib.rs", "trans-lib"),
             externalPackage("$contentRoot/dep-lib-new", "lib.rs", "dep-lib", "dep-lib-target",
-                version = "0.0.2", origin = PackageOrigin.TRANSITIVE_DEPENDENCY),
+                version = "0.0.2"),
             externalPackage("$contentRoot/dep-proc-macro", "lib.rs", "dep-proc-macro", libKind = LibKind.PROC_MACRO),
             externalPackage("$contentRoot/dep-lib-2", "lib.rs", "dep-lib-2", "dep-lib-target-2"),
-            externalPackage("$contentRoot/trans-lib-2", "lib.rs", "trans-lib-2",
-                origin = PackageOrigin.TRANSITIVE_DEPENDENCY),
+            externalPackage("$contentRoot/trans-lib-2", "lib.rs", "trans-lib-2"),
             externalPackage("$contentRoot/no-source-lib", "lib.rs", "no-source-lib").copy(source = null)
         )
 

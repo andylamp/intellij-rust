@@ -20,10 +20,10 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
     """, """
         fn f() -> i32 {
-            f();
-            /*caret*/
+            f();/*caret*/
         }
     """)
+
     fun `test fix nested method call`() = doTest("""
         fn double(x: i32) -> i32 {
         /*caret*/double(double(x
@@ -31,8 +31,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
     """, """
         fn double(x: i32) -> i32 {
-            double(double(x));
-            /*caret*/
+            double(double(x));/*caret*/
             double(x)
         }
     """)
@@ -43,8 +42,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
     """, """
         fn f(s: String) -> String {
-            f(f(f("((")));
-            /*caret*/
+            f(f(f("((")));/*caret*/
         }
     """)
 
@@ -58,8 +56,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         fn f(s: String) -> String {
             f("");
             f(
-                f("(("));
-            /*caret*/
+                f("(("));/*caret*/
         }
     """)
 
@@ -69,8 +66,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
     """, """
         fn f(x: i32) -> i32 {
-            f(f(x));
-            /*caret*/
+            f(f(x));/*caret*/
         }
     """)
 
@@ -90,8 +86,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
 
         fn main() {
-            let origin = Point { x: 0, y: 0 };
-            /*caret*/
+            let origin = Point { x: 0, y: 0 };/*caret*/
         }
     """)
 
@@ -109,8 +104,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
 
         fn main() {
-            let x = f();
-            /*caret*/
+            let x = f();/*caret*/
         }
     """)
 
@@ -126,8 +120,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
             let version_req = match version {
                 Some(v) => try!(VersionReq::parse(v)),
                 None => VersionReq::any()
-            };
-            /*caret*/
+            };/*caret*/
         }
     """)
 
@@ -138,8 +131,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         }
     """, """
         fn f(s: String) {
-            f();
-            /*caret*/
+            f();/*caret*/
             let x = 5;
         }
     """)
@@ -166,8 +158,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
 
             println!()
 
-            println!();
-            /*caret*/
+            println!();/*caret*/
 
             let b = {
                 1
@@ -185,8 +176,7 @@ class RsSmartEnterProcessorTest : RsTestBase() {
         fn main() {
             let a = {
                 1
-            };
-            /*caret*/
+            };/*caret*/
         }
     """)
 
@@ -199,9 +189,187 @@ class RsSmartEnterProcessorTest : RsTestBase() {
     """, """
         fn main() {
             let a = {
-                /*caret*/
                 1
-            };
+            };/*caret*/
+        }
+    """)
+
+    fun `test empty expression in match`() = doTest("""
+        fn main() {
+            let a = true;
+            match a {
+                true =>/*caret*/
+            }
+        }
+    """, """
+        fn main() {
+            let a = true;
+            match a {
+                true =>,
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test call expression in match`() = doTest("""
+        fn test() {}
+
+        fn main() {
+            let a = true;
+            match a {
+                true => test()/*caret*/
+            }
+        }
+    """, """
+        fn test() {}
+
+        fn main() {
+            let a = true;
+            match a {
+                true => test(),
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test dot expression in match`() = doTest("""
+        fn main() {
+            let a = true;
+            match a {
+                true => "test".as_bytes()/*caret*/
+            }
+        }
+    """, """
+        fn main() {
+            let a = true;
+            match a {
+                true => "test".as_bytes(),
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test unit expression in match`() = doTest("""
+        fn main() {
+            let a = true;
+            match a {
+                true => ()/*caret*/
+            }
+        }
+    """, """
+        fn main() {
+            let a = true;
+            match a {
+                true => (),
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test macro expression in match`() = doTest("""
+        fn main() {
+            let a = true;
+            match a {
+                true => println!("test")/*caret*/
+            }
+        }
+    """, """
+        fn main() {
+            let a = true;
+            match a {
+                true => println!("test"),
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test block expression in match`() = doTest("""
+        fn main() {
+            let a = true;
+            match a {
+                true => {}/*caret*/
+            }
+        }
+    """, """
+        fn main() {
+            let a = true;
+            match a {
+                true => {}
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test fix function`() = doTest("""
+        fn foo/*caret*/
+    """, """
+        fn foo() {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix function with parameters`() = doTest("""
+        fn foo(a: i32, b: i32/*caret*/)
+    """, """
+        fn foo(a: i32, b: i32) {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix function with return type`() = doTest("""
+        fn foo() -> i32/*caret*/
+    """, """
+        fn foo() -> i32 {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix function with parameters and return type`() = doTest("""
+        fn foo(a: i32) -> i32/*caret*/
+    """, """
+        fn foo(a: i32) -> i32 {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix struct`() = doTest("""
+        struct s/*caret*/
+    """, """
+        struct s {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix union`() = doTest("""
+        union u/*caret*/
+    """, """
+        union u {
+            /*caret*/
+        }
+    """)
+
+    fun `test fix nested function definition`() = doTest("""
+        fn foo() {
+            fn bar(/*caret*/)
+        }
+    """, """
+        fn foo() {
+            fn bar() {
+                /*caret*/
+            }
+        }
+    """)
+
+    fun `test empty line`() = doTest("""
+        fn main() {
+            let a = 123;
+            /*caret*/
+        }
+    """, """
+        fn main() {
+            let a = 123;
+            
+            /*caret*/
         }
     """)
 

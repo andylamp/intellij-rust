@@ -28,6 +28,7 @@ interface ScopeEntry {
     val name: String
     val element: RsElement?
     val subst: Substitution get() = emptySubstitution
+    val isInitialized: Boolean get() = true
 }
 
 /**
@@ -66,7 +67,7 @@ fun collectPathResolveVariants(
 
         if (e.name == referenceName) {
             val element = e.element ?: return@f false
-            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfg) {
+            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfgSelf) {
                 result += BoundElement(element, e.subst)
             }
         }
@@ -82,7 +83,7 @@ fun collectResolveVariants(referenceName: String, f: (RsResolveProcessor) -> Uni
 
         if (e.name == referenceName) {
             val element = e.element ?: return@f false
-            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfg) {
+            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfgSelf) {
                 result += element
             }
         }
@@ -101,7 +102,7 @@ fun <T : ScopeEntry> collectResolveVariantsAsScopeEntries(referenceName: String,
         if (e.name == referenceName) {
             // de-lazying. See `RsResolveProcessor.lazy`
             val element = e.element ?: return@f false
-            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfg) {
+            if (element !is RsDocAndAttributeOwner || element.isEnabledByCfgSelf) {
                 result += e
             }
         }
@@ -115,7 +116,7 @@ fun pickFirstResolveVariant(referenceName: String, f: (RsResolveProcessor) -> Un
     f { e ->
         if (e.name == referenceName) {
             val element = e.element
-            if (element != null && (element !is RsDocAndAttributeOwner || element.isEnabledByCfg)) {
+            if (element != null && (element !is RsDocAndAttributeOwner || element.isEnabledByCfgSelf)) {
                 result = element
                 return@f true
             }
@@ -133,7 +134,7 @@ fun collectCompletionVariants(
     f { e ->
         val element = e.element ?: return@f false
         if (element is RsFunction && element.isTest) return@f false
-        if (element !is RsDocAndAttributeOwner || element.isEnabledByCfg) {
+        if (element !is RsDocAndAttributeOwner || element.isEnabledByCfgSelf) {
             result.addElement(createLookupElement(
                 scopeEntry = e,
                 context = context
@@ -165,9 +166,12 @@ data class AssocItemScopeEntry(
 
 private class LazyScopeEntry(
     override val name: String,
-    thunk: Lazy<RsElement?>
+    private val thunk: Lazy<RsElement?>
 ) : ScopeEntry {
     override val element: RsElement? by thunk
+
+    override val isInitialized: Boolean
+        get() = thunk.isInitialized()
 
     override fun toString(): String = "LazyScopeEntry($name, $element)"
 }

@@ -11,17 +11,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.lang.core.psi.RsEnumVariant
-import org.rust.lang.core.psi.RsExternAbi
-import org.rust.lang.core.psi.RsNamedFieldDecl
-import org.rust.lang.core.psi.RsOuterAttr
-import org.rust.lang.core.psi.RsPsiFactory
-import org.rust.lang.core.psi.RsTraitItem
-import org.rust.lang.core.psi.ext.RsNameIdentifierOwner
-import org.rust.lang.core.psi.ext.RsVisibility
-import org.rust.lang.core.psi.ext.RsVisible
-import org.rust.lang.core.psi.ext.containingCargoPackage
-import org.rust.lang.core.psi.ext.getPrevNonCommentSibling
+import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.ext.*
 
 class MakePublicFix(
     element: RsVisible,
@@ -35,8 +26,14 @@ class MakePublicFix(
 
     override fun getText(): String = _text
 
-    override fun invoke(project: Project, file: PsiFile, editor: Editor?, startElement: PsiElement, endElement: PsiElement) {
-        var anchor = (startElement as RsNameIdentifierOwner).nameIdentifier
+    override fun invoke(
+        project: Project,
+        file: PsiFile,
+        editor: Editor?,
+        startElement: PsiElement,
+        endElement: PsiElement
+    ) {
+        var anchor = getAnchor(startElement)
         // Check if there are any elements between `pub` and type keyword like
         // `extern "C"`, `unsafe`, `const`, `async` etc.
         // If prevNonCommentSibling is an attribute or null, then
@@ -64,6 +61,14 @@ class MakePublicFix(
         }
     }
 
+    private fun getAnchor(element: PsiElement): PsiElement? {
+        return when (element) {
+            is RsNameIdentifierOwner -> element.nameIdentifier
+            is RsTupleFieldDecl -> element.typeReference
+            else -> null
+        }
+    }
+
     companion object {
         fun createIfCompatible(visible: RsVisible, elementName: String?, withinOneCrate: Boolean): MakePublicFix? {
             return when {
@@ -71,7 +76,7 @@ class MakePublicFix(
                 visible.visibility is RsVisibility.Private
                     && visible !is RsEnumVariant
                     && visible.parent.parent !is RsTraitItem
-                    && visible.containingCargoPackage?.origin == PackageOrigin.WORKSPACE
+                    && visible.containingCrate?.origin == PackageOrigin.WORKSPACE
                 -> MakePublicFix(visible, elementName, withinOneCrate)
                 else -> null
             }

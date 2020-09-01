@@ -7,10 +7,11 @@ package org.rust.ide.typing.assist
 
 import com.intellij.lang.SmartEnterProcessorWithFixers
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiWhiteSpace
-import org.rust.lang.core.psi.RsBlock
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.LBRACE
 import org.rust.lang.core.psi.RsElementTypes.RBRACE
 import org.rust.lang.core.psi.ext.ancestors
@@ -23,10 +24,16 @@ class RsSmartEnterProcessor : SmartEnterProcessorWithFixers() {
     init {
         addFixers(
             MethodCallFixer(),
-            SemicolonFixer())
+            SemicolonFixer(),
+            CommaFixer(),
+            FunctionOrStructFixer()
+        )
 
         addEnterProcessors(
-            PlainEnterProcessor())
+            AfterSemicolonEnterProcessor(),
+            AfterFunctionOrStructEnterProcessor(),
+            PlainEnterProcessor()
+        )
     }
 
     override fun getStatementAtCaret(editor: Editor, psiFile: PsiFile): PsiElement? {
@@ -36,7 +43,8 @@ class RsSmartEnterProcessor : SmartEnterProcessorWithFixers() {
             val elementType = each.node.elementType
             when {
                 elementType == LBRACE || elementType == RBRACE -> continue@loop
-                each.parent is RsBlock -> return each
+                each is RsMatchArm || each.parent is RsBlock
+                    || each.parent is RsFunction || each.parent is RsStructItem -> return each
             }
         }
         return null
@@ -46,7 +54,11 @@ class RsSmartEnterProcessor : SmartEnterProcessorWithFixers() {
         return true
     }
 
-    private inner class PlainEnterProcessor : FixEnterProcessor() {
+    override fun processDefaultEnter(project: Project, editor: Editor, file: PsiFile) {
+        plainEnter(editor)
+    }
+
+    private class PlainEnterProcessor : FixEnterProcessor() {
         override fun doEnter(atCaret: PsiElement, file: PsiFile, editor: Editor, modified: Boolean): Boolean {
             plainEnter(editor)
             return true

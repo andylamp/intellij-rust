@@ -12,6 +12,7 @@ import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.indexes.RsImplIndex
+import org.rust.lang.core.resolve.indexes.RsTypeAliasIndex
 import org.rust.lang.core.types.*
 import org.rust.lang.core.types.consts.CtConstParameter
 import org.rust.lang.core.types.consts.CtInferVar
@@ -305,7 +306,7 @@ class ImplLookup(
         val implsAndTraits = mutableListOf<TraitImplSource>()
         when (ty) {
             is TyTraitObject -> {
-                ty.trait.flattenHierarchy.mapTo(implsAndTraits) { TraitImplSource.Object(it.element) }
+                ty.getTraitBoundsTransitively().mapTo(implsAndTraits) { TraitImplSource.Object(it.element) }
                 findExplicitImpls(ty) { implsAndTraits += TraitImplSource.ExplicitImpl(it); false }
             }
             is TyFunction -> {
@@ -463,15 +464,14 @@ class ImplLookup(
     }
 
     private fun findExplicitImpls(selfTy: Ty, processor: RsProcessor<RsCachedImplItem>): Boolean {
-        return RsImplIndex.findPotentialImpls(project, selfTy) { cachedImpl ->
+        return processTyFingerprintsWithAliases(selfTy) { tyFingerprint ->
+            findExplicitImplsWithoutAliases(selfTy, tyFingerprint, processor)
+        }
+    }
+    private fun findExplicitImplsWithoutAliases(selfTy: Ty, tyf: TyFingerprint, processor: RsProcessor<RsCachedImplItem>): Boolean {
+        return RsImplIndex.findPotentialImpls(project, tyf) { cachedImpl ->
             val (type, generics, constGenerics) = cachedImpl.typeAndGenerics ?: return@findPotentialImpls false
-            val subst = Substitution(
-                typeSubst = generics.associateWith { ctx.typeVarForParam(it) },
-                constSubst = constGenerics.associateWith { ctx.constVarForParam(it) }
-            )
-            // TODO: take into account the lifetimes (?)
-            val formalSelfTy = type.substitute(subst)
-            val isAppropriateImpl = ctx.canCombineTypes(formalSelfTy, selfTy) &&
+            val isAppropriateImpl = canCombineTypes(selfTy, type, generics, constGenerics) &&
                 // Check that trait is resolved if it's not an inherent impl; checking it after types because
                 // we assume that unresolved trait is a rare case
                 (cachedImpl.isInherent || cachedImpl.implementedTrait != null) &&
@@ -480,6 +480,40 @@ class ImplLookup(
                 (selfTy !is TyTraitObject || type !is TyTypeParameter || !type.isSized)
             isAppropriateImpl && processor(cachedImpl)
         }
+    }
+
+    private fun processTyFingerprintsWithAliases(selfTy: Ty, processor: RsProcessor<TyFingerprint>): Boolean {
+        val fingerprint = TyFingerprint.create(selfTy)
+        if (fingerprint != null) {
+            val set = mutableSetOf(fingerprint)
+            if (processor(fingerprint)) return true
+            val result = RsTypeAliasIndex.findPotentialAliases(project, fingerprint) {
+                val name = it.name ?: return@findPotentialAliases false
+                val aliasFingerprint = TyFingerprint(name)
+                val isAppropriateAlias = set.add(aliasFingerprint) && run {
+                    val (declaredType, generics, constGenerics) = it.typeAndGenerics
+                    canCombineTypes(selfTy, declaredType, generics, constGenerics)
+                }
+                isAppropriateAlias && processor(aliasFingerprint)
+            }
+            if (result) return true
+        }
+        return processor(TyFingerprint.TYPE_PARAMETER_FINGERPRINT)
+    }
+
+    private fun canCombineTypes(
+        ty1: Ty,
+        ty2: Ty,
+        genericsForTy2: List<TyTypeParameter>,
+        constGenericsForTy2: List<CtConstParameter>
+    ): Boolean {
+        val subst = Substitution(
+            typeSubst = genericsForTy2.associateWith { ctx.typeVarForParam(it) },
+            constSubst = constGenericsForTy2.associateWith { ctx.constVarForParam(it) }
+        )
+        // TODO: take into account the lifetimes (?)
+        val ty2subst = ty2.substitute(subst)
+        return ctx.canCombineTypes(ty2subst, ty1)
     }
 
     /**
@@ -624,7 +658,7 @@ class ImplLookup(
                 addAll(assembleDerivedCandidates(ref))
                 if (ref.selfTy is TyFunction && element in fnTraits) add(SelectionCandidate.Closure)
                 if (ref.selfTy is TyTraitObject) {
-                    ref.selfTy.trait.flattenHierarchy.find { it.element == ref.trait.element }
+                    ref.selfTy.getTraitBoundsTransitively().find { it.element == ref.trait.element }
                         ?.let { add(SelectionCandidate.TraitObject) }
                 }
                 getHardcodedImpls(ref.selfTy).filter { be ->
@@ -638,7 +672,13 @@ class ImplLookup(
     }
 
     private fun assembleImplCandidates(ref: TraitRef, processor: RsProcessor<SelectionCandidate>): Boolean {
-        return RsImplIndex.findPotentialImpls(project, ref.selfTy) {
+        return processTyFingerprintsWithAliases(ref.selfTy) { tyFingerprint ->
+            assembleImplCandidatesWithoutAliases(ref, tyFingerprint, processor)
+        }
+    }
+
+    private fun assembleImplCandidatesWithoutAliases(ref: TraitRef, tyf: TyFingerprint, processor: RsProcessor<SelectionCandidate>): Boolean {
+        return RsImplIndex.findPotentialImpls(project, tyf) {
             val candidate = it.trySelectCandidate(ref)
             candidate != null && processor(candidate)
         }
@@ -693,7 +733,7 @@ class ImplLookup(
                     .mapTypeValues { (_, v) -> ctx.resolveTypeVarsIfPossible(v) }
                     .mapConstValues { (_, v) -> ctx.resolveTypeVarsIfPossible(v) } +
                     mapOf(TyTypeParameter.self() to ref.selfTy).toTypeSubst()
-                val obligations = ctx.instantiateBounds(candidate.impl.bounds, candidateSubst, newRecDepth).toList()
+                val obligations = ctx.instantiateBounds(candidate.impl.predicates, candidateSubst, newRecDepth).toList()
                 Selection(candidate.impl, obligations, candidateSubst)
             }
             is SelectionCandidate.DerivedTrait -> {
@@ -723,7 +763,7 @@ class ImplLookup(
             }
             SelectionCandidate.TraitObject -> {
                 val traits = when (ref.selfTy) {
-                    is TyTraitObject -> ref.selfTy.trait.flattenHierarchy
+                    is TyTraitObject -> ref.selfTy.getTraitBoundsTransitively()
                     is TyAnon -> ref.selfTy.getTraitBoundsTransitively()
                     else -> error("unreachable")
                 }
@@ -816,10 +856,10 @@ class ImplLookup(
         assocType: RsTypeAlias,
         recursionDepth: Int = 0
     ): SelectionResult<TyWithObligations<Ty>?> {
-        return selectStrict(ref, recursionDepth).map {
-            lookupAssociatedType(ref.selfTy, it, assocType)
+        return selectStrict(ref, recursionDepth).map { selection ->
+            lookupAssociatedType(ref.selfTy, selection, assocType)
                 ?.let { ctx.normalizeAssociatedTypesIn(it, recursionDepth) }
-                ?.withObligations(it.nestedObligations)
+                ?.withObligations(selection.nestedObligations)
         }
     }
 
@@ -833,10 +873,28 @@ class ImplLookup(
             .firstOrNull { it.isOk() }
             ?: SelectionResult.Err
 
+    fun selectAllProjectionsStrict(ref: TraitRef): Map<RsTypeAlias, Ty>? = ctx.probe {
+        val selection = select(ref).ok() ?: return@probe null
+        val assocValues = ref.trait.element.associatedTypesTransitively.associateWith { assocType ->
+            lookupAssociatedType(ref.selfTy, selection, assocType)
+                ?.let { ctx.normalizeAssociatedTypesIn(it) }
+                ?.withObligations(selection.nestedObligations)
+                ?: TyWithObligations(TyUnknown)
+        }
+        val fulfill = FulfillmentContext(ctx, this)
+        assocValues.values.flatMap { it.obligations }.forEach(fulfill::registerPredicateObligation)
+
+        if (fulfill.selectUntilError()) {
+            assocValues.mapValues { (_, v) -> ctx.resolveTypeVarsIfPossible(v.value) }
+        } else {
+            null
+        }
+    }
+
     private fun lookupAssociatedType(selfTy: Ty, res: Selection, assocType: RsTypeAlias): Ty? {
         return when (selfTy) {
             is TyTypeParameter -> lookupAssocTypeInBounds(getEnvBoundTransitivelyFor(selfTy), res.impl, assocType)
-            is TyTraitObject -> selfTy.trait.assoc[assocType]
+            is TyTraitObject -> lookupAssocTypeInBounds(selfTy.getTraitBoundsTransitively().asSequence(), res.impl, assocType)
             else -> {
                 lookupAssocTypeInSelection(res, assocType)
                     ?: lookupAssocTypeInBounds(getHardcodedImpls(selfTy).asSequence(), res.impl, assocType)

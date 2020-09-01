@@ -121,13 +121,7 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
         }
         if (!isSuitableTarget || context.isTestBuild && !rustcArtifact.profile.test) return true
 
-        val executable = rustcArtifact.executable
-        if (executable != null) {
-            rawBinaries.add(executable)
-        } else {
-            // BACKCOMPAT: Cargo 0.34.0
-            rustcArtifact.filenames.filterNotTo(rawBinaries) { it.endsWith(".dSYM") }
-        }
+        rawBinaries.addAll(rustcArtifact.executables)
 
         return true
     }
@@ -210,11 +204,11 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
             return Progress(current, total)
         }
 
-        fun updateIndicator(indicator: ProgressIndicator, title: String, description: String, progress: Progress) {
-            indicator.isIndeterminate = progress.total < 0
-            indicator.text = title
-            indicator.text2 = description
-            indicator.fraction = progress.fraction
+        fun ProgressIndicator.update(title: String, description: String, progress: Progress) {
+            isIndeterminate = progress.total < 0
+            text = title
+            text2 = description
+            fraction = progress.fraction
         }
 
         val activeTaskNames = message
@@ -223,12 +217,7 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
             .map { it.substringBefore("(").trim() }
         finishNonActiveTasks(activeTaskNames)
 
-        updateIndicator(
-            context.indicator,
-            context.progressTitle,
-            message.substringAfter(":").trim(),
-            parseProgress(message)
-        )
+        context.indicator?.update(context.progressTitle, message.substringAfter(":").trim(), parseProgress(message))
     }
 
     private fun handleFinishedMessage(failedTaskName: String?, messageConsumer: Consumer<in BuildEvent>) {
@@ -286,19 +275,13 @@ class CargoBuildEventsConverter(private val context: CargoBuildContext) : BuildO
     companion object {
         const val RUSTC_MESSAGE_GROUP: String = "Rust compiler"
 
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        private val PARSER: JsonParser = JsonParser()
-
         private val PROGRESS_TOTAL_RE: Regex = """(\d+)/(\d+)""".toRegex()
 
         private val ERROR_OR_WARNING: List<MessageEvent.Kind> =
             listOf(MessageEvent.Kind.ERROR, MessageEvent.Kind.WARNING)
 
         private fun parseJsonObject(line: String): JsonObject? =
-            // BACKCOMPAT: 2019.3
-            @Suppress("DEPRECATION")
-            PARSER.parse(line).takeIf { it.isJsonObject }?.asJsonObject
+            JsonParser.parseString(line).takeIf { it.isJsonObject }?.asJsonObject
 
         private fun getMessageKind(kind: String): MessageEvent.Kind =
             when (kind) {

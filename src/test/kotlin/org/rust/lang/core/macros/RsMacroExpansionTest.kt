@@ -85,6 +85,17 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn foo() { let a = bar::<u8>::baz::<u8>; }
     """)
 
+    fun `test type-like path`() = doTest("""
+        macro_rules! foo {
+            ($ i:path) => {
+                struct Foo<F: $ i> { inner: F }
+            }
+        }
+        foo! { Bar<Baz> }
+    """, """
+        struct Foo<F: Bar<Baz>> { inner: F }
+    """)
+
     fun `test expr`() = doTest("""
         macro_rules! foo {
             ($ i:expr) => ( fn bar() { $ i; } )
@@ -657,6 +668,24 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn bar() { 1; 2; }
     """)
 
+    fun `test merged groups`() = doTest("""
+        macro_rules! foo {
+            (($($ a:ident)*) ; ($($ b:block)*)) => {
+                $(
+                    fn $ a () $ b
+                )*
+            };
+        }
+
+        foo! {
+            (bar baz) ;
+            ({ 0; } { 1; })
+        }
+    """, """
+        fn bar() { 0; }
+        fn baz() { 1; }
+    """)
+
     fun `test impl members context`() = checkSingleMacro("""
         macro_rules! foo {
             () => {
@@ -957,6 +986,54 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         #[doc = r###"Some docs"###]
         fn foo() {}
     """ to MacroExpansionMarks.docsLowering)
+
+    fun `test comment in macro definition`() = doTest("""
+        macro_rules! foobar {
+            ($ name:ident) => {
+                // Say hello
+                pub fn $ name() {
+                    /* Yet another comment */
+                    println!("Hello!")
+                }
+            }
+        }
+
+        foobar!(foo);
+    """, """
+        pub fn foo() {
+            println!("Hello!")
+        }
+    """)
+
+    fun `test doc comment in macro definition`() = doTest("""
+        macro_rules! foobar {
+            ($ name:ident) => {
+                /// outer doc comment
+                pub mod $ name {
+                    //! inner doc comment
+                    /*!  - Inner block doc */
+
+                    /** outer block comment */
+                    pub fn foobar() {
+                        println!("Hello!")
+                    }
+                }
+            }
+        }
+
+        foobar!(foo);
+    """, """
+        /// outer doc comment
+        pub mod foo {
+            //! inner doc comment
+            /*!  - Inner block doc */
+
+            /** outer block comment */
+            pub fn foobar() {
+                println!("Hello!")
+            }
+        }
+    """)
 
     fun `test literal expr is not wrapped into parens`() = doTest("""
         macro_rules! foo {

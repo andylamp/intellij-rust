@@ -7,6 +7,7 @@ package org.rust.lang.core.type
 
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.lang.core.types.infer.PatternMatchingTestMarks
 
 class RsPatternMatchingTest : RsTypificationTestBase() {
     fun `test if let pattern`() = testExpr("""
@@ -17,10 +18,21 @@ class RsPatternMatchingTest : RsTypificationTestBase() {
         }
     """)
 
-    fun `test if let pattern with multiple patterns`() = testExpr("""
-        enum E { L(i32), R(i32) }
+    fun `test if let with or pattern 1`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
         fn foo(e: E) {
-            if let E::L(x) | E::R(x) = e {
+            if let E::L(x) | E::M(x) | E::R(x) = e {
+                x;
+              //^ i32
+            }
+        }
+    """)
+
+    fun `test if let with or pattern 2`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
+        enum Option { Ok(E), None }
+        fn foo(e: Option<E>) {
+            if let Option::Ok(E::L(x) | E::M(x) | E::R(x)) = e {
                 x;
               //^ i32
             }
@@ -37,10 +49,21 @@ class RsPatternMatchingTest : RsTypificationTestBase() {
         }
     """)
 
-    fun `test while let pattern with multiple patterns`() = testExpr("""
-        enum E { L(i32), R(i32) }
+    fun `test while let with or pattern 1`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
         fn foo(e: E) {
-            while let E::L(x) | E::R(x) = e {
+            while let E::L(x) | E::M(x) | E::R(x)  = e {
+                x;
+              //^ i32
+            }
+        }
+    """)
+
+    fun `test while let with or pattern 2`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
+        enum Option { Ok, None }
+        fn foo(e: Option) {
+            while let Option::Ok(E::L(x) | E::M(x) | E::R(x)) = e {
                 x;
               //^ i32
             }
@@ -199,6 +222,108 @@ class RsPatternMatchingTest : RsTypificationTestBase() {
             let X(s, .., u, .., w) = X(S, T, U, V, W);
             (s, u, w);
           //^ (S, <unknown>, W)
+        }
+    """)
+
+    fun `test let array rest pat`() = testExpr("""
+        struct S;
+        fn main() {
+            let [x, xs @ ..] = [S, S, S];
+            (x, xs);
+          //^ (S, [S; 2])
+        }
+    """)
+
+    fun `test let slice rest pat`() = testExpr("""
+         struct S;
+        fn main() {
+            let slice: &[S] = &[S, S, S];
+            let [x, xs @ ..] = slice;
+            (x, xs);
+          //^ (&S, &[S])
+        }
+    """)
+
+    fun `test let array ref rest pat`() = testExpr("""
+        struct S;
+        fn main() {
+            let [ref x, ref xs @ ..] = [S, S, S];
+            (x, xs);
+          //^ (&S, &[S; 2])
+        }
+    """)
+
+    fun `test let slice ref rest pat`() = testExpr("""
+        struct S;
+        fn main() {
+            let slice: &[S] = &[S, S, S];
+            let [ref x, ref xs @ ..] = slice;
+            (x, xs);
+          //^ (&S, &[S])
+        }
+    """)
+
+    fun `test let array rest pat without binding`() = testExpr("""
+        struct S;
+        fn main() {
+            let [x, ..] = [S, S, S];
+            x;
+          //^ S
+        }
+    """)
+
+    fun `test let array rest pat in front`() = testExpr("""
+        struct S;
+        fn main() {
+            let [xs @ .., x] = [S, S, S];
+            (xs, x);
+          //^ ([S; 2], S)
+        }
+    """)
+
+    fun `test let array rest pat in middle`() = testExpr("""
+        struct S;
+        fn main() {
+            let [x1, xs @ .., x2] = [S, S, S];
+            (x1, xs, x2);
+          //^ (S, [S; 1], S)
+        }
+    """)
+
+    fun `test let array too few elements for rest pat`() = testExpr("""
+        struct S;
+        fn main() {
+            let [x1, x2, x3, x4, xs @ ..] = [S, S, S];
+            (x1, x2, x3, x4, xs);
+          //^ (S, S, S, S, [S; <unknown>])
+        }
+    """, PatternMatchingTestMarks.negativeRestSize)
+
+    fun `test let array multiple rest pats`() = testExpr("""
+        struct S;
+        fn main() {
+            let [x1, xs1 @ .., x2, xs2 @ .., x3] = [S, S, S, S, S];
+            (x1, xs1, x2, xs2, x3);
+          //^ (S, [S; <unknown>], S, [S; <unknown>], S)
+        }
+    """, PatternMatchingTestMarks.multipleRestPats)
+
+    fun `test let or pattern 1`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
+        fn foo(e: E) {
+            let E::L(x) | E::M(x) | E::R(x) = e;
+            x;
+          //^ i32
+        }
+    """)
+
+    fun `test let or pattern 2`() = testExpr("""
+        enum E { L(i32), M(i32), R(i32) }
+        enum Option { Ok(E) }
+        fn foo(e: Option) {
+            let Option::Ok(E::L(x) | E::M(x) | E::R(x)) = e;
+            x;
+          //^ i32
         }
     """)
 
@@ -629,7 +754,7 @@ class RsPatternMatchingTest : RsTypificationTestBase() {
                 Some(n) => {
                     n;
                   //^ <unknown>
-                },
+                }
                 _ => {}
             };
         }

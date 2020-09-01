@@ -10,12 +10,16 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiReference
 import com.intellij.psi.search.LocalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
-import org.rust.ide.presentation.insertionSafeText
+import com.intellij.psi.util.siblings
+import org.rust.ide.presentation.renderInsertionSafe
 import org.rust.ide.utils.findStatementsOrExprInRange
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
-import org.rust.lang.core.types.ty.*
+import org.rust.lang.core.types.ty.Ty
+import org.rust.lang.core.types.ty.TyReference
+import org.rust.lang.core.types.ty.TyTuple
+import org.rust.lang.core.types.ty.TyUnit
 import org.rust.lang.core.types.type
 import org.rust.stdext.buildList
 
@@ -37,20 +41,21 @@ class ReturnValue(val exprText: String?, val type: Ty) {
 class Parameter private constructor(
     var name: String,
     val type: Ty? = null,
-    val reference: Reference = Reference.NONE,
-    isMutableValue: Boolean = false,
+    private val isReference: Boolean = false,
+    var isMutable: Boolean = false,
+    private val requiresMut: Boolean = false,
     var isSelected: Boolean = true
 ) {
-    enum class Reference(val text: String) {
-        MUTABLE("&mut "), IMMUTABLE("& "), NONE("")
-    }
-
     /** Original name of the parameter (parameter renaming does not affect it) */
     private val originalName = name
 
-    private val mutText: String = if (isMutableValue) "mut " else ""
-    private val referenceText: String = reference.text
-    private val typeText: String = type?.insertionSafeText.orEmpty()
+    private val mutText: String
+        get() = if (isMutable && (!isReference || requiresMut)) "mut " else ""
+    private val referenceText: String
+        get() = if (isReference) {
+            if (isMutable) { "&mut " } else { "&" }
+        } else { "" }
+    private val typeText: String = type?.renderInsertionSafe(skipUnchangedDefaultTypeArguments = true).orEmpty()
 
     val originalParameterText: String
         get() = if (type != null) "$mutText$originalName: $referenceText$typeText" else originalName
@@ -67,12 +72,17 @@ class Parameter private constructor(
     companion object {
         private fun direct(value: RsPatBinding, requiredBorrowing: Boolean, requiredMutableValue: Boolean): Parameter {
             val reference = when {
-                requiredMutableValue -> if (requiredBorrowing) Reference.MUTABLE else Reference.NONE
-                value.mutability.isMut -> Reference.MUTABLE
-                requiredBorrowing -> Reference.IMMUTABLE
-                else -> Reference.NONE
+                requiredMutableValue -> requiredBorrowing
+                value.mutability.isMut -> true
+                requiredBorrowing -> true
+                else -> false
             }
-            return Parameter(value.referenceName, value.type, reference, requiredMutableValue)
+            val mutable = when {
+                requiredMutableValue -> true
+                value.mutability.isMut -> true
+                else -> false
+            }
+            return Parameter(value.referenceName, value.type, reference, mutable, requiredMutableValue)
         }
 
         fun self(name: String): Parameter =
@@ -110,6 +120,7 @@ class RsExtractFunctionConfig private constructor(
     var name: String = "",
     var visibilityLevelPublic: Boolean = false,
     val isAsync: Boolean = false,
+    val isUnsafe: Boolean = false,
     var parameters: List<Parameter>
 ) {
     val valueParameters: List<Parameter>
@@ -138,9 +149,12 @@ class RsExtractFunctionConfig private constructor(
         if (isAsync) {
             append("async ")
         }
+        if (isUnsafe) {
+            append("unsafe ")
+        }
         append("fn $name$typeParametersText(${if (isOriginal) originalParametersText else parametersText})")
         if (returnValue != null && returnValue.type !is TyUnit) {
-            append(" -> ${returnValue.type.insertionSafeText}")
+            append(" -> ${returnValue.type.renderInsertionSafe()}")
         }
         append(whereClausesText)
     }
@@ -155,12 +169,18 @@ class RsExtractFunctionConfig private constructor(
                 val unselectedParamsTexts = parameters
                     .filter { !it.isSelected }
                     .map { "let ${it.name}: ${it.type} ;\n" }
-                val elementsTexts = elements.map { it.text }
+                val elementsText = if (elements.isNotEmpty()) {
+                    val last = elements.last()
+                    val allElements = elements.first().siblings().takeWhile { it != last } + last
+                    allElements.joinToString(separator = "") { it.text }
+                } else {
+                    ""
+                }
                 val returnExprText = returnValue?.exprText.orEmpty()
 
                 val bodyContent = buildList<String> {
                     addAll(unselectedParamsTexts)
-                    addAll(elementsTexts)
+                    add(elementsText)
                     if (returnExprText.isNotEmpty()) {
                         add(returnExprText)
                     }
@@ -289,7 +309,8 @@ class RsExtractFunctionConfig private constructor(
                 elements,
                 returnValue = returnValue,
                 parameters = parameters,
-                isAsync = isAsync
+                isAsync = isAsync,
+                isUnsafe = fn.isUnsafe
             )
         }
     }

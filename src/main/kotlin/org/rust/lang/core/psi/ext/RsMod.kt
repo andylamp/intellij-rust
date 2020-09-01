@@ -10,6 +10,8 @@ import com.intellij.psi.PsiDirectory
 import org.rust.lang.RsConstants
 import org.rust.lang.RsFileType
 import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.RsModDeclItem
+import org.rust.lang.core.psi.RsModItem
 import org.rust.openapiext.findFileByMaybeRelativePath
 import java.util.*
 
@@ -51,10 +53,16 @@ interface RsMod : RsQualifiedNamedElement, RsItemsOwner, RsVisible {
         if (this is RsFile && name == RsConstants.MOD_RS_FILE || isCrateRoot) return contextualFile.originalFile.parent
 
         val explicitPath = pathAttribute
+        val superMod = `super`
+        val superModDir = { superMod?.getOwnedDirectory(createIfNotExists) }
         val (parentDirectory, path) = if (explicitPath != null) {
-            contextualFile.originalFile.parent to explicitPath
+            when {
+                this is RsFile -> return contextualFile.originalFile.parent
+                superMod is RsFile -> contextualFile.originalFile.parent to explicitPath
+                else -> superModDir() to explicitPath
+            }
         } else {
-            `super`?.getOwnedDirectory(createIfNotExists) to name
+            superModDir() to name
         }
         if (parentDirectory == null || path == null) return null
 
@@ -80,4 +88,27 @@ val RsMod.superMods: List<RsMod> get() {
     return generateSequence(this) { it.`super` }
         .takeWhile { visited.add(it) }
         .toList()
+}
+
+fun RsMod.hasChildModules(): Boolean =
+    expandedItemsExceptImplsAndUses.any { it is RsModDeclItem || it is RsModItem && it.hasChildModules() }
+
+val RsMod.childModules: List<RsMod>
+    get() = expandedItemsExceptImplsAndUses
+        .mapNotNull {
+            when (it) {
+                is RsModDeclItem -> it.reference.resolve() as? RsMod
+                is RsModItem -> it
+                else -> null
+            }
+        }
+
+fun RsMod.getChildModule(name: String): RsMod? =
+    childModules.find { it.modName == name }
+
+fun commonParentMod(mod1: RsMod, mod2: RsMod): RsMod? {
+    val superMods1 = mod1.superMods.asReversed()
+    val superMods2 = mod2.superMods.asReversed()
+    val superMods = superMods1 zip superMods2
+    return superMods.findLast { (superMod1, superMod2) -> superMod1 == superMod2 }?.first
 }

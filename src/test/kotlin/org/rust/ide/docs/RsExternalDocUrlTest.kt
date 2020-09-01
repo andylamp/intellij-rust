@@ -7,6 +7,7 @@ package org.rust.ide.docs
 
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibAndDependencyRustProjectDescriptor
+import org.rust.ide.docs.RsDocumentationProviderBase.Testmarks
 
 @ProjectDescriptor(WithStdlibAndDependencyRustProjectDescriptor::class)
 class RsExternalDocUrlTest : RsDocumentationProviderTest() {
@@ -25,6 +26,15 @@ class RsExternalDocUrlTest : RsDocumentationProviderTest() {
                      //^
         }
     """, "https://docs.rs/dep-lib/0.0.1/dep_lib_target/struct.Foo.html#associatedconstant.BAR")
+
+    fun `test enum variant field`() = doUrlTestByFileTree("""
+        //- dep-lib/lib.rs
+        pub enum Foo {
+            Bar {
+                baz: i32
+            }  //^
+        }
+    """, "https://docs.rs/dep-lib/0.0.1/dep_lib_target/enum.Foo.html#variant.Bar.field.baz")
 
     fun `test item with restricted visibility`() = doUrlTestByFileTree("""
         //- dep-lib/lib.rs
@@ -79,7 +89,7 @@ class RsExternalDocUrlTest : RsDocumentationProviderTest() {
         #[doc(hidden)]
         pub fn foo() {}
                //^
-    """, null, RsDocumentationProvider.Testmarks.docHidden)
+    """, null, Testmarks.docHidden)
 
     fun `test macro`() = doUrlTestByFileTree("""
         //- dep-lib/lib.rs
@@ -96,17 +106,23 @@ class RsExternalDocUrlTest : RsDocumentationProviderTest() {
                     //^
             () => { unimplemented!() };
         }
-    """, null, RsDocumentationProvider.Testmarks.notExportedMacro)
+    """, null, Testmarks.notExportedMacro)
+
+    fun `test macro 2`() = doUrlTestByFileTree("""
+        //- dep-lib/lib.rs
+        pub macro Bar() {}
+                 //^
+    """, "https://docs.rs/dep-lib/0.0.1/dep_lib_target/macro.Bar.html")
 
     fun `test not external url for workspace package`() = doUrlTestByFileTree("""
         //- lib.rs
         pub enum Foo { FOO, BAR }
                 //^
-    """, null, RsDocumentationProvider.Testmarks.nonDependency)
+    """, null, Testmarks.nonDependency)
 
     fun `test not external url for dependency package without source`() = doUrlTestByFileTree("""
         //- no-source-lib/lib.rs
         pub enum Foo { FOO, BAR }
                 //^
-    """, null, RsDocumentationProvider.Testmarks.pkgWithoutSource)
+    """, null, Testmarks.pkgWithoutSource)
 }

@@ -151,6 +151,75 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test try expr custom type`() = testExpr("""
+        struct S;
+
+        #[lang = "core::result::Result"]
+        enum Result<T, E> { Ok(T), Err(E) }
+
+        #[lang = "core::ops::try::Try"]
+        trait Try { type Ok; type Error; }
+
+        impl Try for S {
+            type Ok = u32;
+            type Error = u64;
+
+            fn into_result(self) -> Result<Self::Ok, Self::Error> {
+                unimplemented!()
+            }
+
+            fn from_error(v: Self::Error) -> Self {
+                unimplemented!()
+            }
+
+            fn from_ok(v: Self::Ok) -> Self {
+                unimplemented!()
+            }
+        }
+
+        fn foo() -> Result<u32, u64> {
+            let s = S;
+            let y = s?;
+            y;
+          //^ u32
+            Result::Ok(0)
+        }
+    """)
+
+    fun `test try expr custom generic type`() = testExpr("""
+        struct S<T>(T);
+
+        #[lang = "core::result::Result"]
+        enum Result<T, E> { Ok(T), Err(E) }
+
+        #[lang = "core::ops::try::Try"]
+        trait Try { type Ok; type Error; }
+
+        impl<T> Try for S<T> {
+            type Ok = T;
+            type Error = u64;
+
+            fn into_result(self) -> Result<Self::Ok, Self::Error> {
+                unimplemented!()
+            }
+
+            fn from_error(v: Self::Error) -> Self {
+                unimplemented!()
+            }
+
+            fn from_ok(v: Self::Ok) -> Self {
+                unimplemented!()
+            }
+        }
+
+        fn foo(s: S<u32>) -> Result<u32, u64> {
+            let y = s?;
+            y;
+          //^ u32
+            Result::Ok(0)
+        }
+    """)
+
     fun `test generator expr`() = testExpr("""
         #[lang = "core::ops::generator::Generator"]
         trait Generator { type Yield; type Return; }
@@ -1443,6 +1512,27 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
             let a = dbg!(123);
             a;
           //^ i32
+        }
+    """)
+
+    fun `test unclosed paren`() = testExpr("""
+        fn main() {
+            let a = (;
+            a;
+          //^ <unknown>
+        }
+    """)
+
+    fun `test negative impl is ignored`() = testExpr("""
+        struct S;
+        trait Clone: Sized { fn clone(&self) -> Self { unimplemented!() } }
+        impl Clone for S {}
+        impl !Clone for &mut S {}
+        fn main() {
+            let a = &mut S;
+            let b = a.clone();
+            b;
+          //^ S
         }
     """)
 }

@@ -18,6 +18,7 @@ import org.rust.lang.core.macros.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
+import org.rust.lang.core.resolve.resolveDollarCrateIdentifier
 import org.rust.lang.core.stubs.RsMacroCallStub
 import org.rust.openapiext.findFileByMaybeRelativePath
 import org.rust.openapiext.toPsiFile
@@ -97,10 +98,10 @@ private val RsExpr.value: String? get() {
                 }
                 "env" -> {
                     val expr = macroCall.envMacroArgument?.variableNameExpr as? RsLitExpr ?: return null
-                    val pkg = expr.containingCargoPackage ?: return null
+                    val crate = expr.containingCrate ?: return null
                     when (val variableName = expr.value) {
-                        "OUT_DIR" -> pkg.outDir?.path
-                        else -> pkg.env[variableName]
+                        "OUT_DIR" -> crate.outDir?.path
+                        else -> crate.env[variableName]
                     }
                 }
                 else -> null
@@ -113,8 +114,7 @@ private val RsExpr.value: String? get() {
 fun RsMacroCall.findIncludingFile(): RsFile? {
     if (macroName != "include") return null
     val path = includeMacroArgument?.expr?.value ?: return null
-    // TODO: it doesn't work if `include!()` macro call comes from other macro
-    val file = containingFile?.originalFile?.virtualFile ?: return null
+    val file = (findMacroCallExpandedFrom() ?: this).containingFile?.originalFile?.virtualFile ?: return null
     return file.parent?.findFileByMaybeRelativePath(path)?.toPsiFile(project)?.rustFile
 }
 
@@ -129,14 +129,18 @@ fun RsMacroCall.resolveToMacro(): RsMacro? =
     path.reference?.resolve() as? RsMacro
 
 val RsMacroCall.expansion: MacroExpansion?
-    get() = CachedValuesManager.getCachedValue(this) {
-        val project = project
-        val originalOrSelf = CompletionUtil.getOriginalElement(this)?.takeIf {
-            // Use the original element only if macro bodies are equal. They
-            // will be different if completion invoked inside the macro body.
-            it.macroBody == this.macroBody
-        } ?: this
-        project.macroExpansionManager.getExpansionFor(originalOrSelf)
+    get() {
+        val mgr = project.macroExpansionManager
+        if (mgr.expansionState != null) return mgr.getExpansionFor(this).value
+
+        return CachedValuesManager.getCachedValue(this) {
+            val originalOrSelf = CompletionUtil.getOriginalElement(this)?.takeIf {
+                // Use the original element only if macro bodies are equal. They
+                // will be different if completion invoked inside the macro body.
+                it.macroBody == this.macroBody
+            } ?: this
+            mgr.getExpansionFor(originalOrSelf)
+        }
     }
 
 val RsMacroCall.expansionFlatten: List<RsExpandedElement>
@@ -149,16 +153,23 @@ val RsMacroCall.expansionFlatten: List<RsExpandedElement>
         return list
     }
 
-fun RsMacroCall.expandAllMacrosRecursively(): String =
-    expandAllMacrosRecursively(0)
+fun RsMacroCall.expandAllMacrosRecursively(replaceDollarCrate: Boolean): String =
+    expandMacrosRecursively(DEFAULT_RECURSION_LIMIT, replaceDollarCrate)
 
-private fun RsMacroCall.expandAllMacrosRecursively(depth: Int): String {
-    if (depth > DEFAULT_RECURSION_LIMIT) return text
+fun RsMacroCall.expandMacrosRecursively(depthLimit: Int, replaceDollarCrate: Boolean): String {
+    if (depthLimit == 0) return text
 
     fun toExpandedText(element: PsiElement): String =
         when (element) {
-            is RsMacroCall -> element.expandAllMacrosRecursively(depth)
-            is RsElement -> element.childrenWithLeaves.joinToString(" ") { toExpandedText(it) }
+            is RsMacroCall -> element.expandMacrosRecursively(depthLimit - 1, replaceDollarCrate)
+            is RsElement -> if (replaceDollarCrate && element is RsPath && element.referenceName == MACRO_DOLLAR_CRATE_IDENTIFIER
+                && element.qualifier == null && element.typeQual == null && !element.hasColonColon) {
+                // Replace `$crate` to a crate name. Note that the name can be incorrect because of crate renames
+                // and the fact that `$crate` can come from a transitive dependency
+                "::" + (element.resolveDollarCrateIdentifier()?.normName ?: element.referenceName)
+            } else {
+                element.childrenWithLeaves.joinToString(" ") { toExpandedText(it) }
+            }
             else -> element.text
         }
 
@@ -175,7 +186,7 @@ private fun RsMacroCall.processExpansionRecursively(processor: (RsExpandedElemen
 
 private fun RsExpandedElement.processRecursively(processor: (RsExpandedElement) -> Boolean, depth: Int): Boolean {
     return when (this) {
-        is RsMacroCall -> isEnabledByCfg && processExpansionRecursively(processor, depth + 1)
+        is RsMacroCall -> isEnabledByCfgSelf && processExpansionRecursively(processor, depth + 1)
         else -> processor(this)
     }
 }

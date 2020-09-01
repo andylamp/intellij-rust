@@ -25,6 +25,7 @@ import org.rust.lang.core.types.type
 class RsHighlightingMutableAnnotator : AnnotatorBase() {
 
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
+        if (holder.isBatchMode) return
         val ref = when (element) {
             is RsPath -> element.reference?.resolve() ?: return
             is RsSelfParameter -> element
@@ -62,9 +63,10 @@ class RsHighlightingMutableAnnotator : AnnotatorBase() {
 
     private fun addHighlightingAnnotation(holder: AnnotationHolder, target: PsiElement, key: RsColor) {
         val annotationSeverity = if (isUnitTestMode) key.testSeverity else MUTABLE_HIGHLIGHTING
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        holder.createAnnotation(annotationSeverity, target.textRange, null).textAttributes = key.textAttributesKey
+
+        holder.newSilentAnnotation(annotationSeverity)
+            .range(target.textRange)
+            .textAttributes(key.textAttributesKey).create()
     }
 
     companion object {

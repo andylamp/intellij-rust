@@ -12,6 +12,8 @@ import com.intellij.util.messages.Topic
 import com.intellij.util.xmlb.annotations.Transient
 import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.cargo.toolchain.RustToolchain
+import org.rust.ide.experiments.RsExperiments
+import org.rust.openapiext.isFeatureEnabled
 import java.nio.file.Paths
 import kotlin.reflect.KProperty1
 import kotlin.reflect.full.findAnnotation
@@ -38,8 +40,7 @@ interface RustProjectSettingsService {
         @AffectsHighlighting
         var compileAllTargets: Boolean = true,
         var useOffline: Boolean = false,
-        var macroExpansionEngine: MacroExpansionEngine = MacroExpansionEngine.OLD,
-        var showTestToolWindow: Boolean = true,
+        var macroExpansionEngine: MacroExpansionEngine = defaultMacroExpansionEngine,
         @AffectsHighlighting
         var doctestInjectionEnabled: Boolean = true,
         var runRustfmtOnSave: Boolean = false,
@@ -82,7 +83,6 @@ interface RustProjectSettingsService {
     val compileAllTargets: Boolean
     val useOffline: Boolean
     val macroExpansionEngine: MacroExpansionEngine
-    val showTestToolWindow: Boolean
     val doctestInjectionEnabled: Boolean
     val runRustfmtOnSave: Boolean
     val useSkipChildren: Boolean
@@ -97,6 +97,13 @@ interface RustProjectSettingsService {
             "rust settings changes",
             RustSettingsListener::class.java
         )
+
+        private val defaultMacroExpansionEngine: MacroExpansionEngine
+            get() = if (isFeatureEnabled(RsExperiments.MACROS_NEW_ENGINE)) {
+                MacroExpansionEngine.NEW
+            } else {
+                MacroExpansionEngine.OLD
+            }
     }
 
     interface RustSettingsListener {

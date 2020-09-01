@@ -1086,16 +1086,162 @@ class RsExtractFunctionTest : RsTestBase() {
         false,
         "bar")
 
+    fun `test extract with empty lines`() = doTest("""
+        fn main() {
+            <selection>println!("a");
+
+
+            // comment
+            println!("b");</selection>
+        }
+    """, """
+        fn main() {
+            foo();
+        }
+
+        fn foo() {
+            println!("a");
+
+
+            // comment
+            println!("b");
+        }
+    """,
+        false,
+        "foo")
+
+    fun `test extract a function with unset default type parameter`() = doTest("""
+        struct S<R, T=u32>(R, T);
+
+        fn main() {
+            let s: S<u32> = S(1u32, 2u32);
+            <selection>println!(s)</selection>;
+        }
+    """, """
+        struct S<R, T=u32>(R, T);
+
+        fn main() {
+            let s: S<u32> = S(1u32, 2u32);
+            foo(s);
+        }
+
+        fn foo(s: S<u32>) {
+            println!(s)
+        }
+    """,
+        false,
+        "foo")
+
+    fun `test extract a function with set default type parameter`() = doTest("""
+        struct S<R, T=u32>(R, T);
+
+        fn main() {
+            let s: S<u32, bool> = S(1u32, true);
+            <selection>println!(s)</selection>;
+        }
+    """, """
+        struct S<R, T=u32>(R, T);
+
+        fn main() {
+            let s: S<u32, bool> = S(1u32, true);
+            foo(s);
+        }
+
+        fn foo(s: S<u32, bool>) {
+            println!(s)
+        }
+    """,
+        false,
+        "foo")
+
+    fun `test extract set value to mutable`() = doTest("""
+        fn main() {
+            let a = 1u32;
+            <selection>println!(a);</selection>
+        }
+    """, """
+        fn main() {
+            let a = 1u32;
+            foo(a);
+        }
+
+        fn foo(mut a: u32) {
+            println!(a);
+        }
+    """,
+        false,
+        "foo", mutabilityOverride = mapOf("a" to true))
+
+    fun `test extract a function set reference to immutable`() = doTest("""
+        fn main() {
+            let mut a = 1u32;
+            <selection>a = 5;</selection>
+        }
+    """, """
+        fn main() {
+            let mut a = 1u32;
+            foo(&a);
+        }
+
+        fn foo(a: &u32) {
+            a = 5;
+        }
+    """,
+        false,
+        "foo", mutabilityOverride = mapOf("a" to false))
+
+    fun `test extract a function set reference to mutable`() = doTest("""
+        fn test(x: &u32) {}
+
+        fn main() {
+            let a = 1u32;
+            <selection>test(&a);</selection>
+        }
+    """, """
+        fn test(x: &u32) {}
+
+        fn main() {
+            let a = 1u32;
+            foo(&mut a);
+        }
+
+        fn foo(a: &mut u32) {
+            test(&a);
+        }
+    """,
+        false,
+        "foo", mutabilityOverride = mapOf("a" to true))
+
+    fun `test extract unsafe function`() = doTest("""
+        unsafe fn bar(ptr: *const u32) -> u32 {
+            <selection>*ptr</selection>
+        }
+    """, """
+        unsafe fn bar(ptr: *const u32) -> u32 {
+            foo(ptr)
+        }
+
+        unsafe fn foo(ptr: *const u32) -> u32 {
+            *ptr
+        }
+    """,
+        false,
+        "foo")
+
     private fun doTest(@Language("Rust") code: String,
                        @Language("Rust") excepted: String,
                        pub: Boolean,
                        name: String,
-                       noSelected: List<String> = emptyList()) {
+                       noSelected: List<String> = emptyList(),
+                       mutabilityOverride: Map<String, Boolean> = emptyMap()) {
         withMockExtractFunctionUi(object : ExtractFunctionUi {
             override fun extract(config: RsExtractFunctionConfig, callback: () -> Unit) {
                 config.name = name
                 config.visibilityLevelPublic = pub
                 noSelected.forEach { n -> config.parameters.filter { n == it.name }[0].isSelected = false }
+                mutabilityOverride.forEach { (key, mutable) ->
+                    config.parameters.filter { key == it.name }[0].isMutable = mutable
+                }
                 callback()
             }
         }) {

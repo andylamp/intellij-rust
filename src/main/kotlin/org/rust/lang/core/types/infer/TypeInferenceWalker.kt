@@ -116,10 +116,13 @@ class RsTypeInferenceWalker(
     }
 
     fun inferReplCodeFragment(element: RsReplCodeFragment) {
-        for (stmt in element.stmts) {
-            processStatement(stmt)
+        val (expandedStmts, tailExpr) = element.expandedStmtsAndTailExpr
+        for (stmt in expandedStmts) {
+            if (stmt is RsStmt) {
+                processStatement(stmt)
+            }
         }
-        element.tailExpr?.inferType()
+        tailExpr?.inferType()
     }
 
     // returns true if expr is always diverging
@@ -154,8 +157,7 @@ class RsTypeInferenceWalker(
 
         if (expected != null) {
             when (this) {
-                is RsPathExpr -> ctx.writeExpectedPathExprTy(this, expected)
-                is RsDotExpr -> ctx.writeExpectedDotExprTy(this, expected)
+                is RsPathExpr, is RsDotExpr, is RsCallExpr -> ctx.writeExpectedExprTy(this, expected)
             }
         }
 
@@ -163,7 +165,7 @@ class RsTypeInferenceWalker(
             is RsPathExpr -> inferPathExprType(this)
             is RsStructLiteral -> inferStructLiteralType(this, expected)
             is RsTupleExpr -> inferRsTupleExprType(this, expected)
-            is RsParenExpr -> this.expr.inferType(expected)
+            is RsParenExpr -> expr?.inferType(expected) ?: TyUnknown
             is RsUnitExpr -> TyUnit
             is RsCastExpr -> inferCastExprType(this)
             is RsCallExpr -> inferCallExprType(this, expected)
@@ -215,13 +217,7 @@ class RsTypeInferenceWalker(
             CoerceResult.Ok -> true
 
             is CoerceResult.TypeMismatch -> {
-                if (result.ty1.javaClass !in IGNORED_TYS && result.ty2.javaClass !in IGNORED_TYS
-                    && !(expected is TyReference && inferred is TyReference
-                        && (expected.containsTyOfClass(IGNORED_TYS) || inferred.containsTyOfClass(IGNORED_TYS)))
-                ) {
-                    reportTypeMismatch(element, expected, inferred)
-                }
-
+                checkTypeMismatch(result, element, inferred, expected)
                 false
             }
 
@@ -233,6 +229,18 @@ class RsTypeInferenceWalker(
                 false
             }
         }
+
+    private fun checkTypeMismatch(result: CoerceResult.TypeMismatch, element: RsElement, inferred: Ty, expected: Ty) {
+        if (result.ty1.javaClass in IGNORED_TYS || result.ty2.javaClass in IGNORED_TYS) return
+        if (expected is TyReference && inferred is TyReference &&
+            (expected.containsTyOfClass(IGNORED_TYS) || inferred.containsTyOfClass(IGNORED_TYS))) {
+            // report errors with unknown types when &mut is needed, but & is present
+            if (!(expected.mutability == Mutability.MUTABLE && inferred.mutability == Mutability.IMMUTABLE)) {
+                return
+            }
+        }
+        reportTypeMismatch(element, expected, inferred)
+    }
 
     // Another awful hack: check that inner expressions did not annotated as an error
     // to disallow annotation intersections. This should be done in a different way
@@ -866,7 +874,7 @@ class RsTypeInferenceWalker(
         val matchingExprTy = resolveTypeVarsWithObligations(expr.expr?.inferType() ?: TyUnknown)
         val arms = expr.arms
         for (arm in arms) {
-            arm.orPats.extractBindings(matchingExprTy)
+            arm.pat.extractBindings(matchingExprTy)
             arm.expr?.inferType(expected)
             arm.matchArmGuard?.expr?.inferType(TyBool)
         }
@@ -913,15 +921,15 @@ class RsTypeInferenceWalker(
     }
 
     private fun RsCondition.inferTypes() {
-        val orPats = orPats
-        if (orPats != null) {
+        val pat = pat
+        if (pat != null) {
             // if let Some(a) = ... {}
             // if let V1(a) | V2(a) = ... {}
             // or
             // while let Some(a) = ... {}
             // while let V1(a) | V2(a) = ... {}
             val exprTy = resolveTypeVarsWithObligations(expr.inferType())
-            orPats.extractBindings(exprTy)
+            pat.extractBindings(exprTy)
         } else {
             expr.inferType(TyBool)
         }
@@ -1029,9 +1037,12 @@ class RsTypeInferenceWalker(
     }
 
     private fun inferTryExprType(expr: RsTryExpr): Ty {
-        val base = expr.expr.inferType() as? TyAdt ?: return TyUnknown
-        // TODO: make it work with generic `std::ops::Try` trait
-        if (base.item != items.Result && base.item != items.Option) return TyUnknown
+        val base = resolveTypeVarsWithObligations(expr.expr.inferType()) as? TyAdt ?: return TyUnknown
+        if (base.item != items.Result && base.item != items.Option) {
+            val tryItem = items.Try ?: return TyUnknown
+            val okType = tryItem.findAssociatedType("Ok") ?: return TyUnknown
+            return ctx.normalizeAssociatedTypesIn(TyProjection.valueOf(base, BoundElement(tryItem), okType)).value
+        }
         TypeInferenceMarks.questionOperator.hit()
         return base.typeArguments.getOrElse(0) { TyUnknown }
     }
@@ -1245,7 +1256,7 @@ class RsTypeInferenceWalker(
                     .find { it.trait.selfTy == expected && it.trait.trait.element in listOf(items.Fn, items.FnMut, items.FnOnce) }
                     ?.let { lookup.asTyFunction(it.trait.trait) }
             }
-            is TyTraitObject -> lookup.asTyFunction(expected.trait)
+            is TyTraitObject -> lookup.asTyFunction(expected.traits.first()) // TODO: Use all trait bounds
             is TyFunction -> expected
             is TyAnon -> {
                 val trait = expected.traits.find { it.element in listOf(items.Fn, items.FnMut, items.FnOnce) }
@@ -1353,10 +1364,6 @@ class RsTypeInferenceWalker(
 
     private fun RsPat.extractBindings(ty: Ty) {
         extractBindings(this@RsTypeInferenceWalker, ty)
-    }
-
-    private fun RsOrPats.extractBindings(ty: Ty) {
-        patList.forEach { it.extractBindings(ty) }
     }
 
     fun writePatTy(psi: RsPat, ty: Ty): Unit =

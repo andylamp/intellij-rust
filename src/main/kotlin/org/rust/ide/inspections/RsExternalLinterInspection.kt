@@ -37,7 +37,7 @@ import org.rust.ide.annotator.createAnnotationsForFile
 import org.rust.ide.annotator.createDisposableOnAnyPsiChange
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.ext.ancestorOrSelf
-import org.rust.lang.core.psi.ext.containingCargoPackage
+import org.rust.lang.core.psi.ext.containingCrate
 import org.rust.stdext.buildList
 import java.util.*
 
@@ -58,7 +58,7 @@ class RsExternalLinterInspection : GlobalSimpleInspectionTool() {
         globalContext: GlobalInspectionContext,
         problemDescriptionsProcessor: ProblemDescriptionsProcessor
     ) {
-        if (file !is RsFile || file.containingCargoPackage?.origin != PackageOrigin.WORKSPACE) return
+        if (file !is RsFile || file.containingCrate?.origin != PackageOrigin.WORKSPACE) return
         val analyzedFiles = globalContext.getUserData(ANALYZED_FILES) ?: return
         analyzedFiles.add(file)
     }
@@ -137,7 +137,7 @@ class RsExternalLinterInspection : GlobalSimpleInspectionTool() {
             if (annotations.isEmpty()) return emptyList()
 
             val problems = ArrayList<ProblemDescriptor>(annotations.size)
-            val quickFixMappingCache = ContainerUtil.newIdentityHashMap<IntentionAction, LocalQuickFix>()
+            val quickFixMappingCache = IdentityHashMap<IntentionAction, LocalQuickFix>()
             for (annotation in annotations) {
                 if (annotation.severity === HighlightSeverity.INFORMATION ||
                     annotation.startOffset == annotation.endOffset &&
@@ -201,7 +201,9 @@ class RsExternalLinterInspection : GlobalSimpleInspectionTool() {
             for (file in analyzedFiles) {
                 if (!file.isValid) continue
                 val annotationHolder = AnnotationHolderImpl(AnnotationSession(file))
-                annotationHolder.createAnnotationsForFile(file, annotationResult)
+                annotationHolder.runAnnotatorWithContext(file) { _, holder ->
+                    holder.createAnnotationsForFile(file, annotationResult)
+                }
                 addAll(convertToProblemDescriptors(annotationHolder, file))
             }
         }

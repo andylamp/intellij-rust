@@ -10,6 +10,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiParserFacade
+import com.intellij.psi.util.PsiTreeUtil
 import org.rust.ide.refactoring.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.ancestorOrSelf
@@ -61,38 +62,37 @@ private class ExpressionReplacer(
      */
     fun inlineLet(project: Project, editor: Editor, expr: RsExpr, elementToReplace: PsiElement) {
         val suggestedNames = expr.suggestedNames()
-        val nameElem: RsPatBinding? = project.runWriteCommandAction {
+        project.runWriteCommandAction {
             val statement = psiFactory.createLetDeclaration(suggestedNames.default, expr)
             val newStatement = elementToReplace.replace(statement)
-            moveEditorToNameElement(editor, newStatement)
-        }
+            val nameElem = moveEditorToNameElement(editor, newStatement)
 
-        PsiDocumentManager.getInstance(project).doPostponedOperationsAndUnblockDocument(editor.document)
-        if (nameElem != null) {
-            RsInPlaceVariableIntroducer(nameElem, editor, project, "choose a variable", emptyArray())
-                .performInplaceRefactoring(suggestedNames.all)
+            if (nameElem != null) {
+                PsiDocumentManager.getInstance(project).doPostponedOperationsAndUnblockDocument(editor.document)
+                RsInPlaceVariableIntroducer(nameElem, editor, project, "choose a variable")
+                    .performInplaceRefactoring(suggestedNames.all)
+            }
         }
     }
 
 
     fun replaceElementForAllExpr(exprs: List<PsiElement>) {
-        val anchor = findAnchor(exprs.minBy { it.startOffset } ?: chosenExpr)
-            ?: return
+        val anchor = findAnchor(exprs, chosenExpr) ?: return
 
         val suggestedNames = chosenExpr.suggestedNames()
         val let = createLet(suggestedNames.default)
         val name = psiFactory.createExpression(suggestedNames.default)
 
-        val nameElem: RsPatBinding? = project.runWriteCommandAction {
+        project.runWriteCommandAction {
             val newElement = introduceLet(project, anchor, let)
             exprs.forEach { it.replace(name) }
-            moveEditorToNameElement(editor, newElement)
-        }
+            val nameElem = moveEditorToNameElement(editor, newElement)
 
-        PsiDocumentManager.getInstance(project).doPostponedOperationsAndUnblockDocument(editor.document)
-        if (nameElem != null) {
-            RsInPlaceVariableIntroducer(nameElem, editor, project, "choose a variable", emptyArray())
-                .performInplaceRefactoring(suggestedNames.all)
+            if (nameElem != null) {
+                PsiDocumentManager.getInstance(project).doPostponedOperationsAndUnblockDocument(editor.document)
+                RsInPlaceVariableIntroducer(nameElem, editor, project, "choose a variable")
+                    .performInplaceRefactoring(suggestedNames.all)
+            }
         }
     }
 
@@ -109,7 +109,9 @@ private class ExpressionReplacer(
         val context = anchor.parent
         val newline = PsiParserFacade.SERVICE.getInstance(project).createWhiteSpaceFromText("\n")
 
-        return context?.addBefore(let, context.addBefore(newline, anchor))
+        val result = context.addBefore(let, anchor)
+        context.addAfter(newline, result)
+        return result
     }
 }
 
@@ -117,10 +119,21 @@ private class ExpressionReplacer(
  * An anchor point is surrounding element before the block scope, which is used to scope the insertion of the new let binding.
  */
 private fun findAnchor(expr: PsiElement): PsiElement? {
-    val block = expr.ancestorOrSelf<RsBlock>()
+    return findAnchor(expr, expr)
+}
+
+private fun findAnchor(exprs: List<PsiElement>, chosenExpr: RsExpr): PsiElement? {
+    val commonParent = PsiTreeUtil.findCommonParent(chosenExpr, *exprs.toTypedArray())
+        ?: return null
+    val firstExpr = exprs.minBy { it.startOffset } ?: chosenExpr
+    return findAnchor(commonParent, firstExpr)
+}
+
+private fun findAnchor(commonParent: PsiElement, firstExpr: PsiElement): PsiElement? {
+    val block = commonParent.ancestorOrSelf<RsBlock>()
         ?: return null
 
-    var anchor = expr
+    var anchor = firstExpr
     while (anchor.parent != block) {
         anchor = anchor.parent
     }

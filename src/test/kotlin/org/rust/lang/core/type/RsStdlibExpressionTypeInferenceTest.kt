@@ -6,8 +6,10 @@
 package org.rust.lang.core.type
 
 import org.rust.ExpandMacros
+import org.rust.MockEdition
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.lang.core.macros.MacroExpansionScope
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.TyFloat
@@ -548,6 +550,16 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test iterator cloned`() = stubOnlyTypeInfer("""
+    //- main.rs
+        fn main() {
+            let a = vec![1, 2].iter()
+                .cloned()
+                .next();
+            a;
+        } //^ Option<i32>
+    """)
+
     fun `test vec push`() = stubOnlyTypeInfer("""
     //- main.rs
         use std::vec::Vec;
@@ -752,6 +764,15 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    @ExpandMacros(MacroExpansionScope.ALL, "std")
+    fun `test "try expr" on a complex type = complex type (correct type vars resolve)`() = stubOnlyTypeInfer("""
+    //- main.rs
+        fn main() {
+            let a = vec![Some(42)].into_iter().next()??;
+            a;
+        } //^ i32
+    """)
+
     fun `test macro impls`() = stubOnlyTypeInfer("""
     //- main.rs
         fn main() {
@@ -781,5 +802,29 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
             let b = a.clone(); // `S<X>` is not `Clone`, so resolved to std `impl for &T`
             b;
         } //^ &S<X>
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test await pin future`() = stubOnlyTypeInfer("""
+    //- main.rs
+        use std::future::Future;
+        use std::pin::Pin;
+        async fn foo<T: Future<Output=i32>>(p: Pin<&mut T>) {
+            let a = p.await;
+            a;
+        } //^ i32
+    """)
+
+    // There is `impl<T: ?Sized> !Clone for &mut T {}`
+    fun `test clone through mut ref`() = stubOnlyTypeInfer("""
+    //- main.rs
+        #[derive(Clone)]
+        pub struct S;
+
+        fn main() {
+            let a = &mut S;
+            let b = a.clone();
+            b;
+        } //^ S
     """)
 }

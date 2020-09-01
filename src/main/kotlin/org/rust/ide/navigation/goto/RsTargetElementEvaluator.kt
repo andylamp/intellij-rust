@@ -11,7 +11,6 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
 import com.intellij.util.BitUtil
 import org.rust.lang.core.macros.findExpansionElements
-import org.rust.lang.core.macros.findNavigationTargetIfMacroExpansion
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsPatBindingReferenceImpl
@@ -35,11 +34,9 @@ class RsTargetElementEvaluator : TargetElementEvaluatorEx2() {
             return ref.element
         }
 
-        // These conditions should filter invocations from CtrlMouseHandler (see RsQuickNavigationInfoTest)
+        // Filter invocations from CtrlMouseHandler (see RsQuickNavigationInfoTest)
         // and leave invocations from GotoDeclarationAction only.
-        // Really it is a hack and it may break down in the future.
-        if (BitUtil.isSet(flags, TargetElementUtil.ELEMENT_NAME_ACCEPTED)) return null
-        if (!BitUtil.isSet(flags, TargetElementUtil.LOOKUP_ITEM_ACCEPTED)) return null
+        if (!RsGoToDeclarationRunningService.getInstance().isGoToDeclarationAction) return null
 
         return tryResolveToDeriveMetaItem(ref)
     }
@@ -61,20 +58,6 @@ class RsTargetElementEvaluator : TargetElementEvaluatorEx2() {
 
         return item?.derivedTraitsToMetaItems?.get(trait)
     }
-
-    // TODO remove it when all macro expansions will become physical files
-    //  (then they will be handled with RsGeneratedSourcesFilter)
-    /**
-     * Allows to refine GotoDeclaration target
-     *
-     * Note that if this method returns null, it means
-     * "use default logic", i.e. just use `navElement`
-     *
-     * @param element the resolved element (basically via `element.reference.resolve()`)
-     * @param navElement the element we going to navigate to ([PsiElement.getNavigationElement])
-     */
-    override fun getGotoDeclarationTarget(element: PsiElement, navElement: PsiElement?): PsiElement? =
-        element.findNavigationTargetIfMacroExpansion()
 
     /**
      * Used to get parent named element when [element] is a name identifier

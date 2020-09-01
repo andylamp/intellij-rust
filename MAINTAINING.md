@@ -19,9 +19,10 @@ After pull request accepting you need:
 * add the corresponding milestone for the pull request to make search "when this change was released" easier
 * add [project](https://github.com/intellij-rust/intellij-rust/projects) to inform QA 
 that these changes should be tested. We don't usually add a project to pull request if it doesn't affect users
-* mark the pull request by special labels ([feature](https://github.com/intellij-rust/intellij-rust/labels/feature), 
-[fix](https://github.com/intellij-rust/intellij-rust/labels/fix) and 
-[internal](https://github.com/intellij-rust/intellij-rust/labels/internal) if you consider
+* mark the pull request by special labels ([feature](https://github.com/intellij-rust/intellij-rust/pulls?q=is%3Apr+label%3Afeature), 
+[fix](https://github.com/intellij-rust/intellij-rust/pulls?q=is%3Apr+label%3Afix),
+[performance](https://github.com/intellij-rust/intellij-rust/pulls?q=is%3Apr+label%3Aperformance) and 
+[internal](https://github.com/intellij-rust/intellij-rust/pulls?q=is%3Apr+label%3Ainternal)) if you consider
 that the corresponding changes should be mentioned in changelog.
 If pull request doesn't have any of these labels it will be ignored while changelog generation
 See more about releases in the [corresponding](#Releases) section.
@@ -72,29 +73,55 @@ because major platform updates can bring a lot of changes.
 
 ## Releases
 
-Nightly and beta are released automatically by [TeamCity]. Stable is generally released every two weeks.
+Nightly and beta are released automatically by GitHub workflows. Stable is generally released every two weeks.
 One week before release we create release branch with `release-%release_version%` name from the `master` branch.
 `release_version` value is the same as the corresponding milestone version.
 Release branches are used to build beta and stable plugin builds.
-After release branch creation, don't forget to increase `patchVersion` property in `gradle.properties` of master branch
+
+Most of release actions can be done automatically via GitHub workflow.
+You can trigger them from [GitHub UI](https://github.blog/changelog/2020-07-06-github-actions-manual-triggers-with-workflow_dispatch/).
+Just open `Action` tab, choose a necessary workflow and launch it via `Run workflow` button.
+
+Alternatively, there is `scripts/release-actions.py` script to trigger events from your console.
+Syntax: `python release-actions.py release_command --token github_token`.
+Also, you can provide `IR_GITHUB_TOKEN` environment variable to provide github token.
+It allows you to omit `--token` option.
+
+See [instruction](https://help.github.com/en/github/authenticating-to-github/creating-a-personal-access-token-for-the-command-line)
+how to create personal github token. Note, it should have `repo` scope.
+
+Note, we use [pipenv](https://pipenv.pypa.io/en/latest/) to manage python version, dependencies and virtual environment.
+See [instruction](https://pipenv.pypa.io/en/latest/install/#installing-pipenv) how to install it.
+To run any command, just execute the following:
+```
+cd scripts
+pipenv install # to install dependencies
+pipenv run python release-actions.py release_command --token github_token # to run script in virtual environment
+```
+
+Available commands:
+* `release-branch` - creates new release branch `release-%release_version%` from `master` one
+where `%release_version%` is the same as `patchVersion` property in `gradle.properties`.
+After that it increases `patchVersion` by one, commits changes and pushes them to master.
+Note, the corresponding workflow is triggered on schedule to create release branch one week before release,
+so you don't usually need to trigger it manually.
+* `nightly-release` - builds the plugin from `master` branch and publishes it into `nightly` channel on [Marketplace].
+Note, the corresponding workflow is triggered on schedule, so you don't usually need to trigger it manually.
+* `beta-release` - builds the plugin from release branch and publishes it into `beta` channel on [Marketplace].
+Note, the corresponding workflow is triggered on schedule, so you don't usually need to trigger it manually.
+* `stable-release` - updates changelog link in `plugin/src/main/resources/META-INF/plugin.xml`, commits changes, 
+pushes into `master` and cherry-picks the corresponding changes into release branch.
+After that, it builds the plugin from release branch and publishes it into `stable` channel on [Marketplace].
+
+Note, each command may provide additional options. Add `--help` option to get actual option list.  
 
 Release notes live in [intellij-rust.github.io](https://github.com/intellij-rust/intellij-rust.github.io).
 To write notes, run `./changelog.py`. It goes thorough all pull requests from the corresponding milestone and 
 creates a template with default info about merged PRs in `_posts`. 
 The initial version of each post depends on special tags that PR can be labeled. 
-At this moment, `changelog.py` supports `feature`, `fix` and `internal` tags. 
+At this moment, `changelog.py` supports `feature`, `performance`, `fix` and `internal` tags. 
 Note, PR can be marked with any subset of these tags.
 Transform generated text to user-friendly one, add necessary links/gifs. 
 Don't forget to mention every contributor using `by [@username]` syntax.
 
-After finishing with release notes, execute `./gradlew makeRelease` tasks. It'll do the following things:
-
-* add links to the release notes
-* commit and push release notes to intellij-rust.github.io
-* push "Changelog" commit to master branch of intellij-rust
-* cherry-pick changelog commit to release branch
-
-Then hit `run` for all `Upload Stable` configuration on [TeamCity].
-Make sure to select the changeset with "Changelog" commit.
-
-[TeamCity]: https://teamcity.jetbrains.com/project.html?projectId=IntellijIdeaPlugins_Rust
+[Marketplace]: https://plugins.jetbrains.com/plugin/8182-rust/versions

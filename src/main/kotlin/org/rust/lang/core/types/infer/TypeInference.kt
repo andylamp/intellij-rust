@@ -49,8 +49,7 @@ sealed class Adjustment(open val target: Ty) {
 interface RsInferenceData {
     fun getExprAdjustments(expr: RsExpr): List<Adjustment>
     fun getExprType(expr: RsExpr): Ty
-    fun getExpectedPathExprType(expr: RsPathExpr): Ty
-    fun getExpectedDotExprType(expr: RsDotExpr): Ty
+    fun getExpectedExprType(expr: RsExpr): Ty
     fun getPatType(pat: RsPat): Ty
     fun getPatFieldType(patField: RsPatField): Ty
     fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath>
@@ -70,8 +69,7 @@ class RsInferenceResult(
     val exprTypes: Map<RsExpr, Ty>,
     val patTypes: MutableMap<RsPat, Ty>,
     val patFieldTypes: MutableMap<RsPatField, Ty>,
-    private val expectedPathExprTypes: Map<RsPathExpr, Ty>,
-    private val expectedDotExprTypes: Map<RsDotExpr, Ty>,
+    private val expectedExprTypes: Map<RsExpr, Ty>,
     private val resolvedPaths: Map<RsPathExpr, List<ResolvedPath>>,
     private val resolvedMethods: Map<RsMethodCall, List<MethodResolveVariant>>,
     private val resolvedFields: Map<RsFieldLookup, List<RsElement>>,
@@ -92,11 +90,8 @@ class RsInferenceResult(
     override fun getPatFieldType(patField: RsPatField): Ty =
         patFieldTypes[patField] ?: TyUnknown
 
-    override fun getExpectedPathExprType(expr: RsPathExpr): Ty =
-        expectedPathExprTypes[expr] ?: TyUnknown
-
-    override fun getExpectedDotExprType(expr: RsDotExpr): Ty =
-        expectedDotExprTypes[expr] ?: TyUnknown
+    override fun getExpectedExprType(expr: RsExpr): Ty =
+        expectedExprTypes[expr] ?: TyUnknown
 
     override fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath> =
         resolvedPaths[expr] ?: emptyList()
@@ -127,8 +122,7 @@ class RsInferenceContext(
     private val exprTypes: MutableMap<RsExpr, Ty> = hashMapOf()
     private val patTypes: MutableMap<RsPat, Ty> = hashMapOf()
     private val patFieldTypes: MutableMap<RsPatField, Ty> = hashMapOf()
-    private val expectedPathExprTypes: MutableMap<RsPathExpr, Ty> = hashMapOf()
-    private val expectedDotExprTypes: MutableMap<RsDotExpr, Ty> = hashMapOf()
+    private val expectedExprTypes: MutableMap<RsExpr, Ty> = hashMapOf()
     private val resolvedPaths: MutableMap<RsPathExpr, List<ResolvedPath>> = hashMapOf()
     private val resolvedMethods: MutableMap<RsMethodCall, List<MethodResolveVariant>> = hashMapOf()
     private val resolvedFields: MutableMap<RsFieldLookup, List<RsElement>> = hashMapOf()
@@ -225,8 +219,7 @@ class RsInferenceContext(
         fulfill.selectWherePossible()
 
         exprTypes.replaceAll { _, ty -> fullyResolve(ty) }
-        expectedPathExprTypes.replaceAll { _, ty -> fullyResolve(ty) }
-        expectedDotExprTypes.replaceAll { _, ty -> fullyResolve(ty) }
+        expectedExprTypes.replaceAll { _, ty -> fullyResolve(ty) }
         patTypes.replaceAll { _, ty -> fullyResolve(ty) }
         patFieldTypes.replaceAll { _, ty -> fullyResolve(ty) }
         // replace types in diagnostics for better quick fixes
@@ -238,8 +231,7 @@ class RsInferenceContext(
             exprTypes,
             patTypes,
             patFieldTypes,
-            expectedPathExprTypes,
-            expectedDotExprTypes,
+            expectedExprTypes,
             resolvedPaths,
             resolvedMethods,
             resolvedFields,
@@ -274,14 +266,14 @@ class RsInferenceContext(
             val fnName = (variant.element as? RsFunction)?.name
             val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
             val fn = impl.expandedMembers.functions.find { it.name == fnName } ?: continue
-            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(project, impl))
+            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(impl))
             resolvedPaths[path] = listOf(ResolvedPath.AssocItem(fn, source))
         }
         for ((call, traitRef) in methodRefinements) {
             val variant = resolvedMethods[call]?.firstOrNull() ?: continue
             val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
             val fn = impl.expandedMembers.functions.find { it.name == variant.name } ?: continue
-            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(project, impl))
+            val source = TraitImplSource.ExplicitImpl(RsCachedImplItem.forImpl(impl))
             resolvedMethods[call] = listOf(variant.copy(element = fn, source = source))
         }
     }
@@ -302,12 +294,8 @@ class RsInferenceContext(
         return patFieldTypes[patField] ?: TyUnknown
     }
 
-    override fun getExpectedPathExprType(expr: RsPathExpr): Ty {
-        return expectedPathExprTypes[expr] ?: TyUnknown
-    }
-
-    override fun getExpectedDotExprType(expr: RsDotExpr): Ty {
-        return expectedDotExprTypes[expr] ?: TyUnknown
+    override fun getExpectedExprType(expr: RsExpr): Ty {
+        return expectedExprTypes[expr] ?: TyUnknown
     }
 
     override fun getResolvedPath(expr: RsPathExpr): List<ResolvedPath> {
@@ -330,12 +318,8 @@ class RsInferenceContext(
         patFieldTypes[psi] = ty
     }
 
-    fun writeExpectedPathExprTy(psi: RsPathExpr, ty: Ty) {
-        expectedPathExprTypes[psi] = ty
-    }
-
-    fun writeExpectedDotExprTy(psi: RsDotExpr, ty: Ty) {
-        expectedDotExprTypes[psi] = ty
+    fun writeExpectedExprTy(psi: RsExpr, ty: Ty) {
+        expectedExprTypes[psi] = ty
     }
 
     fun writePath(path: RsPathExpr, resolved: List<ResolvedPath>) {
@@ -478,7 +462,9 @@ class RsInferenceContext(
                 combineTypePairs(ty1.typeArguments.zip(ty2.typeArguments))
                     .and { combineConstPairs(ty1.constArguments.zip(ty2.constArguments)) }
             }
-            ty1 is TyTraitObject && ty2 is TyTraitObject && combineBoundElements(ty1.trait, ty2.trait) -> CoerceResult.Ok
+            ty1 is TyTraitObject && ty2 is TyTraitObject &&
+                // TODO: Use all trait bounds
+                combineBoundElements(ty1.traits.first(), ty2.traits.first()) -> CoerceResult.Ok
             ty1 is TyAnon && ty2 is TyAnon && ty1.definition != null && ty1.definition == ty2.definition -> CoerceResult.Ok
             ty1 is TyNever || ty2 is TyNever -> CoerceResult.Ok
             else -> CoerceResult.TypeMismatch(ty1, ty2)
@@ -764,14 +750,14 @@ class RsInferenceContext(
         varUnificationTable.findRoot(ty) != ty || varUnificationTable.findValue(ty) != null
 
     fun instantiateBounds(
-        bounds: List<TraitRef>,
+        bounds: List<Predicate>,
         subst: Substitution = emptySubstitution,
         recursionDepth: Int = 0
     ): Sequence<Obligation> {
         return bounds.asSequence()
             .map { it.substitute(subst) }
             .map { normalizeAssociatedTypesIn(it, recursionDepth) }
-            .flatMap { it.obligations.asSequence() + Obligation(recursionDepth, Predicate.Trait(it.value)) }
+            .flatMap { it.obligations.asSequence() + Obligation(recursionDepth, it.value) }
     }
 
     fun instantiateBounds(
@@ -789,7 +775,7 @@ class RsInferenceContext(
                 .associateWith { constVarForParam(it) }
             subst + Substitution(typeSubst = typeSubst, constSubst = constSubst)
         }
-        instantiateBounds(element.bounds, map).forEach(fulfill::registerPredicateObligation)
+        instantiateBounds(element.predicates, map).forEach(fulfill::registerPredicateObligation)
         return map
     }
 
@@ -813,7 +799,7 @@ class RsInferenceContext(
             constSubst = impl.constGenerics.associateWith { constVarForParam(it) }
         )
         return probe {
-            instantiateBounds(impl.bounds, subst).forEach(ff::registerPredicateObligation)
+            instantiateBounds(impl.predicates, subst).forEach(ff::registerPredicateObligation)
             impl.typeReference?.type?.substitute(subst)?.let { combineTypes(selfTy, it) }
             ff.selectUntilError()
         }
@@ -849,7 +835,7 @@ class RsInferenceContext(
         is TraitImplSource.Object -> when (val selfTy = callee.selfTy) {
             is TyAnon -> selfTy.getTraitBoundsTransitively()
                 .find { it.element == source.value }?.subst ?: emptySubstitution
-            is TyTraitObject -> selfTy.trait.flattenHierarchy
+            is TyTraitObject -> selfTy.getTraitBoundsTransitively()
                 .find { it.element == source.value }?.subst ?: emptySubstitution
             else -> emptySubstitution
         }
@@ -885,35 +871,58 @@ val RsGenericDeclaration.constGenerics: List<CtConstParameter>
     get() = constParameters.map { CtConstParameter(it) }
 
 val RsGenericDeclaration.bounds: List<TraitRef>
+    get() = predicates.mapNotNull { (it as? Predicate.Trait)?.trait }
+
+val RsGenericDeclaration.predicates: List<Predicate>
     get() = CachedValuesManager.getCachedValue(this) {
         CachedValueProvider.Result.create(
-            doGetBounds(),
+            doGetPredicates(),
             rustStructureOrAnyPsiModificationTracker
         )
     }
 
-private fun RsGenericDeclaration.doGetBounds(): List<TraitRef> {
+private fun RsGenericDeclaration.doGetPredicates(): List<Predicate> {
     val whereBounds = whereClause?.wherePredList.orEmpty().asSequence()
         .flatMap {
-            val selfTy = it.typeReference?.type ?: return@flatMap emptySequence<TraitRef>()
-            it.typeParamBounds?.polyboundList.toTraitRefs(selfTy)
+            val selfTy = it.typeReference?.type ?: return@flatMap emptySequence<Predicate>()
+            it.typeParamBounds?.polyboundList.toPredicates(selfTy)
         }
     val bounds = typeParameters.asSequence().flatMap {
         val selfTy = TyTypeParameter.named(it)
-        it.typeParamBounds?.polyboundList.toTraitRefs(selfTy)
+        it.typeParamBounds?.polyboundList.toPredicates(selfTy)
     }
     val assocTypeBounds = if (this is RsTraitItem) {
-        expandedMembers.types.asSequence().flatMap { it.typeParamBounds?.polyboundList.toTraitRefs(it.declaredType) }
+        expandedMembers.types.asSequence().flatMap { it.typeParamBounds?.polyboundList.toPredicates(it.declaredType) }
     } else {
         emptySequence()
     }
     return (bounds + whereBounds + assocTypeBounds).toList()
 }
 
-private fun List<RsPolybound>?.toTraitRefs(selfTy: Ty): Sequence<TraitRef> = orEmpty().asSequence()
+private fun List<RsPolybound>?.toPredicates(selfTy: Ty): Sequence<Predicate> = orEmpty().asSequence()
     .filter { !it.hasQ } // ignore `?Sized`
-    .mapNotNull { it.bound.traitRef?.resolveToBoundTrait() }
-    .map { TraitRef(selfTy, it) }
+    .flatMap { bound ->
+        val traitRef = bound.bound.traitRef ?: return@flatMap emptySequence<Predicate>()
+        val boundTrait = traitRef.resolveToBoundTrait() ?: return@flatMap emptySequence<Predicate>()
+
+        val assocTypeBounds = traitRef.path.typeArgumentList?.assocTypeBindingList.orEmpty().asSequence()
+            .flatMap nestedFlatMap@{
+                val assoc = it.reference.resolve() as? RsTypeAlias
+                    ?: return@nestedFlatMap emptySequence<Predicate>()
+                val projectionTy = TyProjection.valueOf(selfTy, assoc)
+                val typeRef = it.typeReference
+                if (typeRef != null) {
+                    // T: Iterator<Item = Foo>
+                    //             ~~~~~~~~~~ expands to predicate `T::Item = Foo`
+                    sequenceOf(Predicate.Equate(projectionTy, typeRef.type))
+                } else {
+                    // T: Iterator<Item: Debug>
+                    //             ~~~~~~~~~~~ equivalent to `T::Item: Debug`
+                    it.polyboundList.toPredicates(projectionTy)
+                }
+            }
+        sequenceOf(Predicate.Trait(TraitRef(selfTy, boundTrait))) + assocTypeBounds
+    }
 
 
 data class TyWithObligations<out T>(

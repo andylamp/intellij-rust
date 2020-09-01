@@ -36,9 +36,9 @@ class RsKeywordCompletionContributor : CompletionContributor(), DumbAware {
 
     init {
         extend(CompletionType.BASIC, declarationPattern(),
-            RsKeywordCompletionProvider("const", "enum", "extern", "fn", "impl", "mod", "pub", "static", "struct", "trait", "type", "unsafe", "use"))
+            RsKeywordCompletionProvider("const", "enum", "extern", "fn", "impl", "mod", "pub", "static", "struct", "trait", "type", "union", "unsafe", "use"))
         extend(CompletionType.BASIC, pubDeclarationPattern(),
-            RsKeywordCompletionProvider("const", "enum", "extern", "fn", "mod", "static", "struct", "trait", "type", "unsafe", "use"))
+            RsKeywordCompletionProvider("const", "enum", "extern", "fn", "mod", "static", "struct", "trait", "type", "union", "unsafe", "use"))
         extend(CompletionType.BASIC, externDeclarationPattern(),
             RsKeywordCompletionProvider("crate", "fn"))
         extend(CompletionType.BASIC, unsafeDeclarationPattern(),
@@ -87,21 +87,6 @@ class RsKeywordCompletionContributor : CompletionContributor(), DumbAware {
                 for (keyword in CONDITION_KEYWORDS) {
                     result.addElement(conditionLookupElement(keyword).withPriority(KEYWORD_PRIORITY))
                 }
-            }
-        })
-
-        extend(CompletionType.BASIC, postfixAwaitPattern(), object : CompletionProvider<CompletionParameters>() {
-            override fun addCompletions(
-                parameters: CompletionParameters,
-                context: ProcessingContext,
-                result: CompletionResultSet
-            ) {
-                val awaitTy = context.get(AWAIT_TY) ?: return
-                val awaitBuilder = LookupElementBuilder
-                    .create("await")
-                    .bold()
-                    .withTypeText(awaitTy.toString())
-                result.addElement(awaitBuilder.withPriority(KEYWORD_PRIORITY * 1.0001))
             }
         })
     }
@@ -153,6 +138,8 @@ class RsKeywordCompletionContributor : CompletionContributor(), DumbAware {
         psiElement()
             .inside(psiElement<RsFunction>())
             .andNot(psiElement().withParent(RsModItem::class.java))
+            .andNot(psiElement().withSuperParent(2, RsStructLiteralBody::class.java))
+            .andNot(psiElement().withSuperParent(3, RsPatStruct::class.java))
 
     private fun statementBeginningPattern(vararg startWords: String): PsiElementPattern.Capture<PsiElement> =
         psiElement(IDENTIFIER).and(RsPsiPattern.onStatementBeginning(*startWords))
@@ -203,23 +190,6 @@ class RsKeywordCompletionContributor : CompletionContributor(), DumbAware {
             .withParent(parent)
             .withSuperParent<RsPathExpr>(2)
             .inside(psiElement<RsFunction>())
-    }
-
-    private fun postfixAwaitPattern(): PsiElementPattern.Capture<PsiElement> {
-        val parent = psiElement<RsFieldLookup>()
-            .with(object : PatternCondition<RsFieldLookup>("RsPostfixAwait") {
-                override fun accepts(t: RsFieldLookup, context: ProcessingContext?): Boolean {
-                    if (context == null || !t.isEdition2018) return false
-                    val receiver = t.receiver.safeGetOriginalOrSelf()
-                    val lookup = ImplLookup.relativeTo(receiver)
-                    val awaitTy = receiver.type.lookupFutureOutputTy(lookup)
-                    if (awaitTy is TyUnknown) return false
-                    context.put(AWAIT_TY, awaitTy)
-                    return true
-                }
-            })
-
-        return psiElement(IDENTIFIER).withParent(parent)
     }
 
     private fun constParameterBeginningPattern(): PsiElementPattern.Capture<PsiElement> {
@@ -276,16 +246,8 @@ class RsKeywordCompletionContributor : CompletionContributor(), DumbAware {
         return baseInherentImplDeclarationPattern().and(statementBeginningPattern("pub"))
     }
 
-    private fun Ty.lookupFutureOutputTy(lookup: ImplLookup): Ty {
-        val futureTrait = lookup.items.Future ?: return TyUnknown
-        val outputType = futureTrait.findAssociatedType("Output") ?: return TyUnknown
-        val selection = lookup.selectProjectionStrict(TraitRef(this, futureTrait.withSubst()), outputType)
-        return selection.ok()?.value ?: TyUnknown
-    }
-
     companion object {
         @JvmField
         val CONDITION_KEYWORDS: List<String> = listOf("if", "match")
-        private val AWAIT_TY: Key<Ty> = Key.create("AWAIT_TY")
     }
 }

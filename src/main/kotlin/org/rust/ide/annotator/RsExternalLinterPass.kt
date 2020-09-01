@@ -68,6 +68,8 @@ class RsExternalLinterPass(
     }
 
     override fun doApplyInformationToEditor() {
+        if (file !is RsFile) return
+
         if (annotationInfo == null || !isAnnotationPassEnabled) {
             disposable = myProject
             doFinish(emptyList())
@@ -105,7 +107,9 @@ class RsExternalLinterPass(
     private fun doApply(annotationResult: RsExternalLinterResult) {
         if (file !is RsFile || !file.isValid) return
         try {
-            annotationHolder.createAnnotationsForFile(file, annotationResult)
+            annotationHolder.runAnnotatorWithContext(file) { _, holder ->
+                holder.createAnnotationsForFile(file, annotationResult)
+            }
         } catch (t: Throwable) {
             if (t is ProcessCanceledException) throw t
             LOG.error(t)
@@ -113,6 +117,8 @@ class RsExternalLinterPass(
     }
 
     private fun doFinish(highlights: List<HighlightInfo>) {
+        // BACKCOMPAT: 2020.1
+        @Suppress("USELESS_ELVIS")
         val document = document ?: return
         invokeLater(ModalityState.stateForComponent(editor.component)) {
             if (Disposer.isDisposed(disposable)) return@invokeLater

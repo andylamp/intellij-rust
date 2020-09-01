@@ -8,6 +8,8 @@
 package org.rust.lang.core.resolve.ref
 
 import com.intellij.injected.editor.VirtualFileWindow
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.ServiceManager
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
@@ -25,8 +27,7 @@ import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiUtilCore
 import com.intellij.util.containers.ConcurrentWeakKeySoftValueHashMap
 import com.intellij.util.containers.ContainerUtil
-import com.intellij.util.messages.MessageBus
-import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.lang.core.macros.MacroExpansionManager
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsModificationTrackerOwner
 import org.rust.lang.core.psi.ext.RsReferenceElement
@@ -43,7 +44,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * See [RsPsiManager.rustStructureModificationTracker].
  */
-class RsResolveCache(messageBus: MessageBus) {
+@Service
+class RsResolveCache(project: Project): Disposable {
     /** The cache is cleared on [RsPsiManager.rustStructureModificationTracker] increment */
     private val _rustStructureDependentCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
     /** The cache is cleared on [ANY_PSI_CHANGE_TOPIC] event */
@@ -61,8 +63,9 @@ class RsResolveCache(messageBus: MessageBus) {
         get() = _macroCache.getOrCreateMap()
 
     init {
-        val connection = messageBus.connect()
-        connection.subscribe(RUST_STRUCTURE_CHANGE_TOPIC, object : RustStructureChangeListener {
+        val rustPsiManager = project.rustPsiManager
+        val connection = project.messageBus.connect(this)
+        rustPsiManager.subscribeRustStructureChange(connection, object : RustStructureChangeListener {
             override fun rustStructureChanged(file: PsiFile?, changedElement: PsiElement?) =
                 onRustStructureChanged(file)
         })
@@ -73,11 +76,13 @@ class RsResolveCache(messageBus: MessageBus) {
 
             override fun beforePsiChanged(isPhysical: Boolean) {}
         })
-        connection.subscribe(RUST_PSI_CHANGE_TOPIC, object : RustPsiChangeListener {
+        rustPsiManager.subscribeRustPsiChange(connection, object : RustPsiChangeListener {
             override fun rustPsiChanged(file: PsiFile, element: PsiElement, isStructureModification: Boolean) =
                 onRustPsiChanged(element)
         })
     }
+
+    override fun dispose() {}
 
     /**
      * Retrieve a cached value by [key] or compute a new value by [resolver].
@@ -166,7 +171,7 @@ class RsResolveCache(messageBus: MessageBus) {
         _rustStructureDependentCache.set(null)
         if (file != null && _macroCache.get() != null) {
             val viFile = file.virtualFile
-            if (viFile != null && !file.project.macroExpansionManager.isExpansionFile(viFile)) {
+            if (viFile != null && !MacroExpansionManager.isExpansionFile(viFile)) {
                 // Invalidate cache only on changes OUTSIDE of expansion files
                 _macroCache.set(null)
             }

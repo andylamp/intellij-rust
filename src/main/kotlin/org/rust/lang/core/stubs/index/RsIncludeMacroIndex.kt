@@ -6,16 +6,27 @@
 package org.rust.lang.core.stubs.index
 
 import com.intellij.openapi.util.Computable
-import com.intellij.psi.search.GlobalSearchScope
-import com.intellij.psi.stubs.*
+import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.ModificationTracker
+import com.intellij.psi.stubs.AbstractStubIndex
+import com.intellij.psi.stubs.IndexSink
+import com.intellij.psi.stubs.StubIndex
+import com.intellij.psi.stubs.StubIndexKey
+import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.util.PathUtil
 import com.intellij.util.io.KeyDescriptor
+import org.rust.ide.search.RsWithMacrosProjectScope
+import org.rust.lang.core.macros.macroExpansionManagerIfCreated
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.psi.ext.RsMod
+import org.rust.lang.core.psi.ext.findIncludingFile
+import org.rust.lang.core.psi.ext.macroName
+import org.rust.lang.core.psi.ext.stringValue
 import org.rust.lang.core.stubs.RsFileStub
 import org.rust.lang.core.stubs.RsMacroCallStub
+import org.rust.openapiext.checkCommitIsNotInProgress
 import org.rust.openapiext.recursionGuard
 import java.io.DataInput
 import java.io.DataOutput
@@ -29,6 +40,9 @@ class RsIncludeMacroIndex : AbstractStubIndex<IncludeMacroKey, RsMacroCall>() {
         val KEY : StubIndexKey<IncludeMacroKey, RsMacroCall> =
             StubIndexKey.createIndexKey("org.rust.lang.core.stubs.index.RsIncludeMacroIndex")
 
+        private val INCLUDING_MOD_KEY: Key<CachedValue<RsMod?>> = Key.create("INCLUDING_MOD_KEY")
+        private val INCLUDING_MOD_MACROS_KEY: Key<CachedValue<RsMod?>> = Key.create("INCLUDING_MOD_MACROS_KEY")
+
         fun index(stub: RsMacroCallStub, indexSink: IndexSink) {
             val key = key(stub.psi) ?: return
             indexSink.occurrence(KEY, key)
@@ -39,10 +53,19 @@ class RsIncludeMacroIndex : AbstractStubIndex<IncludeMacroKey, RsMacroCall>() {
          */
         fun getIncludingMod(file: RsFile): RsMod? {
             val originalFile = file.originalFile as? RsFile ?: return null
-            return CachedValuesManager.getCachedValue(originalFile) {
+            val state = file.project.macroExpansionManagerIfCreated?.expansionState
+
+            val (key, cacheDependency) = if (state != null) {
+                INCLUDING_MOD_MACROS_KEY to state.stepModificationTracker
+            } else {
+                INCLUDING_MOD_KEY to ModificationTracker.NEVER_CHANGED
+            }
+
+            return CachedValuesManager.getCachedValue(originalFile, key) {
                 CachedValueProvider.Result.create(
                     getIncludingModInternal(originalFile),
-                    originalFile.rustStructureOrAnyPsiModificationTracker
+                    originalFile.rustStructureOrAnyPsiModificationTracker,
+                    cacheDependency
                 )
             }
         }
@@ -55,9 +78,12 @@ class RsIncludeMacroIndex : AbstractStubIndex<IncludeMacroKey, RsMacroCall>() {
         private fun makeIndexLookup(key: IncludeMacroKey, file: RsFile): RsMod? {
             return recursionGuard(file, Computable {
                 val project = file.project
+                checkCommitIsNotInProgress(project)
 
                 var parentMod: RsMod? = null
-                StubIndex.getInstance().processElements(KEY, key, project, GlobalSearchScope.allScope(project), RsMacroCall::class.java) { macroCall ->
+                val scope = project.macroExpansionManagerIfCreated?.expansionState?.expandedSearchScope
+                    ?: RsWithMacrosProjectScope(project)
+                StubIndex.getInstance().processElements(KEY, key, project, scope, RsMacroCall::class.java) { macroCall ->
                     val includingFile = macroCall.findIncludingFile()
                     if (includingFile == file) {
                         parentMod = macroCall.containingMod

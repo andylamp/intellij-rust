@@ -22,14 +22,14 @@ val RsFieldsOwner.fields: List<RsFieldDecl>
 
 /** Returns those named fields that are not disabled by cfg attributes */
 val RsFieldsOwner.namedFields: List<RsNamedFieldDecl>
-    get() = blockFields?.namedFieldDeclList?.filter { it.isEnabledByCfg }.orEmpty()
+    get() = blockFields?.namedFieldDeclList?.filter { it.isEnabledByCfgSelf }.orEmpty()
 
 /** Returns those positional (tuple) fields that are not disabled by cfg attributes */
 val RsFieldsOwner.positionalFields: List<RsTupleFieldDecl>
-    get() = tupleFields?.tupleFieldDeclList?.filter { it.isEnabledByCfg }.orEmpty()
+    get() = tupleFields?.tupleFieldDeclList?.filter { it.isEnabledByCfgSelf }.orEmpty()
 
 /**
- * If some field of a struct/enum is private (not visible from [mod]),
+ * If some field of a struct is private (not visible from [mod]),
  * it isn't possible to instantiate it at [mod] anyhow.
  * ```
  * mod foo {
@@ -46,7 +46,7 @@ fun RsFieldsOwner.canBeInstantiatedIn(mod: RsMod): Boolean =
     fields.all { it.isVisibleFrom(mod) }
 
 val RsFieldsOwner.fieldTypes: List<Ty>
-    get() = fields.filter { it.isEnabledByCfg }.mapNotNull { it.typeReference?.type }
+    get() = fields.filter { it.isEnabledByCfgSelf }.mapNotNull { it.typeReference?.type }
 
 /**
  * True for:

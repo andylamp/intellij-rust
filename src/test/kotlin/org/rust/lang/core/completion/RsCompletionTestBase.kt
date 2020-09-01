@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.completion
 
+import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import org.intellij.lang.annotations.Language
@@ -68,16 +69,24 @@ abstract class RsCompletionTestBase : RsTestBase() {
     ) = completionFixture.doSingleCompletionByFileTree(before, after)
 
     protected fun checkContainsCompletion(
-        text: String,
+        variant: String,
         @Language("Rust") code: String
-    ) = completionFixture.checkContainsCompletion(text, code)
+    ) = completionFixture.checkContainsCompletion(code, variant)
+
+    protected fun checkCompletion(
+        lookupString: String,
+        @Language("Rust") before: String,
+        @Language("Rust") after: String,
+        completionChar: Char = '\n',
+        testmark: Testmark? = null
+    ) = completionFixture.checkCompletion(lookupString, before, after, completionChar, testmark)
 
     protected fun checkNotContainsCompletion(
-        text: String,
+        variant: String,
         @Language("Rust") code: String
-    ) = completionFixture.checkNotContainsCompletion(text, code)
+    ) = completionFixture.checkNotContainsCompletion(code, variant)
 
-    protected fun checkNoCompletion(@Language("Rust") code: String) = completionFixture.checkNoCompletion(code)
+    protected open fun checkNoCompletion(@Language("Rust") code: String) = completionFixture.checkNoCompletion(code)
 
     protected fun checkNoCompletionByFileTree(@Language("Rust") code: String) =
         completionFixture.checkNoCompletionByFileTree(code)

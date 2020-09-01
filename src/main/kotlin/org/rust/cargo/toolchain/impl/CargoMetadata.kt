@@ -56,8 +56,7 @@ object CargoMetadata {
         /**
          * Path to workspace root folder. Can be null for old cargo version
          */
-        // BACKCOMPAT: Rust 1.23: use not nullable type here
-        val workspace_root: String?
+        val workspace_root: String
     )
 
 
@@ -153,6 +152,7 @@ object CargoMetadata {
                 "test" -> TargetKind.TEST
                 "bench" -> TargetKind.BENCH
                 "proc-macro" -> TargetKind.LIB
+                "custom-build" -> TargetKind.CUSTOM_BUILD
                 else ->
                     if (kind.any { it.endsWith("lib") })
                         TargetKind.LIB
@@ -176,7 +176,7 @@ object CargoMetadata {
     }
 
     enum class TargetKind {
-        LIB, BIN, TEST, EXAMPLE, BENCH, UNKNOWN
+        LIB, BIN, TEST, EXAMPLE, BENCH, CUSTOM_BUILD, UNKNOWN
     }
 
     /**
@@ -227,8 +227,29 @@ object CargoMetadata {
         /**
          * Dependency name that should be used in code as extern crate name
          */
-        val name: String?
+        val name: String?,
+
+        /**
+         * Used to distinguish `[dependencies]`, [dev-dependencies]` and `[build-dependencies]`.
+         * It's a list because a dependency can be used in both `[dependencies]` and `[build-dependencies]`.
+         * `null` on old cargo only.
+         */
+        val dep_kinds: List<DepKindInfo>?
     )
+
+    data class DepKindInfo(
+        val kind: String?,
+        val target: String?
+    ) {
+        fun clean(): CargoWorkspace.DepKindInfo = CargoWorkspace.DepKindInfo(
+            when (kind) {
+                "dev" -> CargoWorkspace.DepKind.Development
+                "build" -> CargoWorkspace.DepKind.Build
+                else -> CargoWorkspace.DepKind.Normal
+            },
+            target
+        )
+    }
 
     // The next two things do not belong here,
     // see `machine_message` in Cargo.
@@ -238,6 +259,22 @@ object CargoMetadata {
         val filenames: List<String>,
         val executable: String?
     ) {
+
+        val executables: List<String>
+            get() {
+                return if (executable != null) {
+                    listOf(executable)
+                } else {
+                    /**
+                     * `.dSYM` and `.pdb` files are binaries, but they should not be used when starting debug session.
+                     * Without this filtering, CLion shows error message about several binaries
+                     * in case of disabled build tool window
+                     */
+                    // BACKCOMPAT: Cargo 0.34.0
+                    filenames.filter { !it.endsWith(".dSYM") && !it.endsWith(".pdb") }
+                }
+            }
+
         companion object {
             fun fromJson(json: JsonObject): Artifact? {
                 if (json.getAsJsonPrimitive("reason").asString != "compiler-artifact") {
@@ -287,7 +324,11 @@ object CargoMetadata {
             },
             project.resolve.nodes.associate { (id, dependencies, deps) ->
                 val dependencySet = if (deps != null) {
-                    deps.mapToSet { (pkgId, name) -> CargoWorkspaceData.Dependency(pkgId, name) }
+                    deps.mapToSet { (pkgId, name, depKinds) ->
+                        val depKindsLowered = depKinds?.map { it.clean() }
+                            ?: listOf(CargoWorkspace.DepKindInfo(CargoWorkspace.DepKind.Unclassified))
+                        CargoWorkspaceData.Dependency(pkgId, name, depKindsLowered)
+                    }
                 } else {
                     dependencies.mapToSet { CargoWorkspaceData.Dependency(it) }
                 }
@@ -324,7 +365,7 @@ object CargoMetadata {
             version,
             targets.mapNotNull { it.clean(root) },
             source,
-            origin = if (isWorkspaceMember) PackageOrigin.WORKSPACE else PackageOrigin.TRANSITIVE_DEPENDENCY,
+            origin = if (isWorkspaceMember) PackageOrigin.WORKSPACE else PackageOrigin.DEPENDENCY,
             edition = edition.cleanEdition(),
             features = features,
             cfgOptions = cfgOptions,
@@ -358,6 +399,7 @@ object CargoMetadata {
                 CargoWorkspace.TargetKind.ExampleLib(crateTypes.toLibKinds())
             }
             TargetKind.BENCH -> CargoWorkspace.TargetKind.Bench
+            TargetKind.CUSTOM_BUILD -> CargoWorkspace.TargetKind.CustomBuild
             TargetKind.UNKNOWN -> CargoWorkspace.TargetKind.Unknown
         }
     }

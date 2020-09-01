@@ -11,7 +11,9 @@ import com.intellij.codeInsight.completion.InsertionContext
 import com.intellij.codeInsight.completion.PrioritizedLookupElement
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.EditorModificationUtil
+import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import org.rust.ide.icons.RsIcons
@@ -22,6 +24,7 @@ import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.AssocItemScopeEntryBase
 import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.ScopeEntry
+import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.resolve.ref.FieldResolveVariant
 import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.emptySubstitution
@@ -223,6 +226,11 @@ open class RsDefaultInsertHandler : InsertHandler<LookupElement> {
         if (element is RsNameIdentifierOwner && !RsNamesValidator.isIdentifier(scopeName) && scopeName !in CAN_NOT_BE_ESCAPED) {
             document.insertString(startOffset, RS_RAW_PREFIX)
         }
+
+        if (element is RsGenericDeclaration) {
+            addGenericTypeCompletion(element, document, context)
+        }
+
         when (element) {
 
             is RsMod -> {
@@ -249,6 +257,7 @@ open class RsDefaultInsertHandler : InsertHandler<LookupElement> {
                     val isMethodCall = context.getElementOfType<RsMethodOrField>() != null
                     if (!context.alreadyHasCallParens) {
                         document.insertString(context.selectionEndOffset, "()")
+                        context.doNotAddOpenParenCompletionChar()
                     }
                     val caretShift = if (element.valueParameters.isEmpty() && (isMethodCall || !element.hasSelfParameters)) 2 else 1
                     EditorModificationUtil.moveCaretRelatively(context.editor, caretShift)
@@ -263,7 +272,10 @@ open class RsDefaultInsertHandler : InsertHandler<LookupElement> {
                     // Currently this works only for enum variants (and not for structs). It's because in the case of
                     // struct you may want to append an associated function call after a struct name (e.g. `::new()`)
                     val (text, shift) = when {
-                        element.tupleFields != null -> Pair("()", 1)
+                        element.tupleFields != null -> {
+                            context.doNotAddOpenParenCompletionChar()
+                            Pair("()", 1)
+                        }
                         element.blockFields != null -> Pair(" {}", 2)
                         else -> Pair("", 0)
                     }
@@ -308,6 +320,38 @@ private fun appendSemicolon(context: InsertionContext, curUseItem: RsUseItem?) {
     }
 }
 
+private fun addGenericTypeCompletion(element: RsGenericDeclaration, document: Document, context: InsertionContext) {
+    // complete only types that have at least one type parameter without a default
+    if (element.typeParameters.all { it.typeReference != null }) return
+
+    // complete angle brackets only in a type context
+    val path = context.getElementOfType<RsPath>()
+    if (path == null || path.parent !is RsTypeReference) return
+
+    if (element.isFnLikeTrait) {
+        if (!context.alreadyHasCallParens) {
+            document.insertString(context.selectionEndOffset, "()")
+            context.doNotAddOpenParenCompletionChar()
+        }
+    } else {
+        if (!context.alreadyHasAngleBrackets) {
+            document.insertString(context.selectionEndOffset, "<>")
+        }
+    }
+
+    EditorModificationUtil.moveCaretRelatively(context.editor, 1)
+}
+
+// When a user types `(` while completion,
+// `com.intellij.codeInsight.completion.DefaultCharFilter` invokes completion with selected item.
+// And if we insert `()` for the item (for example, function), a user get double parentheses
+private fun InsertionContext.doNotAddOpenParenCompletionChar() {
+    if (completionChar == '(') {
+        setAddCompletionChar(false)
+        Testmarks.doNotAddOpenParenCompletionChar.hit()
+    }
+}
+
 inline fun <reified T : PsiElement> InsertionContext.getElementOfType(strict: Boolean = false): T? =
     PsiTreeUtil.findElementOfClassAtOffset(file, tailOffset - 1, T::class.java, strict)
 
@@ -317,8 +361,19 @@ private val InsertionContext.isInUseGroup: Boolean
 val InsertionContext.alreadyHasCallParens: Boolean
     get() = nextCharIs('(')
 
+private val InsertionContext.alreadyHasAngleBrackets: Boolean
+    get() = nextCharIs('<')
+
 private val InsertionContext.alreadyHasStructBraces: Boolean
     get() = nextCharIs('{')
+
+private val RsElement.isFnLikeTrait: Boolean
+    get() {
+        val knownItems = knownItems
+        return this == knownItems.Fn ||
+            this == knownItems.FnMut ||
+            this == knownItems.FnOnce
+    }
 
 private fun RsFunction.getExtraTailText(subst: Substitution): String {
     val traitRef = stubAncestorStrict<RsImplItem>()?.traitRef ?: return ""
@@ -361,4 +416,8 @@ private fun isCompatibleTypes(lookup: ImplLookup, actualTy: Ty?, expectedTy: Ty?
     }
 
     return lookup.ctx.combineTypesNoVars(actualTy.foldWith(folder), expectedTy.foldWith(folder)).isOk
+}
+
+object Testmarks {
+    val doNotAddOpenParenCompletionChar = Testmark("doNotAddOpenParenCompletionChar")
 }

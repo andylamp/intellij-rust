@@ -48,28 +48,25 @@ class CargoTestEventsConverter(
     private var doctestPackageCounter: Int = 0
 
     override fun processServiceMessages(text: String, outputType: Key<*>, visitor: ServiceMessageVisitor): Boolean {
-        if (handleStartMessage(text)) return true
+        handleStartMessage(text)
 
         val jsonObject = try {
-            val escapedText = text.replace(DOCTEST_PATH_RE) { it.value.replace("\\", "\\\\") }
+            val escapedText = text.replace(NAME_RE) { it.value.replace("\\", "\\\\") }
             val reader = JsonReader(StringReader(escapedText)).apply { isLenient = true }
-            // BACKCOMPAT: 2019.3
-            @Suppress("DEPRECATION")
-            PARSER.parse(reader).takeIf { it.isJsonObject }?.asJsonObject
+            JsonParser.parseReader(reader).takeIf { it.isJsonObject }?.asJsonObject
         } catch (e: JsonSyntaxException) {
             null
-        } ?: return true
+        }
 
-        if (handleTestMessage(jsonObject, outputType, visitor)) return true
-        if (handleSuiteMessage(jsonObject, outputType, visitor)) return true
-
-        return true
+        return when {
+            jsonObject == null -> false
+            handleTestMessage(jsonObject, outputType, visitor) -> true
+            handleSuiteMessage(jsonObject, outputType, visitor) -> true
+            else -> true // don't print unknown json messages
+        }
     }
 
-    /** @return true if message successfully processed. */
-    private fun handleStartMessage(text: String): Boolean {
-        if (suitesStack.isNotEmpty()) return false
-
+    private fun handleStartMessage(text: String) {
         when (converterState) {
             START_MESSAGE -> {
                 val clean = text.trim().toLowerCase()
@@ -86,7 +83,7 @@ class CargoTestEventsConverter(
                         suitesStack.add(executableName)
                         START_MESSAGE
                     }
-                    else -> START_MESSAGE
+                    else -> return
                 }
             }
             EXECUTABLE_NAME -> {
@@ -110,8 +107,6 @@ class CargoTestEventsConverter(
                 converterState = START_MESSAGE
             }
         }
-
-        return true
     }
 
     private fun handleTestMessage(
@@ -259,17 +254,15 @@ class CargoTestEventsConverter(
     }
 
     companion object {
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        private val PARSER: JsonParser = JsonParser()
-
         private const val TARGET_PATH_PART: String = "/target/"
 
         private const val ROOT_SUITE: String = "0"
         private const val NAME_SEPARATOR: String = "::"
         private const val DOCTESTS_SUFFIX = "doctests"
 
-        private val DOCTEST_PATH_RE: Regex = """"[0-9 a-z_A-Z\-\\.]+ - """.toRegex()
+        private val NAME_RE: Regex = """"name":\s*"(?<name>[^"]+)"""".toRegex()
+
+        private val LINE_NUMBER_RE: Regex = """\s+\(line\s+(?<line>\d+)\)\s*""".toRegex()
 
         private val ERROR_MESSAGE_RE: Regex =
             """thread '.*' panicked at '(assertion failed: `\(left (?<sign>.*) right\)`\s*left: `(?<left>.*?)`,\s*right: `(?<right>.*?)`(: )?)?(?<message>.*)',"""
@@ -302,15 +295,17 @@ class CargoTestEventsConverter(
             ServiceMessageBuilder.testSuiteFinished(suite.name)
                 .addAttribute("nodeId", suite)
 
-        private fun createTestStartedMessage(test: NodeId): ServiceMessageBuilder =
-            ServiceMessageBuilder.testStarted(test.name)
+        private fun createTestStartedMessage(test: NodeId): ServiceMessageBuilder {
+            // target_name::name1::name2 (line i) -> target_name::name1::name2#i
+            val name = test.replace(LINE_NUMBER_RE) {
+                val line = it.groups["line"]?.value ?: error("Failed to find `line` capturing group")
+                "#$line"
+            }
+            return ServiceMessageBuilder.testStarted(test.name)
                 .addAttribute("nodeId", test)
                 .addAttribute("parentNodeId", test.parent)
-                .addAttribute(
-                    "locationHint",
-                    // target_name::name1::name2 (line #i) -> target_name::name1::name2
-                    CargoTestLocator.getTestUrl(test.substringBefore(" ("))
-                )
+                .addAttribute("locationHint", CargoTestLocator.getTestUrl(name))
+        }
 
         private fun createTestFailedMessage(test: NodeId, failedMessage: String): ServiceMessageBuilder {
             val builder = ServiceMessageBuilder.testFailed(test.name)
@@ -361,8 +356,6 @@ class CargoTestEventsConverter(
             val groups = ERROR_MESSAGE_RE.find(failedMessage)?.groups ?: return null
             val message = groups["message"]?.value ?: error("Failed to find `message` capturing group")
 
-            fun unescape(s: String): String = unquoteString(unescapeStringCharacters(s))
-
             val diff = if (groups["sign"]?.value == "==") {
                 val left = groups["left"]?.value?.let(::unescape)
                 val right = groups["right"]?.value?.let(::unescape)
@@ -398,6 +391,8 @@ class CargoTestEventsConverter(
         DOCTESTS_PACKAGE_NAME
     }
 }
+
+private fun unescape(s: String): String = unquoteString(unescapeStringCharacters(s))
 
 private data class FailedTestOutput(val stdout: String, val failedMessage: String)
 private data class ErrorMessage(val message: String, val diff: DiffResult?, val backtrace: String?)

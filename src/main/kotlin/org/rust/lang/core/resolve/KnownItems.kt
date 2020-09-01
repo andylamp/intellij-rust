@@ -7,8 +7,9 @@ package org.rust.lang.core.resolve
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
-import com.intellij.reference.SoftReference
-import com.intellij.util.containers.ContainerUtil
+import com.intellij.psi.util.CachedValue
+import com.intellij.psi.util.CachedValueProvider
+import com.intellij.psi.util.CachedValuesManager
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.util.AutoInjectedCrates.CORE
@@ -18,18 +19,22 @@ import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.RsNamedElement
 import org.rust.lang.core.psi.ext.RsStructOrEnumItemElement
 import org.rust.lang.core.psi.ext.cargoProject
+import org.rust.lang.core.psi.rustStructureModificationTracker
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
-import org.rust.openapiext.getOrPutSoft
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 
-private val KNOWN_ITEMS_KEY: Key<SoftReference<KnownItems>> = Key.create("KNOWN_ITEMS_KEY")
+private val KNOWN_ITEMS_KEY: Key<CachedValue<KnownItems>> = Key.create("KNOWN_ITEMS_KEY")
 private val DUMMY_KNOWN_ITEMS = KnownItems(DummyKnownItemsLookup)
 
 val CargoProject.knownItems: KnownItems
-    get() = getOrPutSoft(KNOWN_ITEMS_KEY) {
-        val workspace = workspace ?: return@getOrPutSoft DUMMY_KNOWN_ITEMS
-        KnownItems(RealKnownItemsLookup(project, workspace))
-    }
+    get() = CachedValuesManager.getManager(project).getCachedValue(this, KNOWN_ITEMS_KEY, {
+        val items = run {
+            val workspace = workspace ?: return@run DUMMY_KNOWN_ITEMS
+            KnownItems(RealKnownItemsLookup(project, workspace))
+        }
+        CachedValueProvider.Result(items, project.rustStructureModificationTracker)
+    }, false)
 
 val RsElement.knownItems: KnownItems
     get() = cargoProject?.knownItems ?: DUMMY_KNOWN_ITEMS
@@ -74,6 +79,8 @@ class KnownItems(
     val RefCell: RsStructOrEnumItemElement? get() = findItem("core::cell::RefCell")
     val UnsafeCell: RsStructOrEnumItemElement? get() = findItem("core::cell::UnsafeCell")
     val Mutex: RsStructOrEnumItemElement? get() = findItem("std::sync::mutex::Mutex")
+    val Path: RsStructOrEnumItemElement? get() = findItem("std::path::Path")
+    val PathBuf: RsStructOrEnumItemElement? get() = findItem("std::path::PathBuf")
 
     val Iterator: RsTraitItem? get() = findItem("core::iter::Iterator")
     val IntoIterator: RsTraitItem? get() = findItem("core::iter::IntoIterator")
@@ -92,6 +99,13 @@ class KnownItems(
     val Try: RsTraitItem? get() = findItem("core::ops::try::Try")
     val Generator: RsTraitItem? get() = findItem("core::ops::generator::Generator")
     val Future: RsTraitItem? get() = findItem("core::future::future::Future")
+    val Octal: RsTraitItem? get() = findItem("core::fmt::Octal")
+    val LowerHex: RsTraitItem? get() = findItem("core::fmt::LowerHex")
+    val UpperHex: RsTraitItem? get() = findItem("core::fmt::UpperHex")
+    val Pointer: RsTraitItem? get() = findItem("core::fmt::Pointer")
+    val Binary: RsTraitItem? get() = findItem("core::fmt::Binary")
+    val LowerExp: RsTraitItem? get() = findItem("core::fmt::LowerExp")
+    val UpperExp: RsTraitItem? get() = findItem("core::fmt::UpperExp")
 
     // Lang items
 
@@ -106,14 +120,18 @@ class KnownItems(
     val Clone: RsTraitItem? get() = findLangItem("clone")
     val Copy: RsTraitItem? get() = findLangItem("copy")
     val PartialEq: RsTraitItem? get() = findLangItem("eq")
+
     // `Eq` trait doesn't have its own lang attribute, so use `findItem` to find it
     val Eq: RsTraitItem? get() = findItem("core::cmp::Eq")
+
     // In some old versions of stdlib `PartialOrd` trait has a lang attribute with value "ord",
     // but in the new stdlib it is "partial_ord" ("ord" is used for "Ord" trait). So we try
     // "partial_ord", and on failure we resolve it by path
     val PartialOrd: RsTraitItem? get() = findLangItem("partial_ord") ?: findItem("core::cmp::PartialOrd")
+
     // Some old versions of stdlib contain `Ord` trait without lang attribute
     val Ord: RsTraitItem? get() = findItem("core::cmp::Ord")
+
     // Some stdlib versions don't have direct `#[lang="debug_trait"]` attribute on `Debug` trait.
     // In this case, fully qualified name search is used
     val Debug: RsTraitItem? get() = findLangItem("debug_trait") ?: findItem("core::fmt::Debug")
@@ -137,8 +155,8 @@ private class RealKnownItemsLookup(
     private val workspace: CargoWorkspace
 ) : KnownItemsLookup {
     // WE use Optional because ConcurrentHashMap doesn't allow null values
-    private val langItems: MutableMap<String, Optional<RsNamedElement>> = ContainerUtil.newConcurrentMap()
-    private val resolvedItems: MutableMap<String, Optional<RsNamedElement>> = ContainerUtil.newConcurrentMap()
+    private val langItems: MutableMap<String, Optional<RsNamedElement>> = ConcurrentHashMap()
+    private val resolvedItems: MutableMap<String, Optional<RsNamedElement>> = ConcurrentHashMap()
 
     override fun findLangItem(langAttribute: String, crateName: String): RsNamedElement? {
         return langItems.getOrPut(langAttribute) {

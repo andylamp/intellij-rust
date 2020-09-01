@@ -12,32 +12,34 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
 import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.ide.inspections.import.RsImportHelper.importTypeReferencesFromTy
-import org.rust.ide.presentation.insertionSafeTextWithAliasesAndLifetimes
-import org.rust.ide.presentation.textWithAliasNames
-import org.rust.lang.core.psi.RsFunction
-import org.rust.lang.core.psi.RsLambdaExpr
-import org.rust.lang.core.psi.RsPsiFactory
-import org.rust.lang.core.psi.RsRetExpr
+import org.rust.ide.presentation.render
+import org.rust.ide.presentation.renderInsertionSafe
+import org.rust.ide.utils.import.RsImportHelper.importTypeReferencesFromTy
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyUnit
 
 
-class ChangeReturnTypeFix(element: RsElement, private val actualTy: Ty) : LocalQuickFixAndIntentionActionOnPsiElement(element) {
-    override fun getFamilyName(): String = "Change return type"
-    override fun getText(): String {
-        val (item, name) = when (val callable = findCallableOwner(startElement)) {
-            is RsFunction -> {
-                val item = if (callable.owner.isImplOrTrait) " of method" else " of function"
-                val name = callable.name?.let { " '$it'" } ?: ""
-                item to name
+class ChangeReturnTypeFix(
+    element: RsElement,
+    private val actualTy: Ty
+) : LocalQuickFixAndIntentionActionOnPsiElement(element) {
+    private val _text: String = run {
+            val (item, name) = when (val callable = findCallableOwner(element)) {
+                is RsFunction -> {
+                    val item = if (callable.owner.isImplOrTrait) " of method" else " of function"
+                    val name = callable.name?.let { " '$it'" } ?: ""
+                    item to name
+                }
+                is RsLambdaExpr -> " of closure" to ""
+                else -> "" to ""
             }
-            is RsLambdaExpr -> " of closure" to ""
-            else -> "" to ""
+            "Change return type$item$name to '${actualTy.render(useAliasNames = true)}'"
         }
-        return "Change return type$item$name to '${actualTy.textWithAliasNames}'"
-    }
+
+    override fun getText(): String = _text
+    override fun getFamilyName(): String = "Change return type"
 
     override fun invoke(project: Project, file: PsiFile, editor: Editor?, startElement: PsiElement, endElement: PsiElement) {
         val owner = findCallableOwner(startElement) ?: return
@@ -54,7 +56,8 @@ class ChangeReturnTypeFix(element: RsElement, private val actualTy: Ty) : LocalQ
         }
 
         val psiFactory = RsPsiFactory(project)
-        val retType = psiFactory.createRetType(actualTy.insertionSafeTextWithAliasesAndLifetimes)
+        val text = actualTy.renderInsertionSafe(includeLifetimeArguments = true, useAliasNames = true)
+        val retType = psiFactory.createRetType(text)
 
         if (oldRetType != null) {
             oldRetType.replace(retType)
@@ -75,11 +78,15 @@ class ChangeReturnTypeFix(element: RsElement, private val actualTy: Ty) : LocalQ
             PsiTreeUtil.getContextOfType(element, true, RsFunction::class.java, RsLambdaExpr::class.java)
 
         fun createIfCompatible(element: RsElement, actualTy: Ty): ChangeReturnTypeFix? {
-            if (element.containingCargoPackage?.origin != PackageOrigin.WORKSPACE) return null
+            if (element.containingCrate?.origin != PackageOrigin.WORKSPACE) return null
 
             val owner = findCallableOwner(element)
             val isOverriddenFn = owner is RsFunction && owner.superItem != null
             if (isOverriddenFn) return null // TODO: Support overridden items
+
+            if (owner is RsLambdaExpr && owner.retType == null) {
+                return null
+            }
 
             val retExpr = when (owner) {
                 is RsFunction -> owner.block?.expr

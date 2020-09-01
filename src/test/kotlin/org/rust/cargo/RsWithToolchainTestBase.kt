@@ -5,6 +5,7 @@
 
 package org.rust.cargo
 
+import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.builders.ModuleFixtureBuilder
 import com.intellij.testFramework.fixtures.CodeInsightFixtureTestCase
@@ -23,6 +24,8 @@ abstract class RsWithToolchainTestBase : CodeInsightFixtureTestCase<ModuleFixtur
     private lateinit var rustupFixture: RustupTestFixture
 
     open val dataPath: String = ""
+
+    open val disableMissedCacheAssertions: Boolean get() = true
 
     protected val cargoProjectDirectory: VirtualFile get() = myFixture.findFileInTempDir(".")
 
@@ -60,9 +63,11 @@ abstract class RsWithToolchainTestBase : CodeInsightFixtureTestCase<ModuleFixtur
 
     override fun setUp() {
         super.setUp()
-        rustupFixture = RustupTestFixture(project)
+        rustupFixture = createRustupFixture()
         rustupFixture.setUp()
-        disableMissedCacheAssertions(testRootDisposable)
+        if (disableMissedCacheAssertions) {
+            RecursionManager.disableMissedCacheAssertions(testRootDisposable)
+        }
     }
 
     override fun tearDown() {
@@ -70,6 +75,8 @@ abstract class RsWithToolchainTestBase : CodeInsightFixtureTestCase<ModuleFixtur
         super.tearDown()
         checkMacroExpansionFileSystemAfterTest()
     }
+
+    protected open fun createRustupFixture(): RustupTestFixture = RustupTestFixture(project)
 
     protected fun buildProject(builder: FileTreeBuilder.() -> Unit): TestProject =
         fileTree { builder() }.create()
@@ -85,14 +92,15 @@ abstract class RsWithToolchainTestBase : CodeInsightFixtureTestCase<ModuleFixtur
      */
     protected fun runWithInvocationEventsDispatching(
         errorMessage: String = "Failed to invoke `action` successfully",
+        retries: Int = 1000,
         action: () -> Boolean
     ) {
-        for (retries in 0..1000) {
-            Thread.sleep(10)
+        repeat(retries) {
             UIUtil.dispatchAllInvocationEvents()
             if (action()) {
                 return
             }
+            Thread.sleep(10)
         }
         error(errorMessage)
     }

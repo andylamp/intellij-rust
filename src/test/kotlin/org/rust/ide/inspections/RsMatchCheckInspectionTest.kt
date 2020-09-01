@@ -5,6 +5,8 @@
 
 package org.rust.ide.inspections
 
+import org.rust.ProjectDescriptor
+import org.rust.WithDependencyRustProjectDescriptor
 import org.rust.ide.inspections.checkMatch.RsMatchCheckInspection
 
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection::class) {
@@ -931,7 +933,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
 
     fun `test full and shorthand pat fields`() = checkByText("""
         struct S { x: bool, y: i32 }
-        
+
         fn foo(s: S) {
             match s {
                 S { x: true, y } => {}
@@ -942,7 +944,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
 
     fun `test ignored fields 1`() = checkByText("""
         struct S { x: bool, y: i32 }
-        
+
         fn foo(s: S) {
             match s {
                 S { x: true, y } => {}
@@ -955,7 +957,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
     fun `test ignored fields 2`() = checkByText("""
         struct S { s: String, e: E }
         enum E { A, B }
-        
+
         fn foo(s: S) {
             match s {
                 S { e: E::A, s } => {}
@@ -966,7 +968,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
 
     fun `test ignored fields 3`() = checkFixByText("Add remaining patterns", """
         struct S { a: bool, b: bool, c: bool }
-        
+
         fn foo(s: S) {
             <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> s {
                 S { a: true, .. } => {}
@@ -975,7 +977,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
         }
     """, """
         struct S { a: bool, b: bool, c: bool }
-        
+
         fn foo(s: S) {
             match s {
                 S { a: true, .. } => {}
@@ -1013,6 +1015,254 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection:
                 A => {}
                 E::B => {}
             };
+        }
+    """)
+
+    fun `test add _ pattern for no expression in match`() = checkFixByText("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true =><EOLError descr="<expr> expected, got '}'"></EOLError>
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true =>,
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add _ pattern for unit expression in match`() = checkFixByText("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => ()
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => (),
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add _ pattern for macro expression in match`() = checkFixByText("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => println!("test")
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => println!("test"),
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add _ pattern for dot expression in match`() = checkFixByText("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => "test".as_bytes()
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => "test".as_bytes(),
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add _ pattern for call expression in match`() = checkFixByText("Add _ pattern", """
+        fn test_fun() {}
+
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => test_fun()
+            }
+        }
+    """, """
+        fn test_fun() {}
+
+        fn main() {
+            let test = true;
+            match test {
+                true => test_fun(),
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add _ pattern for block expression in match`() = checkFixByText("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => {}
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => {}
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for no expression in match`() = checkFixByText("Add remaining patterns", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true =><EOLError descr="<expr> expected, got '}'"></EOLError>
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true =>,
+                false => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for unit expression in match`() = checkFixByText("Add remaining patterns", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => ()
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => (),
+                false => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for macro expression in match`() = checkFixByText("Add remaining patterns", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => println!("test")
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => println!("test"),
+                false => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for dot expression in match`() = checkFixByText("Add remaining patterns", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => "test".as_bytes()
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => "test".as_bytes(),
+                false => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for call expression in match`() = checkFixByText("Add remaining patterns", """
+        fn test_fun() {}
+
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => test_fun()
+            }
+        }
+    """, """
+        fn test_fun() {}
+
+        fn main() {
+            let test = true;
+            match test {
+                true => test_fun(),
+                false => {}
+            }
+        }
+    """)
+
+    fun `test add remaining patterns for block expression in match`() = checkFixByText("Add remaining patterns", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {
+                true => {}
+            }
+        }
+    """, """
+        fn main() {
+            let test = true;
+            match test {
+                true => {}
+                false => {}
+            }
+        }
+    """)
+
+    fun `test non-exhaustive enum match in same crate`() = checkByText("""
+        #[non_exhaustive]
+        enum Error {
+            Variant
+        }
+
+        fn main() {
+            let error = Error::Variant;
+
+            match error {
+                Error::Variant => println!("Variant")
+            }
+        }
+    """)
+
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test non-exhaustive enum match in different crate`() = checkByFileTree("""
+        //- dep-lib/lib.rs
+        #[non_exhaustive]
+        pub enum Error {
+            Variant
+        }
+
+        //- main.rs
+        extern crate dep_lib_target;
+        use dep_lib_target::Error;
+
+        fn main() {
+            let error = Error::Variant;
+
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> error {
+                Error::Variant => println!("Variant")
+            }
         }
     """)
 }

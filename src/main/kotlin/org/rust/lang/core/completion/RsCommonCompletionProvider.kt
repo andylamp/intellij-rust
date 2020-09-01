@@ -6,21 +6,24 @@
 package org.rust.lang.core.completion
 
 import com.google.common.annotations.VisibleForTesting
-import com.intellij.codeInsight.completion.*
+import com.intellij.codeInsight.completion.CompletionParameters
+import com.intellij.codeInsight.completion.CompletionResultSet
+import com.intellij.codeInsight.completion.CompletionUtil
+import com.intellij.codeInsight.completion.InsertionContext
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.openapiext.Testmark
 import com.intellij.patterns.ElementPattern
-import com.intellij.patterns.PatternCondition
 import com.intellij.patterns.PlatformPatterns
 import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.StubIndex
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.ProcessingContext
-import org.rust.ide.inspections.import.AutoImportFix
-import org.rust.ide.inspections.import.ImportCandidate
-import org.rust.ide.inspections.import.ImportContext
-import org.rust.ide.inspections.import.import
 import org.rust.ide.settings.RsCodeInsightSettings
+import org.rust.ide.utils.import.ImportCandidate
+import org.rust.ide.utils.import.ImportCandidatesCollector
+import org.rust.ide.utils.import.ImportContext
+import org.rust.ide.utils.import.import
+import org.rust.lang.core.RsPsiPattern
 import org.rust.lang.core.macros.findElementExpandedFrom
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -28,6 +31,7 @@ import org.rust.lang.core.psiElement
 import org.rust.lang.core.resolve.*
 import org.rust.lang.core.resolve.ref.FieldResolveVariant
 import org.rust.lang.core.resolve.ref.MethodResolveVariant
+import org.rust.lang.core.stubs.index.ReexportKey
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
 import org.rust.lang.core.types.expectedType
@@ -56,7 +60,7 @@ object RsCommonCompletionProvider : RsCompletionProvider() {
         val context = RsCompletionContext(
             element.implLookup,
             getExpectedTypeForEnclosingPathOrDotExpr(element),
-            isSimplePath = simplePathPattern.accepts(parameters.position)
+            isSimplePath = RsPsiPattern.simplePathPattern.accepts(parameters.position)
         )
 
         addCompletionVariants(element, result, context, processedPathNames)
@@ -141,6 +145,7 @@ object RsCommonCompletionProvider : RsCompletionProvider() {
         processResolveVariants(
             lookup,
             receiverTy,
+            element,
             filterCompletionVariantsByVisibility(
                 filterMethodCompletionVariantsByTraitBounds(processor, lookup, receiverTy),
                 receiver.containingMod
@@ -177,7 +182,9 @@ object RsCommonCompletionProvider : RsCompletionProvider() {
 
         val keys = hashSetOf<String>().apply {
             val explicitNames = StubIndex.getInstance().getAllKeys(RsNamedElementIndex.KEY, project)
-            val reexportedNames = StubIndex.getInstance().getAllKeys(RsReexportIndex.KEY, project)
+            val reexportedNames = StubIndex.getInstance().getAllKeys(RsReexportIndex.KEY, project).mapNotNull {
+                (it as? ReexportKey.ProducedNameKey)?.name
+            }
 
             addAll(explicitNames)
             addAll(reexportedNames)
@@ -188,7 +195,7 @@ object RsCommonCompletionProvider : RsCompletionProvider() {
 
         val context = RsCompletionContext(path.implLookup, expectedTy, isSimplePath = true)
         for (elementName in result.prefixMatcher.sortMatching(keys)) {
-            val candidates = AutoImportFix.getImportCandidates(importContext, elementName, elementName) {
+            val candidates = ImportCandidatesCollector.getImportCandidates(importContext, elementName, elementName) {
                 !(it.item is RsMod || it.item is RsModDeclItem || it.item.parent is RsMembers)
             }
 
@@ -226,20 +233,6 @@ object RsCommonCompletionProvider : RsCompletionProvider() {
 
     override val elementPattern: ElementPattern<PsiElement>
         get() = PlatformPatterns.psiElement().withParent(psiElement<RsReferenceElement>())
-
-    private val simplePathPattern: ElementPattern<PsiElement>
-        get() {
-            val simplePath = psiElement<RsPath>()
-                .with(object : PatternCondition<RsPath>("SimplePath") {
-                    override fun accepts(path: RsPath, context: ProcessingContext?): Boolean =
-                        path.kind == PathKind.IDENTIFIER &&
-                            path.path == null &&
-                            path.typeQual == null &&
-                            !path.hasColonColon &&
-                            path.ancestorStrict<RsUseSpeck>() == null
-                })
-            return PlatformPatterns.psiElement().withParent(simplePath)
-        }
 
     object Testmarks {
         val pathCompletionFromIndex = Testmark("pathCompletionFromIndex")
@@ -353,9 +346,12 @@ private fun methodAndFieldCompletionProcessor(
 private fun findTraitImportCandidate(methodOrField: RsMethodOrField, resolveVariant: MethodResolveVariant): ImportCandidate? {
     if (!RsCodeInsightSettings.getInstance().importOutOfScopeItems) return null
     val ancestor = PsiTreeUtil.getParentOfType(methodOrField, RsBlock::class.java, RsMod::class.java) ?: return null
-    // `AutoImportFix.getImportCandidates` expects original scope element for correct item filtering
+    // `ImportCandidatesCollector.getImportCandidates` expects original scope element for correct item filtering
     val scope = CompletionUtil.getOriginalElement(ancestor) as? RsElement ?: return null
-    return AutoImportFix.getImportCandidates(methodOrField.project, scope, listOf(resolveVariant)).orEmpty().singleOrNull()
+    return ImportCandidatesCollector
+        .getImportCandidates(methodOrField.project, scope, listOf(resolveVariant))
+        .orEmpty()
+        .singleOrNull()
 }
 
 private fun addProcessedPathName(

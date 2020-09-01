@@ -5,8 +5,8 @@
     <vendor>JetBrains</vendor>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2020/03/16/changelog-118.html">
-                 https://intellij-rust.github.io/2020/03/16/changelog-118.html
+        <a href="https://intellij-rust.github.io/2020/08/24/changelog-129.html">
+                 https://intellij-rust.github.io/2020/08/24/changelog-129.html
     ]]>
     </change-notes>
 
@@ -20,7 +20,8 @@
 
     <depends optional="true" config-file="idea-only.xml">com.intellij.modules.java</depends>
     <depends optional="true" config-file="clion-only.xml">com.intellij.modules.clion</depends>
-    <depends optional="true" config-file="debugger-only.xml">com.intellij.modules.clion</depends>
+    <depends optional="true" config-file="debugger-only.xml">com.intellij.modules.appcode</depends>
+    <depends optional="true" config-file="native-debug-only.xml">com.intellij.nativeDebug</depends>
     <depends optional="true" config-file="toml-only.xml">org.toml.lang</depends>
     <depends optional="true" config-file="copyright-only.xml">com.intellij.copyright</depends>
     <depends optional="true" config-file="duplicates-only.xml">com.intellij.modules.duplicatesDetector</depends>

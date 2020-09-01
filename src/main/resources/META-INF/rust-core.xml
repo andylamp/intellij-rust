@@ -10,6 +10,7 @@
         <!-- Project Creation -->
         <projectOpenProcessor id="Cargo" implementation="org.rust.cargo.project.CargoProjectOpenProcessor"/>
         <directoryProjectGenerator implementation="org.rust.ide.newProject.RsDirectoryProjectGenerator"/>
+        <applicationService serviceImplementation="org.rust.ide.newProject.state.RsUserTemplatesState"/>
 
         <!-- File-type Factory -->
 
@@ -30,6 +31,11 @@
 
         <generatedSourcesFilter implementation="org.rust.cargo.project.model.RsGeneratedSourcesFilter"/>
         <writingAccessProvider implementation="org.rust.cargo.project.model.RsGeneratedSourcesWritingAccessProvider"/>
+
+        <!-- PSI managing -->
+
+        <projectService serviceInterface="org.rust.lang.core.psi.RsPsiManager"
+                        serviceImplementation="org.rust.lang.core.psi.RsPsiManagerImpl"/>
 
         <!-- Code insight settings -->
 
@@ -59,8 +65,6 @@
         <postFormatProcessor implementation="org.rust.ide.formatter.processors.RsTrailingCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsMatchArmCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsStatementSemicolonFormatProcessor"/>
-        <preFormatProcessor
-                implementation="org.rust.ide.formatter.processors.RsSingleImportRemoveBracesFormatProcessor"/>
 
         <!-- Refactoring support -->
 
@@ -110,6 +114,9 @@
 
         <indexPatternBuilder implementation="org.rust.ide.todo.RsTodoIndexPatternBuilder"/>
         <todoIndexer filetype="Rust" implementationClass="org.rust.ide.todo.RsTodoIndexer"/>
+        <indexPatternSearch
+            id="RsTodoSearcher"
+            implementation="org.rust.ide.todo.RsTodoSearcher"/>
 
         <!-- Smart Enter Processor -->
 
@@ -140,13 +147,14 @@
 
         <!-- Hints -->
 
-        <codeInsight.typeInfo language="Rust" implementationClass="org.rust.ide.hints.RsExpressionTypeProvider"/>
-        <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsParameterInfoHandler"/>
+        <codeInsight.typeInfo language="Rust" implementationClass="org.rust.ide.hints.type.RsExpressionTypeProvider"/>
+        <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.parameter.RsParameterInfoHandler"/>
         <codeInsight.parameterInfo language="Rust"
-                                   implementationClass="org.rust.ide.hints.RsGenericParameterInfoHandler"/>
+                                   implementationClass="org.rust.ide.hints.parameter.RsGenericParameterInfoHandler"/>
         <codeInsight.parameterNameHints language="Rust"
-                                        implementationClass="org.rust.ide.hints.RsInlayParameterHintsProvider"/>
-        <codeInsight.inlayProvider language="Rust" implementationClass="org.rust.ide.hints.RsInlayTypeHintsProvider"/>
+                                        implementationClass="org.rust.ide.hints.parameter.RsInlayParameterHintsProvider"/>
+        <codeInsight.inlayProvider language="Rust" implementationClass="org.rust.ide.hints.type.RsInlayTypeHintsProvider"/>
+        <codeInsight.inlayProvider language="Rust" implementationClass="org.rust.ide.hints.type.RsChainMethodTypeHintsProvider"/>
 
         <declarationRangeHandler key="org.rust.lang.core.psi.RsStructItem"
                                  implementationClass="org.rust.ide.hints.RsStructItemDeclarationRangeHandler"/>
@@ -177,6 +185,8 @@
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsUnsafeExpressionAnnotator"/>
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsCfgDisabledCodeAnnotator"/>
         <highlightRangeExtension implementation="org.rust.ide.annotator.RsErrorAnnotator"/>
+
+        <highlightingPassFactory implementation="org.rust.ide.annotator.RsHighlightingPassFactoryRegistrar"/>
 
         <!-- Line Marker Providers -->
 
@@ -261,7 +271,6 @@
 
         <!-- Code Style -->
 
-        <codeStyleSettingsProvider implementation="org.rust.ide.formatter.settings.RsCodeStyleSettingsProvider"/>
         <langCodeStyleSettingsProvider
                 implementation="org.rust.ide.formatter.settings.RsLanguageCodeStyleSettingsProvider"/>
 
@@ -282,10 +291,10 @@
                          enabledByDefault="true" level="WARNING"
                          implementationClass="org.rust.ide.inspections.RsImplicitTraitObjectInspection"/>
 
-        <localInspection language="Rust" groupName="Rust"
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Deprecated element"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsDeprecationInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsDeprecationInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Approximate Constants"
@@ -323,99 +332,104 @@
                          implementationClass="org.rust.ide.inspections.RsMissingElseInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
+                         displayName="Redundant else"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="org.rust.ide.inspections.RsRedundantElseInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
                          displayName="Dropping reference"
                          enabledByDefault="true" level="WARNING"
                          implementationClass="org.rust.ide.inspections.RsDropRefInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Argument naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsArgumentNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsArgumentNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Associated type naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsAssocTypeNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsAssocTypeNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Constant naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsConstNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsConstNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Enum naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsEnumNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsEnumNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Enum variant naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsEnumVariantNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsEnumVariantNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Function naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsFunctionNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsFunctionNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Lifetime naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsLifetimeNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsLifetimeNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Macro naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsMacroNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsMacroNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Method naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsMethodNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsMethodNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Module naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsModuleNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsModuleNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Static constant naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsStaticConstNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsStaticConstNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Self convention"
                          enabledByDefault="true" level="WARNING"
                          implementationClass="org.rust.ide.inspections.RsSelfConventionInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Struct naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsStructNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsStructNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Field naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsFieldNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsFieldNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Trait naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsTraitNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsTraitNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Type alias naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsTypeAliasNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsTypeAliasNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Type parameter naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsTypeParameterNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsTypeParameterNamingInspection"/>
 
-        <localInspection language="Rust" groupPath="Rust" groupName="Naming conventions"
+        <localInspection language="Rust" groupPath="Rust,Lints" groupName="Naming conventions"
                          displayName="Variable naming convention"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsVariableNamingInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsVariableNamingInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Extra semicolon"
@@ -427,10 +441,10 @@
                          enabledByDefault="true" level="WEAK WARNING"
                          implementationClass="org.rust.ide.inspections.RsTryMacroInspection"/>
 
-        <localInspection language="Rust" groupName="Rust"
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="While true loop"
                          enabledByDefault="true" level="WEAK WARNING"
-                         implementationClass="org.rust.ide.inspections.RsWhileTrueLoopInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsWhileTrueLoopInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="println!(&quot;&quot;) usage"
@@ -448,9 +462,9 @@
                          implementationClass="org.rust.ide.inspections.RsVariableMutableInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
-                         displayName="Wrong type parameters number"
+                         displayName="Wrong type arguments number"
                          enabledByDefault="true" level="ERROR"
-                         implementationClass="org.rust.ide.inspections.RsWrongTypeParametersNumberInspection"/>
+                         implementationClass="org.rust.ide.inspections.RsWrongTypeArgumentsNumberInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Wrong lifetime parameters number"
@@ -492,10 +506,10 @@
                          enabledByDefault="true" level="WEAK WARNING"
                          implementationClass="org.rust.ide.inspections.RsSortImplTraitMembersInspection"/>
 
-        <localInspection language="Rust" groupName="Rust"
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Needless lifetimes"
                          enabledByDefault="true" level="WEAK WARNING"
-                         implementationClass="org.rust.ide.inspections.RsNeedlessLifetimesInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsNeedlessLifetimesInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Assign to immutable"
@@ -522,10 +536,20 @@
                           enabledByDefault="true" level="ERROR"
                           implementationClass="org.rust.ide.inspections.RsExternalLinterInspection"/>
 
-        <localInspection language="Rust" groupName="Rust"
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Liveness analysis"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsLivenessInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsLivenessInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Main function not found"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsMainFunctionNotFoundInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Detached file"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="org.rust.ide.inspections.RsDetachedFileInspection"/>
 
         <!-- Surrounders -->
 
@@ -543,7 +567,10 @@
 
         <!-- Live Templates -->
 
-        <defaultLiveTemplatesProvider implementation="org.rust.ide.template.RsLiveTemplatesProvider"/>
+        <defaultLiveTemplates file="org/rust/ide/liveTemplates/iterations"/>
+        <defaultLiveTemplates file="org/rust/ide/liveTemplates/output"/>
+        <defaultLiveTemplates file="org/rust/ide/liveTemplates/test"/>
+        <defaultLiveTemplates file="org/rust/ide/liveTemplates/other"/>
 
         <liveTemplateContext implementation="org.rust.ide.template.RsContextType$Generic"/>
         <liveTemplateContext implementation="org.rust.ide.template.RsContextType$Statement"/>
@@ -571,6 +598,14 @@
         </intentionAction>
         <intentionAction>
             <className>org.rust.ide.intentions.RemoveCurlyBracesIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ReplaceLineCommentWithBlockCommentIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ReplaceBlockCommentWithLineCommentIntention</className>
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
@@ -757,13 +792,40 @@
             <className>org.rust.ide.intentions.AddStructFieldsLiteralRecursiveIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ExtractEnumVariantIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.IntroduceLocalVariableIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ConvertUFCSToMethodCallIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ConvertMethodCallToUFCSIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddImportIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.SubstituteAssociatedTypeIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
         <programRunner implementation="org.rust.cargo.runconfig.CargoCommandRunner"/>
         <programRunner implementation="org.rust.cargo.runconfig.CargoTestCommandRunner"/>
+        <programRunner implementation="org.rust.debugger.runconfig.RsDebugAdvertisingRunner"/>
+        <programRunner implementation="org.rust.cargo.runconfig.wasmpack.WasmPackCommandRunner"/>
 
         <configurationType implementation="org.rust.cargo.runconfig.command.CargoCommandConfigurationType"/>
+        <configurationType implementation="org.rust.cargo.runconfig.wasmpack.WasmPackCommandConfigurationType"/>
 
         <runConfigurationProducer
                 implementation="org.rust.cargo.runconfig.command.CompositeCargoRunConfigurationProducer"/>
@@ -797,10 +859,12 @@
                         serviceImplementation="org.rust.cargo.project.model.impl.CargoProjectsServiceImpl"
                         testServiceImplementation="org.rust.cargo.project.model.impl.TestCargoProjectsServiceImpl"/>
 
+        <projectService serviceInterface="org.rust.lang.core.crate.CrateGraphService"
+                        serviceImplementation="org.rust.lang.core.crate.impl.CrateGraphServiceImpl"/>
+
         <toolWindow id="Cargo"
                     anchor="right"
                     factoryClass="org.rust.cargo.project.toolwindow.CargoToolWindowFactory"
-                    conditionClass="org.rust.cargo.project.toolwindow.CargoToolWindowFactory"
                     icon="/icons/tool-window.svg"/>
 
         <additionalLibraryRootsProvider
@@ -822,6 +886,7 @@
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsIncludeMacroIndex"/>
 
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsImplIndex"/>
+        <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsTypeAliasIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsLangItemIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsMacroIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsMacroCallIndex"/>
@@ -829,16 +894,18 @@
         <!-- Notification Providers -->
 
         <editorNotificationProvider implementation="org.rust.ide.notifications.MissingToolchainNotificationProvider"/>
-        <editorNotificationProvider implementation="org.rust.ide.notifications.DetachedFileNotificationProvider"/>
         <editorNotificationProvider implementation="org.rust.ide.notifications.NoCargoProjectNotificationProvider"/>
 
         <!-- Editor Tab Title Providers -->
 
-        <editorTabTitleProvider implementation="org.rust.ide.miscExtensions.RsModTabTitleProvider"/>
+        <editorTabTitleProvider implementation="org.rust.ide.miscExtensions.RsFileTabTitleProvider"/>
 
         <!-- Refactoring -->
 
         <lang.namesValidator language="Rust" implementationClass="org.rust.ide.refactoring.RsNamesValidator"/>
+
+        <inlineActionHandler implementation="org.rust.ide.refactoring.inlineFunction.RsInlineFunctionHandler"/>
+        <inlineActionHandler implementation="org.rust.ide.refactoring.inlineValue.RsInlineValueHandler"/>
 
         <!-- Postfix templates -->
         <codeInsight.template.postfixTemplateProvider language="Rust"
@@ -860,7 +927,9 @@
         <!-- Run Anything -->
 
         <runAnything.executionProvider order="after RunAnythingRunConfigurationProvider"
-                                       implementation="org.rust.ide.actions.runAnything.CargoRunAnythingProvider"/>
+                                       implementation="org.rust.ide.actions.runAnything.cargo.CargoRunAnythingProvider"/>
+        <runAnything.executionProvider order="after RunAnythingRunConfigurationProvider"
+                                       implementation="org.rust.ide.actions.runAnything.wasmpack.WasmPackRunAnythingProvider"/>
 
         <lang.elementManipulator forClass="org.rust.lang.core.psi.RsLitExpr"
                                  implementationClass="org.rust.ide.injected.RsStringLiteralManipulator"/>
@@ -868,52 +937,73 @@
         <multiHostInjector implementation="org.rust.ide.injected.RsDoctestLanguageInjector"/>
 
 
-        <projectService serviceImplementation="org.rust.lang.core.resolve.ref.RsResolveCache"/>
-
         <!-- Macro expansion service -->
 
+        <projectService serviceInterface="org.rust.lang.core.macros.MacroExpansionManager"
+                        serviceImplementation="org.rust.lang.core.macros.MacroExpansionManagerImpl"/>
         <indexedRootsProvider implementation="org.rust.lang.core.macros.RsIndexableSetContributor"/>
         <writingAccessProvider implementation="org.rust.lang.core.macros.RsMacroExpansionWritingAccessProvider"/>
         <cachesInvalidator implementation="org.rust.lang.core.macros.RsMacroExpansionCachesInvalidator"/>
         <virtualFileSystem key="rust_macros" implementationClass="org.rust.lang.core.macros.MacroExpansionFileSystem"/>
+        <fileTypeOverrider implementation="org.rust.lang.core.macros.RsFileTypeOverriderForMacroExpansionFileSystem"/>
+        <globalIndexFilter implementation="org.rust.lang.core.macros.RsGlobalIndexFilterForMacroExpansionFileSystem"/>
 
         <!-- REPL Console -->
 
+        <projectService serviceImplementation="org.rust.ide.console.RsConsoleOptions"/>
+
         <consoleHistoryModelProvider implementation="org.rust.ide.console.RsConsoleHistoryModelProvider"/>
         <scratch.rootType implementation="org.rust.ide.console.RsConsoleRootType"/>
+
+        <!-- Listeners -->
+
+        <fileDocumentManagerListener implementation="org.rust.cargo.RustfmtWatcher$RustfmtListener"/>
+
+        <!-- Statistics -->
+        <fileTypeStatisticProvider implementation="org.rust.ide.statistics.RsFileTypeStatisticProvider"/>
+
+        <!-- Registry keys -->
+
+        <registryKey key="org.rust.lang.type.alias.threshold" defaultValue="10" restartRequired="false"
+                     description="Maximum number of type aliases to take into account during `impl`s search"/>
+        <registryKey key="org.rust.lang.cfg.attributes" defaultValue="true" restartRequired="false"
+                     description="Enable Rust cfg attributes support"/>
+        <registryKey key="org.rust.lang.highlight.macro.body" defaultValue="true" restartRequired="false"
+                     description="Highlight Rust macro call bodies"/>
+
+        <!-- Move refactoring -->
+
+        <!--
+            `before kotlin.moveFilesOrDirectories` is needed because otherwise
+            incorrect handler can be used: https://youtrack.jetbrains.com/issue/IDEA-237769
+        -->
+        <refactoring.moveHandler id="rust.moveFilesOrDirectories"
+                                 implementation="org.rust.ide.refactoring.move.RsMoveFilesOrDirectoriesHandler"
+                                 order="first, before moveJavaFileOrDir, before kotlin.moveFilesOrDirectories"/>
+
+        <refactoring.moveHandler id="rust.moveTopLevelItems"
+                                 implementation="org.rust.ide.refactoring.move.RsMoveTopLevelItemsHandler"
+                                 order="first, before moveJavaFileOrDir, before kotlin.moveFilesOrDirectories, before rust.moveFilesOrDirectories"/>
+
+        <console.folding implementation="org.rust.ide.console.RsConsoleFolding"/>
 
     </extensions>
 
     <extensionPoints>
         <extensionPoint qualifiedName="org.rust.runConfigurationExtension"
-                        interface="org.rust.cargo.runconfig.CargoCommandConfigurationExtension"/>
+                        interface="org.rust.cargo.runconfig.CargoCommandConfigurationExtension"
+                        dynamic="true"/>
     </extensionPoints>
 
-    <application-components>
-        <component>
-            <implementation-class>org.rust.ide.update.UpdateComponent</implementation-class>
-        </component>
-        <component>
-            <implementation-class>org.rust.cargo.RustfmtWatcher</implementation-class>
-        </component>
-        <component>
-            <implementation-class>org.rust.ide.todo.RsTodoApplicationComponent</implementation-class>
-        </component>
-    </application-components>
+    <applicationListeners>
+        <listener class="org.rust.ide.navigation.goto.RsGoToDeclarationRunningService$Listener"
+                  topic="com.intellij.openapi.actionSystem.ex.AnActionListener" />
+    </applicationListeners>
 
-    <project-components>
-        <component>
-            <interface-class>org.rust.lang.core.psi.RsPsiManager</interface-class>
-            <implementation-class>org.rust.lang.core.psi.RsPsiManagerImpl</implementation-class>
-        </component>
-        <component>
-            <implementation-class>org.rust.ide.annotator.RsExternalLinterPassFactory</implementation-class>
-        </component>
-        <component>
-            <interface-class>org.rust.lang.core.macros.MacroExpansionManager</interface-class>
-            <implementation-class>org.rust.lang.core.macros.MacroExpansionManagerImpl</implementation-class>
-        </component>
-    </project-components>
+    <projectListeners>
+        <listener class="org.rust.lang.core.macros.MacroExpansionManagerWaker"
+                  topic="org.rust.cargo.project.model.CargoProjectsService$CargoProjectsListener" />
+    </projectListeners>
 
     <actions>
         <action id="Rust.NewRustFile"
@@ -966,6 +1056,13 @@
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
+        <action id="Rust.RsExtractEnumVariant"
+                class="org.rust.ide.refactoring.extractEnumVariant.RsExtractEnumVariantAction"
+                text="Extract Enum Variant"
+                description="Extract a single enum variant into a separate struct">
+            <add-to-group group-id="IntroduceActionsGroup" anchor="after" relative-to-action="ExtractMethod"/>
+        </action>
+
         <action id="Rust.ShowSingleStepMacroExpansionAction"
                 class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction"
                 text="Show Expanded Macro">
@@ -983,9 +1080,15 @@
             <reference id="Rust.ShowSingleStepMacroExpansionAction"/>
         </group>
 
-        <action class="org.rust.ide.refactoring.generateConstructor.GenerateConstructorAction"
+        <action class="org.rust.ide.refactoring.generate.constructor.GenerateConstructorAction"
                 id="Rust.GenerateConstructor"
-                text="Generate Constructor">
+                text="Constructor">
+            <add-to-group group-id="GenerateGroup"/>
+        </action>
+
+        <action class="org.rust.ide.refactoring.generate.getter.GenerateGetterAction"
+                id="Rust.GenerateGetter"
+                text="Getter">
             <add-to-group group-id="GenerateGroup"/>
         </action>
 

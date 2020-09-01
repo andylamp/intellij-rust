@@ -29,6 +29,7 @@ import org.rust.openapiext.getOrPut
 class RsHighlightingAnnotator : AnnotatorBase() {
 
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
+        if (holder.isBatchMode) return
         val color = when (element) {
             is LeafPsiElement -> highlightLeaf(element, holder)
             is RsAttr -> RsColor.ATTRIBUTE
@@ -38,7 +39,8 @@ class RsHighlightingAnnotator : AnnotatorBase() {
         if (!element.isEnabledByCfg) return
 
         val severity = if (isUnitTestMode) color.testSeverity else HighlightSeverity.INFORMATION
-        holder.createAnnotation(severity, element.textRange, null).textAttributes = color.textAttributesKey
+
+        holder.newSilentAnnotation(severity).textAttributes(color.textAttributesKey).create()
     }
 
     private fun highlightLeaf(element: PsiElement, holder: AnnotationHolder): RsColor? {

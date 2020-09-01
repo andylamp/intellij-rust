@@ -15,6 +15,7 @@ import org.toml.lang.psi.TomlElementTypes
 
 class TomlHighlightingAnnotator : AnnotatorBase() {
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
+        if (holder.isBatchMode) return
         // Although we use only elementType info, it's not possible to do it by lexer
         // because numbers and dates can be used as keys too (for example, `123 = 123` is correct toml)
         // and proper element types are set by parser.
@@ -26,8 +27,7 @@ class TomlHighlightingAnnotator : AnnotatorBase() {
             else -> return
         }
         val severity = if (isUnitTestMode) color.testSeverity else HighlightSeverity.INFORMATION
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        holder.createAnnotation(severity, element.textRange, null).textAttributes = color.textAttributesKey
+
+        holder.newSilentAnnotation(severity).textAttributes(color.textAttributesKey).create()
     }
 }

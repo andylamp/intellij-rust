@@ -6,11 +6,14 @@
 package org.rust
 
 import com.intellij.TestCase
+import com.intellij.findAnnotationInstance
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.LanguageCommenters
 import com.intellij.lang.injection.InjectedLanguageManager
+import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapi.util.io.StreamUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -37,6 +40,7 @@ import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.ext.startOffset
 import org.rust.openapiext.saveAllDocuments
 import org.rust.stdext.BothEditions
+import kotlin.reflect.KMutableProperty0
 
 abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
 
@@ -45,10 +49,6 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         return annotation.descriptor.objectInstance
             ?: error("Only Kotlin objects defined with `object` keyword are allowed")
     }
-
-    /** Tries to find the specified annotation on the current test method and then on the current class */
-    private inline fun <reified T : Annotation> findAnnotationInstance(): T? =
-        javaClass.getMethod(name).getAnnotation(T::class.java) ?: javaClass.getAnnotation(T::class.java)
 
     override fun isWriteActionRequired(): Boolean = false
 
@@ -68,17 +68,11 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
             val disposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(it.mode, it.cache)
             Disposer.register(testRootDisposable, disposable)
         }
-        disableMissedCacheAssertions(testRootDisposable)
+        RecursionManager.disableMissedCacheAssertions(testRootDisposable)
     }
 
     override fun tearDown() {
-        // FIXME: fix TraceableDisposable.DisposalException on 192 platform
-        try {
-            super.tearDown()
-        } catch (e: Exception) {
-            if (e.javaClass.simpleName != "DisposalException") throw e
-        }
-
+        super.tearDown()
         checkMacroExpansionFileSystemAfterTest()
     }
 
@@ -86,12 +80,12 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         val annotation = findAnnotationInstance<MockRustcVersion>() ?: return
         val (semVer, channel) = parse(annotation.rustcVersion)
         val rustcInfo = RustcInfo("", RustcVersion(semVer, "", channel))
-        project.testCargoProjects.setRustcInfo(rustcInfo)
+        project.testCargoProjects.setRustcInfo(rustcInfo, testRootDisposable)
     }
 
     private fun setupMockEdition() {
         val edition = findAnnotationInstance<MockEdition>()?.edition ?: CargoWorkspace.Edition.EDITION_2015
-        project.testCargoProjects.setEdition(edition)
+        project.testCargoProjects.setEdition(edition, testRootDisposable)
     }
 
     private fun setupMockCfgOptions() {
@@ -129,6 +123,15 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
             return
         }
 
+        val ignoreAnnotation = findAnnotationInstance<IgnoreInPlatform>()
+        if (ignoreAnnotation != null) {
+            val majorPlatformVersion = ApplicationInfo.getInstance().build.baselineVersion
+            if (majorPlatformVersion in ignoreAnnotation.majorVersions) {
+                System.err.println("SKIP \"$name\": test is ignored for `$majorPlatformVersion` platform")
+                return
+            }
+        }
+
         if (findAnnotationInstance<BothEditions>() != null) {
             if (findAnnotationInstance<MockEdition>() != null) {
                 error("Can't mix `BothEditions` and `MockEdition` annotations")
@@ -157,12 +160,12 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         }
 
     private fun runTestEdition2015() {
-        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2015)
+        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2015, testRootDisposable)
         super.runTest()
     }
 
     private fun runTestEdition2018() {
-        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2018)
+        project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2018, testRootDisposable)
         super.runTest()
     }
 
@@ -184,21 +187,27 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         myFixture.checkResultByFile(after, ignoreTrailingWhitespace)
     }
 
-    protected fun checkByDirectory(action: () -> Unit) {
+    protected fun checkByDirectory(action: (VirtualFile) -> Unit) {
         val (before, after) = ("$testName/before" to "$testName/after")
 
         val targetPath = ""
         val beforeDir = myFixture.copyDirectoryToProject(before, targetPath)
 
-        action()
+        action(beforeDir)
 
         val afterDir = getVirtualFileByName("$testDataPath/$after")
         PlatformTestUtil.assertDirectoriesEqual(afterDir, beforeDir)
     }
 
-    protected fun checkByDirectory(@Language("Rust") before: String, @Language("Rust") after: String, action: () -> Unit) {
-        fileTreeFromText(before).create()
-        action()
+    protected fun checkByDirectory(
+        @Language("Rust") before: String,
+        @Language("Rust") after: String,
+        expectError: Boolean = false,
+        action: (TestProject) -> Unit
+    ) {
+        val testProject = fileTreeFromText(before).create()
+        action(testProject)
+        if (expectError) return
         saveAllDocuments()
         fileTreeFromText(after).assertEquals(myFixture.findFileInTempDir("."))
     }
@@ -213,7 +222,16 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
         myFixture.checkResult(replaceCaretMarker(after))
     }
 
-    protected fun checkEditorAction(
+    protected fun checkCaretMove(
+        @Language("Rust") code: String,
+        action: () -> Unit
+    ) {
+        InlineFile(code.replace("/*caret_before*/", "<caret>").replace("/*caret_after*/", ""))
+        action()
+        myFixture.checkResult(code.replace("/*caret_after*/", "<caret>").replace("/*caret_before*/", ""))
+    }
+
+    protected open fun checkEditorAction(
         @Language("Rust") before: String,
         @Language("Rust") after: String,
         actionId: String,
@@ -360,6 +378,16 @@ abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
 
     protected open fun configureByFileTree(text: String): TestProject {
         return fileTreeFromText(text).createAndOpenFileWithCaretMarker()
+    }
+
+    protected inline fun <T> withOptionValue(optionProperty: KMutableProperty0<T>, value: T, action: () -> Unit) {
+        val oldValue = optionProperty.get()
+        optionProperty.set(value)
+        try {
+            action()
+        } finally {
+            optionProperty.set(oldValue)
+        }
     }
 
     companion object {

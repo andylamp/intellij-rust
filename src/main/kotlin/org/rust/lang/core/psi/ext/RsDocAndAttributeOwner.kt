@@ -6,6 +6,7 @@
 package org.rust.lang.core.psi.ext
 
 import com.intellij.extapi.psi.StubBasedPsiElementBase
+import com.intellij.openapi.util.registry.Registry
 import com.intellij.psi.NavigatablePsiElement
 import com.intellij.psi.PsiElement
 import org.rust.lang.core.psi.*
@@ -204,13 +205,15 @@ class QueryAttributes(
  *
  * HACK: do not check on [RsFile] as [RsFile.queryAttributes] would access the PSI
  */
-val RsDocAndAttributeOwner.isEnabledByCfg: Boolean
+val RsDocAndAttributeOwner.isEnabledByCfgSelf: Boolean
     get() = evaluateCfg() != ThreeValuedLogic.False
 
-val RsDocAndAttributeOwner.isCfgUnknown: Boolean
+val RsDocAndAttributeOwner.isCfgUnknownSelf: Boolean
     get() = evaluateCfg() == ThreeValuedLogic.Unknown
 
 private fun RsDocAndAttributeOwner.evaluateCfg(): ThreeValuedLogic {
+    if (!CFG_ATTRIBUTES_ENABLED_KEY.asBoolean()) return ThreeValuedLogic.True
+
     // TODO: add cfg to RsFile's stub and remove this line
     if (this is RsFile) return ThreeValuedLogic.True
 
@@ -222,7 +225,9 @@ private fun RsDocAndAttributeOwner.evaluateCfg(): ThreeValuedLogic {
     // this will return the library as containing package.
     // When the application now requests certain features, which are not enabled by default in the library
     // we will evaluate features wrongly here
-    val pkg = containingCargoPackage ?: return ThreeValuedLogic.True
-    val features = pkg.features.associate { it.name to it.state }
-    return CfgEvaluator(pkg.workspace.cfgOptions, pkg.cfgOptions, features, pkg.origin).evaluate(cfgAttributes)
+    val crate = containingCrate ?: return ThreeValuedLogic.True
+    val features = crate.features.associate { it.name to it.state }
+    return CfgEvaluator(crate.cargoWorkspace.cfgOptions, crate.cfgOptions, features, crate.origin).evaluate(cfgAttributes)
 }
+
+private val CFG_ATTRIBUTES_ENABLED_KEY = Registry.get("org.rust.lang.cfg.attributes")

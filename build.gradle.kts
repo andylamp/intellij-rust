@@ -14,10 +14,6 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import java.io.Writer
 import java.net.URL
 import kotlin.concurrent.thread
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 
 // The same as `--full-stacktrace` param
 gradle.startParameter.showStacktrace = ShowStacktrace.ALWAYS_FULL
@@ -36,30 +32,15 @@ val baseVersion = when (baseIDE) {
     else -> error("Unexpected IDE name: `$baseIDE`")
 }
 
-val isAtLeast201 = platformVersion >= 201
-
-val intelliLangPlugin = if (isAtLeast201) "platform-langInjection" else "IntelliLang"
 val nativeDebugPlugin = "com.intellij.nativeDebug:${prop("nativeDebugPluginVersion")}"
 val graziePlugin = "tanvd.grazi:${prop("graziePluginVersion")}"
 val psiViewerPlugin = "PsiViewer:${prop("psiViewerPluginVersion")}"
 
-val httpClient: OkHttpClient by lazy { OkHttpClient() }
-
-buildscript {
-    repositories {
-        mavenCentral()
-    }
-    dependencies {
-        classpath("com.squareup.okhttp3:okhttp:4.4.0")
-    }
-}
-
 plugins {
     idea
-    kotlin("jvm") version "1.3.60"
-    id("org.jetbrains.intellij") version "0.4.13"
-    id("org.jetbrains.grammarkit") version "2020.1"
-    id("de.undercouch.download") version "3.4.3"
+    kotlin("jvm") version "1.3.72"
+    id("org.jetbrains.intellij") version "0.4.21"
+    id("org.jetbrains.grammarkit") version "2020.2.1"
     id("net.saliman.properties") version "1.4.6"
 }
 
@@ -80,6 +61,7 @@ allprojects {
 
     repositories {
         mavenCentral()
+        jcenter()
         maven("https://dl.bintray.com/jetbrains/markdown")
     }
 
@@ -95,25 +77,31 @@ allprojects {
         updateSinceUntilBuild = true
         instrumentCode = false
         ideaDependencyCachePath = dependencyCachePath
-
-        tasks {
-            withType<PatchPluginXmlTask> {
-                sinceBuild(prop("sinceBuild"))
-                untilBuild(prop("untilBuild"))
-            }
-
-            buildSearchableOptions {
-                enabled = prop("enableBuildSearchableOptions").toBoolean()
-            }
-        }
+        sandboxDirectory = "$buildDir/$baseIDE-sandbox-$platformVersion"
     }
 
-    tasks.withType<KotlinCompile> {
-        kotlinOptions {
-            jvmTarget = "1.8"
-            languageVersion = "1.3"
-            apiVersion = "1.3"
-            freeCompilerArgs = listOf("-Xjvm-default=enable")
+    tasks {
+        withType<KotlinCompile> {
+            kotlinOptions {
+                jvmTarget = "1.8"
+                languageVersion = "1.3"
+                apiVersion = "1.3"
+                freeCompilerArgs = listOf("-Xjvm-default=enable")
+            }
+        }
+        withType<PatchPluginXmlTask> {
+            sinceBuild(prop("sinceBuild"))
+            untilBuild(prop("untilBuild"))
+        }
+
+        buildSearchableOptions {
+            // buildSearchableOptions task doesn't make sense for non-root subprojects
+            val isRootProject = project.name in listOf("plugin", "intellij-toml")
+            enabled = isRootProject && prop("enableBuildSearchableOptions").toBoolean()
+        }
+
+        test {
+            testLogging.showStandardStreams = prop("showStandardStreams").toBoolean()
         }
     }
 
@@ -173,25 +161,28 @@ val Project.dependencyCachePath get(): String {
     return cachePath.absolutePath
 }
 
-val channelSuffix = if (channel.isBlank()) "" else "-$channel"
+val channelSuffix = if (channel.isBlank() || channel == "stable") "" else "-$channel"
 val versionSuffix = "-$platformVersion$channelSuffix"
+val majorVersion = "0.3"
 val patchVersion = prop("patchVersion").toInt()
 
 // Special module with run, build and publish tasks
 project(":plugin") {
-    version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
+    version = "$majorVersion.$patchVersion.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
         val plugins = mutableListOf(
             project(":intellij-toml"),
-            intelliLangPlugin,
+            "IntelliLang",
             graziePlugin,
             psiViewerPlugin
         )
         if (baseIDE == "idea") {
-            plugins += "copyright"
-            plugins += "coverage"
-            plugins += "java"
+            plugins += listOf(
+                "copyright",
+                "java",
+                nativeDebugPlugin
+            )
         }
         setPlugins(*plugins.toTypedArray())
     }
@@ -226,6 +217,8 @@ project(":plugin") {
         withType<RunIdeTask> {
             // Default args for IDEA installation
             jvmArgs("-Xmx768m", "-XX:+UseConcMarkSweepGC", "-XX:SoftRefLRUPolicyMSPerMB=50")
+            // Disable auto plugin resloading. See `com.intellij.ide.plugins.DynamicPluginVfsListener`
+            jvmArgs("-Didea.auto.reload.plugins=false")
             // uncomment if `unexpected exception ProcessCanceledException` prevents you from debugging a running IDE
             // jvmArgs("-Didea.ProcessCanceledException=disabled")
         }
@@ -237,14 +230,6 @@ project(":plugin") {
         withType<PublishTask> {
             token(prop("publishToken"))
             channels(channel)
-        }
-    }
-
-    task("configureCLion") {
-        doLast {
-            intellij {
-                sandboxDirectory = "${project.buildDir.absolutePath}${File.separator}clion-sandbox"
-            }
         }
     }
 }
@@ -373,7 +358,7 @@ project(":toml") {
 
 project(":intelliLang") {
     intellij {
-        setPlugins(intelliLangPlugin)
+        setPlugins("IntelliLang")
     }
     dependencies {
         implementation(project(":"))
@@ -406,11 +391,6 @@ project(":duplicates") {
 }
 
 project(":coverage") {
-    intellij {
-        if (baseIDE == "idea") {
-            setPlugins("coverage")
-        }
-    }
     dependencies {
         implementation(project(":"))
         implementation(project(":common"))
@@ -481,7 +461,7 @@ task("runPrettyPrintersTests") {
             isFamily(FAMILY_UNIX) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/lldb/linux/lib/python3.6/site-packages"
             else -> error("Unsupported OS")
         }
-        "cargo run --package pretty_printers_test --bin pretty_printers_test -- lldb $lldbPath $platformVersion".execute("pretty_printers_tests")
+        "cargo run --package pretty_printers_test --bin pretty_printers_test -- lldb $lldbPath".execute("pretty_printers_tests")
 
         val gdbBinary = when {
             isFamily(FAMILY_MAC) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/gdb/mac/bin/gdb"
@@ -490,115 +470,6 @@ task("runPrettyPrintersTests") {
         }
         "cargo run --package pretty_printers_test --bin pretty_printers_test -- gdb $gdbBinary".execute("pretty_printers_tests")
     }
-}
-
-task("makeReleaseBranch") {
-    doLast {
-        val regex = Regex("patchVersion=(\\d+)")
-
-        val properties = file("gradle.properties")
-        val propertiesText = properties.readText()
-        val patchVersion = regex.find(propertiesText)?.groupValues?.get(1)?.toInt()
-            ?: error("Failed to read 'patchVersion' property")
-        val releaseBranchName = "release-$patchVersion"
-
-        // Create local release branch
-        "git branch $releaseBranchName".execute()
-        // Update patchVersion property
-        val newPropertiesText = propertiesText.replace(regex) {
-            "patchVersion=${patchVersion + 1}"
-        }
-        properties.writeText(newPropertiesText)
-        // Push release branch
-        "git push -u origin $releaseBranchName".execute()
-        // Commit changes in `gradle.properties`
-        "git add gradle.properties".execute()
-        listOf("git", "commit", "-m", ":arrow_up: patch version").execute()
-        "git push".execute()
-    }
-}
-
-task("makeRelease") {
-    doLast {
-        val website = "../intellij-rust.github.io"
-        val newChangelog = File("$website/_posts").listFiles()
-            .orEmpty()
-            .map { it.name }
-            .max()!!
-        val newChangelogPath = newChangelog
-            .replace(".markdown", "")
-            .replaceFirst("-", "/").replaceFirst("-", "/").replaceFirst("-", "/")
-        val pluginXmlPath = "./plugin/src/main/resources/META-INF/plugin.xml"
-        val pluginXml = File(pluginXmlPath)
-        val oldText = pluginXml.readText()
-        val newText = oldText.replace(
-            """https://intellij-rust\.github\.io/(.*)\.html""".toRegex(),
-            "https://intellij-rust.github.io/$newChangelogPath.html"
-        )
-        pluginXml.writeText(newText)
-        "git add $pluginXmlPath".execute()
-        "git commit -m Changelog".execute()
-        "git push".execute()
-
-        val head = "git rev-parse HEAD".execute()
-        // We assume that current version in master is 1 more than version in release branch
-        "git checkout release-${patchVersion - 1}".execute()
-        "git cherry-pick $head".execute()
-        "git push".execute()
-
-        "git checkout master".execute()
-//        commitNightly()
-    }
-}
-
-task("makeNightlyRelease") {
-    doLast {
-        sendReleaseEvent("nightly-release")
-    }
-}
-
-fun sendReleaseEvent(eventName: String) {
-    val contentType = "application/json; charset=utf-8".toMediaType()
-    val body = """{"event_type": "$eventName"}""".toRequestBody(contentType)
-    val request = Request.Builder()
-        .url("https://api.github.com/repos/intellij-rust/intellij-rust/dispatches")
-        .header("Authorization", "token ${prop("githubToken")}")
-        .header("Accept", "application/vnd.github.v3+json")
-        .post(body)
-        .build()
-    val response = httpClient.newCall(request).execute()
-    println("Response code: ${response.code}")
-}
-
-fun commitNightly() {
-    // TODO: extract the latest versions of all supported platforms
-    val ideaArtifactName = "$platformVersion-EAP-SNAPSHOT"
-
-    val versionUrl = URL("https://www.jetbrains.com/intellij-repository/snapshots/com/jetbrains/intellij/idea/BUILD/$ideaArtifactName/BUILD-$ideaArtifactName.txt")
-    val ideaVersion = versionUrl.openStream().bufferedReader().readLine().trim()
-    println("\n    NEW IDEA: $ideaVersion\n")
-
-    "rustup update nightly".execute()
-    val version = "rustup run nightly rustc --version".execute()
-    val date = """\d\d\d\d-\d\d-\d\d""".toRegex().find(version)!!.value
-    val rustVersion = "nightly-$date"
-    println("\n    NEW RUST: $rustVersion\n")
-
-    val travisYml = File(rootProject.projectDir, ".travis.yml")
-    val updated = travisYml.readLines().joinToString("\n") { line ->
-        if ("modified by script" in line) {
-            line.replace("""RUST_VERSION=[\w\-\.]+""".toRegex(), "RUST_VERSION=$rustVersion")
-                .replace("""ORG_GRADLE_PROJECT_ideaVersion=[\w\-\.]+""".toRegex(), "ORG_GRADLE_PROJECT_ideaVersion=$ideaVersion")
-        } else {
-            line
-        }
-    }
-    travisYml.writeText(updated)
-    "git branch -Df nightly".execute(ignoreExitCode = true)
-    "git checkout -b nightly".execute()
-    "git add .travis.yml".execute()
-    listOf("git", "commit", "-m", ":arrow_up: nightly IDEA & rust").execute()
-    "git push origin nightly".execute()
 }
 
 task("updateCompilerFeatures") {

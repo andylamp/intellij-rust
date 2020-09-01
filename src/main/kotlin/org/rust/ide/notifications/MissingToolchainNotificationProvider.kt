@@ -15,17 +15,14 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.ui.EditorNotificationPanel
-import org.rust.cargo.project.model.CargoProject
-import org.rust.cargo.project.model.CargoProjectsService
-import org.rust.cargo.project.model.cargoProjects
-import org.rust.cargo.project.model.guessAndSetupRustProject
+import org.rust.cargo.project.model.*
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsChangedEvent
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsListener
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.workspace.StandardLibrary
-import org.rust.lang.core.psi.isNotRustFile
+import org.rust.lang.core.psi.isRustFile
 
 /**
  * Warn user if rust toolchain or standard library is not properly configured.
@@ -47,7 +44,7 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
                 })
 
             subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(projects: Collection<CargoProject>) {
+                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
                     updateAllNotifications()
                 }
             })
@@ -62,7 +59,7 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
         project: Project
     ): RsEditorNotificationPanel? {
         if (isUnitTestMode) return null
-        if (file.isNotRustFile || isNotificationDisabled(file)) return null
+        if (!(file.isRustFile || file.isCargoToml) || isNotificationDisabled(file)) return null
         if (guessAndSetupRustProject(project)) return null
 
         val toolchain = project.toolchain
@@ -71,6 +68,8 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
         }
 
         val cargoProjects = project.cargoProjects
+
+        if (!cargoProjects.initialized) return null
 
         val workspace = cargoProjects.findProjectForFile(file)?.workspace ?: return null
         if (!workspace.hasStandardLibrary) {

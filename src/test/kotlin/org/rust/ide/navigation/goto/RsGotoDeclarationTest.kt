@@ -136,6 +136,28 @@ class RsGotoDeclarationTest : RsTestBase() {
         }
     """)
 
+    fun `test Self type in impl`() = doTest("""
+        struct S;
+        /// docs
+        impl S {
+            fn foo() -> Self/*caret*/ { unimplemented!() }
+        }
+    """, """
+        struct S;
+        /// docs
+        impl /*caret*/S {
+            fn foo() -> Self { unimplemented!() }
+        }
+    """)
+
+    fun `test associated type binding`() = doTest("""
+        trait Foo { type Item; }
+        type T = dyn Foo</*caret*/Item = i32>;
+    """, """
+        trait Foo { type /*caret*/Item; }
+        type T = dyn Foo<Item = i32>;
+    """)
+
     private fun doTest(@Language("Rust") before: String, @Language("Rust") after: String) =
         checkEditorAction(before, after, IdeActions.ACTION_GOTO_DECLARATION)
 }

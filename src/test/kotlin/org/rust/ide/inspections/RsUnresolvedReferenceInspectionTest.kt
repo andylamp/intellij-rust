@@ -132,6 +132,61 @@ class RsUnresolvedReferenceInspectionTest : RsInspectionsTestBase(RsUnresolvedRe
         impl Foo { fn foo() -> Self {} }
     """, false)
 
+    fun `test unresolved reference for module`() = checkByText("""
+        use <error descr="Unresolved reference: `foo`">foo</error>::bar::Foo;
+    """, false)
+
+    fun `test unresolved reference for nested module`() = checkByText("""
+        mod foo { }
+        use foo::<error descr="Unresolved reference: `bar`">bar</error>::Foo;
+    """, false)
+
+    fun `test unresolved reference for struct in nested module 1`() = checkByText("""
+        mod foo {
+            pub mod bar { }
+        }
+        use foo::bar::<error descr="Unresolved reference: `Foo`">Foo</error>;
+    """, false)
+
+    fun `test unresolved reference for struct in nested module 2`() = checkByText("""
+        mod foo { }
+        use foo::<error descr="Unresolved reference: `bar`">bar</error>::{qux, boo};
+    """, false)
+
+    fun `test unresolved reference for function in nested module`() = checkByText("""
+        mod foo { }
+        fn main() {
+            foo::<error descr="Unresolved reference: `bar`">bar</error>::Qux::foobar();
+        }
+    """, false)
+
+    fun `test no unresolved reference for UFCS with trait`() = checkByText("""
+        mod foo {
+            pub trait Bar {
+                fn baz(&self) {}
+            }
+        }
+        struct S;
+        use foo::Bar;
+        impl Bar for S {}
+        fn main() {
+            Bar::baz(&S)
+        }
+    """)
+
+    fun `test no unresolved reference for UFCS with qualified trait`() = checkByText("""
+        mod foo {
+            pub trait Bar {
+                fn baz(&self) {}
+            }
+        }
+        struct S;
+        impl foo::Bar for S {}
+        fn main() {
+            foo::Bar::baz(&S)
+        }
+    """)
+
     private fun checkByText(@Language("Rust") text: String, ignoreWithoutQuickFix: Boolean) {
         val inspection = inspection as RsUnresolvedReferenceInspection
         val defaultValue = inspection.ignoreWithoutQuickFix

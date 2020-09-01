@@ -8,6 +8,7 @@ package org.rust.ide.console
 import com.intellij.execution.actions.EOFAction
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.console.ConsoleHistoryController
+import com.intellij.execution.console.ProcessBackedConsoleExecuteActionHandler
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.runners.AbstractConsoleRunnerWithHistory
 import com.intellij.execution.ui.RunContentDescriptor
@@ -15,10 +16,12 @@ import com.intellij.execution.ui.actions.CloseAction
 import com.intellij.ide.errorTreeView.NewErrorTreeViewPanel
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.CommonShortcuts
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.*
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.actions.ScrollToTheEndToolbarAction
+import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -31,10 +34,12 @@ import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.workingDirectory
 import org.rust.cargo.toolchain.Cargo
+import org.rust.ide.icons.RsIcons
 import org.rust.openapiext.saveAllDocuments
 import java.awt.BorderLayout
 import java.nio.charset.StandardCharsets
 import javax.swing.BorderFactory
+import javax.swing.Icon
 import javax.swing.JPanel
 
 class RsConsoleRunner(project: Project) :
@@ -102,7 +107,8 @@ class RsConsoleRunner(project: Project) :
             SoftWrapAction(consoleView),
             ScrollToTheEndToolbarAction(consoleView.editor),
             PrintAction(consoleView),
-            ConsoleHistoryController.getController(consoleView)!!.browseHistory
+            ConsoleHistoryController.getController(consoleView)!!.browseHistory,
+            ShowVariablesAction(consoleView)
         )
         outputActionGroup.addAll(outputActions)
 
@@ -111,6 +117,19 @@ class RsConsoleRunner(project: Project) :
         registerActionShortcuts(actions, mainPanel)
 
         showConsole(executor, contentDescriptor)
+    }
+
+    override fun createConsoleExecAction(consoleExecuteActionHandler: ProcessBackedConsoleExecuteActionHandler): AnAction {
+        val consoleEditor = consoleView.consoleEditor
+
+        val executeAction = super.createConsoleExecAction(consoleExecuteActionHandler)
+        executeAction.registerCustomShortcutSet(CommonShortcuts.CTRL_ENTER, consoleEditor.component)
+
+        val actionShortcutText = KeymapUtil.getFirstKeyboardShortcutText(executeAction)
+        consoleEditor.setPlaceholder("<$actionShortcutText> to execute")
+        consoleEditor.setShowPlaceholderWhenFocused(true)
+
+        return executeAction
     }
 
     fun runSync(requestEditorFocus: Boolean) {
@@ -192,6 +211,8 @@ class RsConsoleRunner(project: Project) :
 
     private fun connect() {
         invokeLater {
+            consoleView.removeBorders()
+            consoleView.initVariablesWindow()
             consoleView.executeActionHandler = consoleExecuteActionHandler
 
             consoleExecuteActionHandler.isEnabled = true
@@ -248,6 +269,10 @@ class RsConsoleRunner(project: Project) :
         val contentDescriptor = RunContentDescriptor(null, processHandler, panel, "Error running console")
 
         showConsole(executor, contentDescriptor)
+    }
+
+    override fun getConsoleIcon(): Icon {
+        return RsIcons.REPL
     }
 
     companion object {

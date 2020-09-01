@@ -8,13 +8,11 @@ package org.rust.openapiext
 import com.intellij.concurrency.SensitiveProgressWrapper
 import com.intellij.ide.plugins.IdeaPluginDescriptor
 import com.intellij.ide.plugins.PluginManagerCore
-import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.Experiments
-import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.application.TransactionGuard
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.ex.ApplicationUtil
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
@@ -38,12 +36,17 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.VirtualFileWithId
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.*
+import com.intellij.psi.impl.PsiDocumentManagerBase
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.stubs.StubIndex
 import com.intellij.psi.stubs.StubIndexKey
+import com.intellij.psi.util.CachedValue
+import com.intellij.psi.util.CachedValueProvider
 import com.intellij.reference.SoftReference
+import com.intellij.util.CachedValueImpl
 import org.jdom.Element
 import org.jdom.input.SAXBuilder
 import org.rust.cargo.RustfmtWatcher
@@ -51,7 +54,6 @@ import org.rust.ide.annotator.RsExternalLinterPass
 import java.lang.reflect.Field
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.reflect.KProperty
 
@@ -103,6 +105,15 @@ fun checkIsSmartMode(project: Project) {
     if (DumbService.getInstance(project).isDumb) throw IndexNotReadyException.create()
 }
 
+fun checkCommitIsNotInProgress(project: Project) {
+    val app = ApplicationManager.getApplication()
+    if ((app.isUnitTestMode || app.isInternal) && app.isDispatchThread) {
+        if ((PsiDocumentManager.getInstance(project) as PsiDocumentManagerBase).isCommitInProgress) {
+            error("Accessing indices during PSI event processing can lead to typing performance issues")
+        }
+    }
+}
+
 fun fullyRefreshDirectory(directory: VirtualFile) {
     VfsUtil.markDirtyAndRefresh(/* async = */ false, /* recursive = */ true, /* reloadChildren = */ true, directory)
 }
@@ -121,11 +132,20 @@ fun VirtualFile.toPsiFile(project: Project): PsiFile? =
 fun VirtualFile.toPsiDirectory(project: Project): PsiDirectory? =
     PsiManager.getInstance(project).findDirectory(this)
 
+fun Document.toPsiFile(project: Project): PsiFile? =
+    PsiDocumentManager.getInstance(project).getPsiFile(this)
+
 val Document.virtualFile: VirtualFile?
     get() = FileDocumentManager.getInstance().getFile(this)
 
 val VirtualFile.document: Document?
     get() = FileDocumentManager.getInstance().getDocument(this)
+
+val PsiFile.document: Document?
+    get() = PsiDocumentManager.getInstance(project).getDocument(this)
+
+val VirtualFile.fileId: Int
+    get() = (this as VirtualFileWithId).id
 
 inline fun <Key, reified Psi : PsiElement> getElements(
     indexKey: StubIndexKey<Key, Psi>,
@@ -222,6 +242,14 @@ fun <T> Project.computeWithCancelableProgress(title: String, supplier: () -> T):
     return ProgressManager.getInstance().runProcessWithProgressSynchronously<T, Exception>(supplier, title, true, this)
 }
 
+fun Project.runWithCancelableProgress(title: String, process: () -> Unit): Boolean {
+    if (isUnitTestMode) {
+        process()
+        return true
+    }
+    return ProgressManager.getInstance().runProcessWithProgressSynchronously(process, title, true, this)
+}
+
 inline fun <T> UserDataHolderEx.getOrPut(key: Key<T>, defaultValue: () -> T): T =
     getUserData(key) ?: putUserDataIfAbsent(key, defaultValue())
 
@@ -235,12 +263,14 @@ const val PLUGIN_ID: String = "org.rust.lang"
 
 fun plugin(): IdeaPluginDescriptor = PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))!!
 
+fun pluginDirInSystem(): Path = Paths.get(PathManager.getSystemPath()).resolve("intellij-rust")
+
 val String.escaped: String get() = StringUtil.escapeXmlEntities(this)
 
-fun <T> runReadActionInSmartMode(project: Project, action: () -> T): T {
+fun <T> runReadActionInSmartMode(dumbService: DumbService, action: () -> T): T {
     ProgressManager.checkCanceled()
-    if (project.isDisposed) throw ProcessCanceledException()
-    return DumbService.getInstance(project).runReadActionInSmartMode(Computable {
+    if (dumbService.project.isDisposed) throw ProcessCanceledException()
+    return dumbService.runReadActionInSmartMode(Computable {
         ProgressManager.checkCanceled()
         action()
     })
@@ -248,6 +278,7 @@ fun <T> runReadActionInSmartMode(project: Project, action: () -> T): T {
 
 fun <T : Any> executeUnderProgressWithWriteActionPriorityWithRetries(indicator: ProgressIndicator, action: () -> T): T {
     checkReadAccessNotAllowed()
+    indicator.checkCanceled()
     var result: T? = null
     do {
         val success = runWithWriteActionPriority(SensitiveProgressWrapper(indicator)) {
@@ -264,20 +295,6 @@ fun <T : Any> executeUnderProgressWithWriteActionPriorityWithRetries(indicator: 
 
 fun runWithWriteActionPriority(indicator: ProgressIndicator, action: () -> Unit): Boolean =
     ProgressIndicatorUtils.runWithWriteActionPriority(action, indicator)
-
-fun submitTransaction(parentDisposable: Disposable, runnable: Runnable) {
-    ApplicationManager.getApplication().invokeLater(Runnable {
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        TransactionGuard.submitTransaction(parentDisposable, runnable)
-    }, ModalityState.any(), Conditions.alwaysFalse<Any>())
-}
-
-class TransactionExecutor(val project: Project) : Executor {
-    override fun execute(command: Runnable) {
-        submitTransaction(project, command)
-    }
-}
 
 fun <T> executeUnderProgress(indicator: ProgressIndicator, action: () -> T): T {
     var result: T? = null
@@ -318,3 +335,14 @@ fun runWithEnabledFeature(featureId: String, action: () -> Unit) {
         setFeatureEnabled(featureId, currentValue)
     }
 }
+
+class CachedValueDelegate<T>(provider: () -> CachedValueProvider.Result<T>) {
+    private val cachedValue: CachedValue<T> = CachedValueImpl(provider)
+
+    operator fun getValue(thisRef: Any?, property: KProperty<*>): T {
+        return cachedValue.value
+    }
+}
+
+// BACKCOMPAT: 2020.1
+val BUILD_202 = BuildNumber.fromString("202")!!

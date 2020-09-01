@@ -5,7 +5,6 @@
 
 package org.rust.ide.presentation
 
-import org.jetbrains.annotations.TestOnly
 import org.rust.lang.core.psi.RsTraitItem
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.BoundElement
@@ -18,53 +17,75 @@ import org.rust.lang.core.types.regions.ReStatic
 import org.rust.lang.core.types.regions.ReUnknown
 import org.rust.lang.core.types.regions.Region
 import org.rust.lang.core.types.ty.*
+import org.rust.lang.core.types.type
 import org.rust.stdext.withPrevious
 
 private const val MAX_SHORT_TYPE_LEN = 50
 
+fun Ty.render(
+    level: Int = Int.MAX_VALUE,
+    unknown: String = "<unknown>",
+    anonymous: String = "<anonymous>",
+    unknownLifetime: String = "'<unknown>",
+    unknownConst: String = "<unknown>",
+    integer: String = "{integer}",
+    float: String = "{float}",
+    includeTypeArguments: Boolean = true,
+    includeLifetimeArguments: Boolean = false,
+    useAliasNames: Boolean = false,
+    skipUnchangedDefaultTypeArguments: Boolean = false
+): String = TypeRenderer(
+    unknown = unknown,
+    anonymous = anonymous,
+    unknownLifetime = unknownLifetime,
+    unknownConst = unknownConst,
+    integer = integer,
+    float = float,
+    includeTypeArguments = includeTypeArguments,
+    includeLifetimeArguments = includeLifetimeArguments,
+    useAliasNames = useAliasNames,
+    skipUnchangedDefaultTypeArguments = skipUnchangedDefaultTypeArguments
+).render(this, level)
+
+fun Ty.renderInsertionSafe(
+    level: Int = Int.MAX_VALUE,
+    includeTypeArguments: Boolean = true,
+    includeLifetimeArguments: Boolean = false,
+    useAliasNames: Boolean = false,
+    skipUnchangedDefaultTypeArguments: Boolean = false
+): String = TypeRenderer(
+    unknown = "_",
+    anonymous = "_",
+    unknownLifetime = "'_",
+    unknownConst = "{}",
+    integer = "_",
+    float = "_",
+    includeTypeArguments = includeTypeArguments,
+    includeLifetimeArguments = includeLifetimeArguments,
+    useAliasNames = useAliasNames,
+    skipUnchangedDefaultTypeArguments = skipUnchangedDefaultTypeArguments
+).render(this, level)
+
 val Ty.shortPresentableText: String
     get() = generateSequence(1) { it + 1 }
-        .map { TypeRenderer.SHORT_WITH_ALIASES.render(this, level = it) }
+        .map { render(level = it, unknown = "?", useAliasNames = true) }
         .withPrevious()
         .takeWhile { (cur, prev) ->
             cur != prev && (prev == null || cur.length <= MAX_SHORT_TYPE_LEN)
         }.last().first
 
-val Ty.insertionSafeText: String
-    get() = TypeRenderer.INSERTION_SAFE.render(this)
-
-val Ty.insertionSafeTextWithAliases: String
-    get() = TypeRenderer.INSERTION_SAFE_WITH_ALIASES.render(this)
-
-val Ty.insertionSafeTextWithAliasesWithoutTypes: String
-    get() = TypeRenderer.INSERTION_SAFE_WITH_ALIASES_WITHOUT_TYPES.render(this)
-
-val Ty.insertionSafeTextWithLifetimes: String
-    get() = TypeRenderer.INSERTION_SAFE_WITH_LIFETIMES.render(this)
-
-val Ty.insertionSafeTextWithAliasesAndLifetimes: String
-    get() = TypeRenderer.INSERTION_SAFE_WITH_ALIASES_AND_LIFETIMES.render(this)
-
-val Ty.textWithAliasNames: String
-    get() = TypeRenderer.WITH_ALIASES.render(this)
-
-fun tyToString(ty: Ty): String = TypeRenderer.DEFAULT.render(ty)
-
-fun tyToStringWithoutTypeArgs(ty: Ty): String = TypeRenderer.DEFAULT_WITHOUT_TYPE_ARGUMENTS.render(ty)
-
 private data class TypeRenderer(
-    val unknown: String = "<unknown>",
-    val anonymous: String = "<anonymous>",
-    val unknownLifetime: String = "'<unknown>",
-    val unknownConst: String = "<unknown>",
-    val integer: String = "{integer}",
-    val float: String = "{float}",
-    val includeTypeArguments: Boolean = true,
-    val includeLifetimeArguments: Boolean = false,
-    val useAliasNames: Boolean = false
+    val unknown: String,
+    val anonymous: String,
+    val unknownLifetime: String,
+    val unknownConst: String,
+    val integer: String,
+    val float: String,
+    val includeTypeArguments: Boolean,
+    val includeLifetimeArguments: Boolean,
+    val useAliasNames: Boolean,
+    val skipUnchangedDefaultTypeArguments: Boolean
 ) {
-    fun render(ty: Ty): String = render(ty, Int.MAX_VALUE)
-
     fun render(ty: Ty, level: Int): String {
         require(level >= 0)
 
@@ -124,7 +145,7 @@ private data class TypeRenderer(
                 }
                 append(ty.target.name)
             }
-            is TyTraitObject -> formatTrait(ty.trait, render)
+            is TyTraitObject -> ty.traits.joinToString("+", "dyn ") { formatTrait(it, render) }
             is TyAnon -> ty.traits.joinToString("+", "impl ") { formatTrait(it, render) }
             is TyAdt -> buildString {
                 if (useAliasNames && ty.aliasedBy != null) {
@@ -183,7 +204,16 @@ private data class TypeRenderer(
     }
 
     private fun formatGenerics(adt: TyAdt, render: (Ty) -> String): String {
-        val typeArgumentNames = adt.typeArguments.map(render)
+        val typeArguments = adt.typeArguments
+
+        val typeArgumentNames = if (skipUnchangedDefaultTypeArguments) {
+            adt.item.typeParameters.zip(typeArguments).filter { (param, argument) ->
+                param.typeReference == null || param.typeReference?.type != argument
+            }.map { (_, argument) -> render(argument) }
+        } else {
+            typeArguments.map(render)
+        }
+
         val regionArgumentNames = if (includeLifetimeArguments) adt.regionArguments.map { render(it) } else emptyList()
         val constArgumentNames = adt.constArguments.map { render(it, wrapParameterInBraces = true) }
         val generics = regionArgumentNames + typeArgumentNames + constArgumentNames
@@ -232,24 +262,5 @@ private data class TypeRenderer(
         }
         val constSubst = boundElement.element.constParameters.map { render(boundElement.subst[it] ?: CtUnknown) }
         return regionSubst + tySubst + constSubst
-    }
-
-    companion object {
-        val DEFAULT: TypeRenderer = TypeRenderer()
-        val SHORT_WITH_ALIASES: TypeRenderer = TypeRenderer(unknown = "?", useAliasNames = true)
-        val DEFAULT_WITHOUT_TYPE_ARGUMENTS: TypeRenderer = TypeRenderer(includeTypeArguments = false)
-        val INSERTION_SAFE: TypeRenderer = TypeRenderer(
-            unknown = "_",
-            anonymous = "_",
-            unknownLifetime = "'_",
-            unknownConst = "{}",
-            integer = "_",
-            float = "_"
-        )
-        val INSERTION_SAFE_WITH_ALIASES = INSERTION_SAFE.copy(useAliasNames = true)
-        val INSERTION_SAFE_WITH_ALIASES_WITHOUT_TYPES: TypeRenderer = TypeRenderer(useAliasNames = true, includeTypeArguments = false)
-        val INSERTION_SAFE_WITH_LIFETIMES: TypeRenderer = INSERTION_SAFE.copy(includeLifetimeArguments = true)
-        val INSERTION_SAFE_WITH_ALIASES_AND_LIFETIMES = INSERTION_SAFE.copy(useAliasNames = true, includeLifetimeArguments = true)
-        val WITH_ALIASES: TypeRenderer = TypeRenderer(useAliasNames = true)
     }
 }

@@ -5,15 +5,10 @@
 
 package org.rust.cargo.runconfig.ui
 
-import com.intellij.execution.ExecutionBundle
 import com.intellij.execution.configuration.EnvironmentVariablesComponent
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ConfigurationException
-import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.ui.LabeledComponent
-import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.SimpleListCellRenderer
@@ -23,31 +18,28 @@ import com.intellij.ui.layout.CCFlags
 import com.intellij.ui.layout.LayoutBuilder
 import com.intellij.ui.layout.Row
 import com.intellij.ui.layout.panel
-import com.intellij.util.text.nullize
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
-import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.command.workingDirectory
 import org.rust.cargo.toolchain.BacktraceMode
 import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.util.CargoCommandLineEditor
+import org.rust.cargo.util.CargoCommandCompletionProvider
+import org.rust.cargo.util.RsCommandLineEditor
 import java.awt.Dimension
-import java.nio.file.Path
-import java.nio.file.Paths
 import javax.swing.JComponent
 import javax.swing.JPanel
 
+class CargoCommandConfigurationEditor(project: Project)
+    : RsCommandConfigurationEditor<CargoCommandConfiguration>(project) {
 
-class CargoCommandConfigurationEditor(private val project: Project) : SettingsEditor<CargoCommandConfiguration>() {
-    private fun currentWorkspace(): CargoWorkspace? =
-        CargoCommandConfiguration.findCargoProject(project, command.text, currentWorkingDirectory)?.workspace
+    override val command = RsCommandLineEditor(
+        project, CargoCommandCompletionProvider(project.cargoProjects) { currentWorkspace() }
+    )
 
     private val allCargoProjects: List<CargoProject> =
         project.cargoProjects.allProjects.sortedBy { it.presentableName }
-
-    private val command = CargoCommandLineEditor(project) { this.currentWorkspace() }
 
     private val backtraceMode = ComboBox<BacktraceMode>().apply {
         BacktraceMode.values()
@@ -61,16 +53,6 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
             .forEach { addItem(it) }
     }
 
-    private val currentWorkingDirectory: Path? get() = workingDirectory.component.text.nullize()?.let { Paths.get(it) }
-    private val workingDirectory = run {
-        val textField = TextFieldWithBrowseButton().apply {
-            val fileChooser = FileChooserDescriptorFactory.createSingleFolderDescriptor().apply {
-                title = ExecutionBundle.message("select.working.directory.message")
-            }
-            addBrowseFolderListener(null, null, null, fileChooser)
-        }
-        LabeledComponent.create(textField, ExecutionBundle.message("run.configuration.working.directory.label"))
-    }
     private val cargoProject = ComboBox<CargoProject>().apply {
         renderer = SimpleListCellRenderer.create("") { it.presentableName }
         allCargoProjects.forEach { addItem(it) }
@@ -91,14 +73,12 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
 
     private val environmentVariables = EnvironmentVariablesComponent()
     private val allFeatures = CheckBox("Use all features in tests", false)
-    private val nocapture = CheckBox("Show stdout/stderr in tests (and disable test tool window)", false)
     private val emulateTerminal = CheckBox("Emulate terminal in output console", false)
 
     override fun resetEditorFrom(configuration: CargoCommandConfiguration) {
         channel.selectedIndex = configuration.channel.index
         command.text = configuration.command
         allFeatures.isSelected = configuration.allFeatures
-        nocapture.isSelected = configuration.nocapture
         emulateTerminal.isSelected = configuration.emulateTerminal
         backtraceMode.selectedIndex = configuration.backtrace.index
         workingDirectory.component.text = configuration.workingDirectory?.toString() ?: ""
@@ -119,7 +99,6 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
         configuration.channel = configChannel
         configuration.command = command.text
         configuration.allFeatures = allFeatures.isSelected
-        configuration.nocapture = nocapture.isSelected
         configuration.emulateTerminal = emulateTerminal.isSelected && !SystemInfo.isWindows
         configuration.backtrace = BacktraceMode.fromIndex(backtraceMode.selectedIndex)
         configuration.workingDirectory = currentWorkingDirectory
@@ -141,7 +120,6 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
         }
 
         row { allFeatures() }
-        row { nocapture() }
 
         if (!SystemInfo.isWindows) {
             row { emulateTerminal() }

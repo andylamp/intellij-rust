@@ -18,6 +18,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.Testmark
 import com.intellij.openapiext.isDispatchThread
@@ -42,7 +43,10 @@ import org.rust.ide.experiments.RsExperiments
 import org.rust.ide.notifications.showBalloon
 import org.rust.openapiext.*
 import org.rust.stdext.buildList
+import java.io.File
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 
 
 /**
@@ -54,7 +58,7 @@ import java.nio.file.Path
  * It is impossible to guarantee that paths to the project or executables are valid,
  * because the user can always just `rm ~/.cargo/bin -rf`.
  */
-class Cargo(private val cargoExecutable: Path) {
+class Cargo(private val cargoExecutable: Path, private val rustcExecutable: Path) {
 
     data class BinaryCrate(val name: String, val version: SemVer? = null) {
         companion object {
@@ -128,11 +132,31 @@ class Cargo(private val cargoExecutable: Path) {
             .execute(owner, listener = listener)
             .stdout
             .dropWhile { it != '{' }
-        return try {
+        val project = try {
             Gson().fromJson(json, CargoMetadata.Project::class.java)
         } catch (e: JsonSyntaxException) {
             throw ExecutionException(e)
         }
+
+        val workspaceRoot = project.workspace_root
+
+        if (projectDirectory.toString() == workspaceRoot) {
+            return project
+        }
+
+        val workspaceRootPath = Paths.get(workspaceRoot)
+
+        // If the selected projectDirectory doesn't resolve directly to the directory that Cargo spat out at us,
+        // then there's something a bit special with the cargo workspace, and we don't want to assume anything.
+        if (!Files.isSameFile(projectDirectory, workspaceRootPath)) {
+            return project
+        }
+
+        // Otherwise, it's just a normal symlink.
+
+        val normalisedWorkspace = projectDirectory.normalize().toString()
+
+        return project.copy(workspace_root = normalisedWorkspace)
     }
 
     private fun fetchBuildScriptsInfo(
@@ -142,20 +166,21 @@ class Cargo(private val cargoExecutable: Path) {
     ): BuildScriptsInfo? {
         if (!isFeatureEnabled(RsExperiments.EVALUATE_BUILD_SCRIPTS)) return null
         val additionalArgs = listOf("--message-format", "json")
-        val processOutput = CargoCommandLine("check", projectDirectory, additionalArgs)
-            .execute(owner, listener = listener)
+        val commandLine = CargoCommandLine("check", projectDirectory, additionalArgs)
 
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        val parser = JsonParser()
+        val processOutput = try {
+            commandLine.execute(owner, listener = listener)
+        } catch (e: ExecutionException) {
+            LOG.warn(e)
+            return null
+        }
+
         val messages = mutableMapOf<PackageId, BuildScriptMessage>()
 
         for (line in processOutput.stdoutLines) {
             val jsonObject = try {
-                // BACKCOMPAT: 2019.3
-                @Suppress("DEPRECATION")
-                parser.parse(line).asJsonObject
-            } catch (ignore: JsonSyntaxException){
+                JsonParser.parseString(line).asJsonObject
+            } catch (ignore: JsonSyntaxException) {
                 continue
             }
             val message = BuildScriptMessage.fromJson(jsonObject) ?: continue
@@ -192,11 +217,11 @@ class Cargo(private val cargoExecutable: Path) {
         project: Project,
         owner: Disposable,
         directory: VirtualFile,
+        name: String,
         createBinary: Boolean,
         vcs: String? = null
     ): GeneratedFilesHolder {
         val path = directory.pathAsPath
-        val name = path.fileName.toString().replace(' ', '_')
         val crateType = if (createBinary) "--bin" else "--lib"
 
         val args = mutableListOf(crateType, "--name", name)
@@ -213,6 +238,45 @@ class Cargo(private val cargoExecutable: Path) {
         val manifest = checkNotNull(directory.findChild(RustToolchain.CARGO_TOML)) { "Can't find the manifest file" }
         val fileName = if (createBinary) "main.rs" else "lib.rs"
         val sourceFiles = listOfNotNull(directory.findFileByRelativePath("src/$fileName"))
+        return GeneratedFilesHolder(manifest, sourceFiles)
+    }
+
+    @Throws(ExecutionException::class)
+    fun generate(
+        project: Project,
+        owner: Disposable,
+        directory: VirtualFile,
+        name: String,
+        templateUrl: String
+    ): GeneratedFilesHolder? {
+        val path = directory.pathAsPath
+        val args = mutableListOf("--name", name, "--git", templateUrl)
+        args.add("--force") // enforce cargo-generate not to do underscores to hyphens name conversion
+
+        // TODO: Rewrite this for the future versions of cargo-generate when init subcommand will be available
+        // See https://github.com/ashleygwilliams/cargo-generate/issues/193
+
+        // Generate a cargo-generate project inside a subdir
+        CargoCommandLine("generate", path, args).execute(project, owner)
+
+        // Move all the generated files to the project root and delete the subdir itself
+        val generatedDir = try {
+            File(path.toString(), name)
+        } catch (e: NullPointerException) {
+            LOG.warn("Failed to generate project using cargo-generate")
+            return null
+        }
+        val generatedFiles = generatedDir.walk().drop(1) // drop the `generatedDir` itself
+        for (generatedFile in generatedFiles) {
+            val newFile = File(path.toString(), generatedFile.name)
+            Files.move(generatedFile.toPath(), newFile.toPath())
+        }
+        generatedDir.delete()
+
+        fullyRefreshDirectory(directory)
+
+        val manifest = checkNotNull(directory.findChild(RustToolchain.CARGO_TOML)) { "Can't find the manifest file" }
+        val sourceFiles = listOf("main", "lib").mapNotNull { directory.findFileByRelativePath("src/${it}.rs") }
         return GeneratedFilesHolder(manifest, sourceFiles)
     }
 
@@ -277,7 +341,7 @@ class Cargo(private val cargoExecutable: Path) {
                 parameters,
                 emulateTerminal,
                 http
-            )
+            ).withEnvironment("RUSTC", rustcExecutable.toString())
         }
 
     @Throws(ExecutionException::class)
@@ -288,6 +352,25 @@ class Cargo(private val cargoExecutable: Path) {
         stdIn: ByteArray? = null,
         listener: ProcessListener? = null
     ): ProcessOutput = toGeneralCommandLine(project, this).execute(owner, ignoreExitCode, stdIn, listener)
+
+    fun installCargoGenerate(owner: Disposable, listener: ProcessListener) {
+        GeneralCommandLine(cargoExecutable)
+            .withParameters(listOf("install", "cargo-generate"))
+            .execute(owner, listener = listener)
+    }
+
+    fun checkNeedInstallCargoGenerate(): Boolean {
+        val crateName = "cargo-generate"
+        val minVersion = SemVer("v0.5.0", 0, 5, 0)
+        return checkBinaryCrateIsNotInstalled(crateName, minVersion)
+    }
+
+    private fun checkBinaryCrateIsNotInstalled(crateName: String, minVersion: SemVer?): Boolean {
+        val installed = listInstalledBinaryCrates().any { (name, version) ->
+            name == crateName && (minVersion == null || version != null && version >= minVersion)
+        }
+        return !installed
+    }
 
     private var _http: HttpConfigurable? = null
     private val http: HttpConfigurable
@@ -320,9 +403,8 @@ class Cargo(private val cargoExecutable: Path) {
             val (pre, post) = commandLine.splitOnDoubleDash()
                 .let { (pre, post) -> pre.toMutableList() to post.toMutableList() }
 
-            if (commandLine.command == "test") {
-                if (commandLine.allFeatures && !pre.contains("--all-features")) pre.add("--all-features")
-                if (commandLine.nocapture && !pre.contains("--nocapture")) post.add(0, "--nocapture")
+            if (commandLine.command == "test" && commandLine.allFeatures && !pre.contains("--all-features")) {
+                pre.add("--all-features")
             }
 
             // Force colors
@@ -360,7 +442,10 @@ class Cargo(private val cargoExecutable: Path) {
             }
             environmentVariables.configureCommandLine(cmdLine, true)
             return if (emulateTerminal) {
-                PtyCommandLine(cmdLine).withConsoleMode(false)
+                if (!SystemInfo.isWindows) {
+                    cmdLine.environment["TERM"] = "xterm-256color"
+                }
+                PtyCommandLine(cmdLine).withInitialColumns(PtyCommandLine.MAX_COLUMNS)
             } else {
                 cmdLine
             }
@@ -392,7 +477,19 @@ class Cargo(private val cargoExecutable: Path) {
 
         fun checkNeedInstallEvcxr(project: Project): Boolean {
             val crateName = "evcxr_repl"
-            val minVersion = SemVer("v0.4.7", 0, 4, 7)
+            val minVersion = SemVer("v0.5.1", 0, 5, 1)
+            return checkNeedInstallBinaryCrate(
+                project,
+                crateName,
+                NotificationType.ERROR,
+                "Need at least $crateName $minVersion",
+                minVersion
+            )
+        }
+
+        fun checkNeedInstallWasmPack(project: Project): Boolean {
+            val crateName = "wasm-pack"
+            val minVersion = SemVer("v0.9.1", 0, 9, 1)
             return checkNeedInstallBinaryCrate(
                 project,
                 crateName,
@@ -409,16 +506,10 @@ class Cargo(private val cargoExecutable: Path) {
             message: String? = null,
             minVersion: SemVer? = null
         ): Boolean {
-            fun isNotInstalled(): Boolean {
-                val cargo = project.toolchain?.rawCargo() ?: return false
-                val installed = cargo.listInstalledBinaryCrates().any { (name, version) ->
-                    name == crateName && (minVersion == null || version != null && version >= minVersion)
-                }
-                return !installed
-            }
-
+            val cargo = project.toolchain?.rawCargo() ?: return false
+            val isNotInstalled = { cargo.checkBinaryCrateIsNotInstalled(crateName, minVersion) }
             val needInstall = if (isDispatchThread) {
-                project.computeWithCancelableProgress("Checking if $crateName is installed...", ::isNotInstalled)
+                project.computeWithCancelableProgress("Checking if $crateName is installed...", isNotInstalled)
             } else {
                 isNotInstalled()
             }

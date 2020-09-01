@@ -5,7 +5,7 @@
 
 package org.rust.lang.core.types.ty
 
-import org.rust.ide.presentation.tyToString
+import org.rust.ide.presentation.render
 import org.rust.lang.core.psi.RsStructItem
 import org.rust.lang.core.psi.ext.fields
 import org.rust.lang.core.resolve.ImplLookup
@@ -43,7 +43,7 @@ abstract class Ty(override val flags: TypeFlags = 0) : Kind, TypeFoldable<Ty> {
     /**
      * User visible string representation of a type
      */
-    final override fun toString(): String = tyToString(this)
+    final override fun toString(): String = render()
 }
 
 enum class Mutability {
@@ -96,6 +96,10 @@ val Ty.isSelf: Boolean
 
 fun Ty.walk(): TypeIterator = TypeIterator(this)
 
+/**
+ * Iterator that walks `root` and any types reachable from
+ * `root`, in depth-first order.
+ */
 class TypeIterator(root: Ty) : Iterator<Ty> {
     private val stack: Deque<Ty> = dequeOf(root)
     private var lastSubtreeSize: Int = 0
@@ -103,7 +107,7 @@ class TypeIterator(root: Ty) : Iterator<Ty> {
     override fun hasNext(): Boolean = stack.isNotEmpty()
 
     override fun next(): Ty {
-        val ty = stack.removeFirst()
+        val ty = stack.pop()
         lastSubtreeSize = stack.size
         pushSubTypes(stack, ty)
         return ty
@@ -111,7 +115,7 @@ class TypeIterator(root: Ty) : Iterator<Ty> {
 
     fun skipCurrentSubtree() {
         while (stack.size > lastSubtreeSize) {
-            stack.removeLast()
+            stack.pop()
         }
     }
 }
@@ -123,26 +127,29 @@ fun Ty.walkShallow(): Iterator<Ty> {
 }
 
 private fun pushSubTypes(stack: Deque<Ty>, parentTy: Ty) {
+    // Types on the stack are pushed in reverse order so as to
+    // maintain a pre-order traversal. It is like the
+    // natural order one would expect — the order of the
+    // types as they are written.
+
     when (parentTy) {
         is TyAdt ->
-            stack.addAll(parentTy.typeArguments)
-        is TyAnon, is TyProjection ->
-            stack.addAll(parentTy.typeParameterValues.types)
+            parentTy.typeArguments.asReversed().forEach(stack::push)
+        is TyAnon, is TyTraitObject, is TyProjection ->
+            parentTy.typeParameterValues.types.reversed().forEach(stack::push)
         is TyArray ->
-            stack.add(parentTy.base)
+            stack.push(parentTy.base)
         is TyPointer ->
-            stack.add(parentTy.referenced)
+            stack.push(parentTy.referenced)
         is TyReference ->
-            stack.add(parentTy.referenced)
+            stack.push(parentTy.referenced)
         is TySlice ->
-            stack.add(parentTy.elementType)
-        is TyTraitObject ->
-            stack.addAll(parentTy.trait.subst.types)
+            stack.push(parentTy.elementType)
         is TyTuple ->
-            stack.addAll(parentTy.types)
+            parentTy.types.asReversed().forEach(stack::push)
         is TyFunction -> {
-            stack.addAll(parentTy.paramTypes)
-            stack.add(parentTy.retType)
+            stack.push(parentTy.retType)
+            parentTy.paramTypes.asReversed().forEach(stack::push)
         }
     }
 }

@@ -7,11 +7,12 @@ package org.rust.ide.presentation
 
 import com.intellij.ide.projectView.PresentationData
 import com.intellij.navigation.ItemPresentation
+import com.intellij.openapi.util.Iconable
 import org.rust.ide.colors.RsColor
-import org.rust.ide.icons.addVisibilityIcon
 import org.rust.lang.core.macros.isExpandedFromMacro
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.types.inference
 
 fun getPresentation(psi: RsElement): ItemPresentation {
     val location = run {
@@ -44,6 +45,9 @@ fun getPresentationForStructure(psi: RsElement): ItemPresentation {
             is RsNamedFieldDecl -> {
                 psi.typeReference?.let { append(": ${it.getStubOnlyText()}") }
             }
+            is RsPatBinding -> {
+                psi.inference?.let { append(": ${it.getBindingType(psi)}") }
+            }
             is RsEnumVariant -> {
                 val fields = psi.tupleFields
                 if (fields != null) {
@@ -52,11 +56,7 @@ fun getPresentationForStructure(psi: RsElement): ItemPresentation {
             }
         }
     }
-    var icon = psi.getIcon(0)
-    if ((psi as? RsVisibilityOwner)?.isPublic == true) {
-        icon = icon.addVisibilityIcon(true)
-    }
-
+    val icon = psi.getIcon(Iconable.ICON_FLAG_VISIBILITY)
     val textAttributes = if (psi.isExpandedFromMacro) RsColor.GENERATED_ITEM.textAttributesKey else null
 
     return PresentationData(presentation, null, icon, textAttributes)
@@ -99,30 +99,3 @@ val RsDocAndAttributeOwner.presentableQualifiedName: String?
         if (this is RsMod) return modName
         return name
     }
-
-fun breadcrumbName(e: RsElement): String? {
-    fun lastComponentWithoutGenerics(path: RsPath) = path.referenceName
-
-    return when (e) {
-        is RsMacro -> e.name?.let { "$it!" }
-
-        is RsModItem, is RsStructOrEnumItemElement, is RsTraitItem, is RsConstant, is RsTypeAlias ->
-            (e as RsNamedElement).name
-
-        is RsImplItem -> {
-            val typeName = run {
-                val typeReference = e.typeReference
-                (typeReference?.typeElement as? RsBaseType)?.path?.let { lastComponentWithoutGenerics(it) }
-                    ?: typeReference?.text
-                    ?: return null
-            }
-
-            val traitName = e.traitRef?.path?.let { lastComponentWithoutGenerics(it) }
-            val start = if (traitName != null) "$traitName for" else "impl"
-            "$start $typeName"
-        }
-
-        is RsFunction -> e.name?.let { "$it()" }
-        else -> null
-    }
-}

@@ -561,7 +561,7 @@ class RsUseResolveTest : RsResolveTestBase() {
         }                                   //^
     """)
 
-    fun `test private reexport with crate keyword`() = checkByCode("""
+    fun `test private reexport with crate keyword 1`() = checkByCode("""
         mod a {
             pub struct Foo;
         }            //X
@@ -571,6 +571,43 @@ class RsUseResolveTest : RsResolveTestBase() {
 
             type T = Foo;
         }          //^
+    """)
+
+    fun `test private reexport with crate keyword 2`() = checkByCode("""
+        mod root {
+            mod a {
+                pub struct Foo;
+            }            //X
+            use self::a::Foo;
+            mod b {
+                use crate::root::Foo;
+
+                type T = Foo;
+            }          //^
+        }
+    """)
+
+    fun `test private reexport with crate keyword 3`() = checkByCode("""
+        mod uses {
+            pub use crate::foo::*;
+            pub use crate::bar::*;
+        }
+        mod foo {
+            use quux1::Foo;
+        }
+        mod bar {
+            pub use quux2::Foo;
+        }
+        mod quux1 {
+            pub struct Foo;
+        }
+        mod quux2 {
+            pub struct Foo;
+        }            //X
+
+        use uses::Foo;
+        type T = Foo;
+               //^
     """)
 
     fun `test can't import methods`() = checkByCode("""

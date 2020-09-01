@@ -13,12 +13,11 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.impl.source.tree.injected.InjectionBackgroundSuppressor
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.ide.injected.RsDoctestLanguageInjector
-import org.rust.ide.injected.areDoctestsEnabled
 import org.rust.ide.injected.findDoctestInjectableRanges
 import org.rust.lang.core.psi.RsDocCommentImpl
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.ancestorStrict
-import org.rust.lang.core.psi.ext.containingCargoTarget
+import org.rust.lang.core.psi.ext.containingCrate
 
 /**
  * Adds missing background for injections from [RsDoctestLanguageInjector].
@@ -29,17 +28,18 @@ import org.rust.lang.core.psi.ext.containingCargoTarget
  */
 class RsDoctestAnnotator : AnnotatorBase() {
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
+        if (holder.isBatchMode) return
         if (element !is RsDocCommentImpl) return
         if (!element.project.rustSettings.doctestInjectionEnabled) return
         // only library targets can have doctests
-        if (element.ancestorStrict<RsElement>()?.containingCargoTarget?.areDoctestsEnabled != true) return
+        if (element.ancestorStrict<RsElement>()?.containingCrate?.areDoctestsEnabled != true) return
 
         val startOffset = element.startOffset
         findDoctestInjectableRanges(element).flatten().forEach {
-            // BACKCOMPAT: 2019.3
-            @Suppress("DEPRECATION")
-            holder.createAnnotation(HighlightSeverity.INFORMATION, it.shiftRight(startOffset), null)
-                .textAttributes = EditorColors.INJECTED_LANGUAGE_FRAGMENT
+            holder.newSilentAnnotation(HighlightSeverity.INFORMATION)
+                .range(it.shiftRight(startOffset))
+                .textAttributes(EditorColors.INJECTED_LANGUAGE_FRAGMENT)
+                .create()
         }
     }
 }

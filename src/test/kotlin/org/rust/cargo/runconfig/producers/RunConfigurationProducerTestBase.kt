@@ -11,15 +11,18 @@ import com.intellij.execution.actions.RunConfigurationProducer
 import com.intellij.execution.impl.RunnerAndConfigurationSettingsImpl
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.LangDataKeys.PSI_ELEMENT_ARRAY
+import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
 import com.intellij.testFramework.LightProjectDescriptor
+import com.intellij.testFramework.TestApplicationManager
 import com.intellij.testFramework.TestDataProvider
 import org.intellij.lang.annotations.Language
 import org.jdom.Element
 import org.rust.RsTestBase
-import org.rust.TestApplicationManagerWrapper
 import org.rust.cargo.CargoConstants
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.impl.testCargoProjects
@@ -36,17 +39,7 @@ import java.nio.file.Paths
 abstract class RunConfigurationProducerTestBase : RsTestBase() {
     override val dataPath: String = "org/rust/cargo/runconfig/producers/fixtures"
 
-    override fun getProjectDescriptor(): LightProjectDescriptor =
-        object : LightProjectDescriptor() {
-            override fun createSourcesRoot(module: Module): VirtualFile {
-                val root = createSourceRoot(module, "test")
-                val sourceRoots = CargoConstants.ProjectLayout.sources + CargoConstants.ProjectLayout.tests
-                sourceRoots
-                    .map { root.createChildDirectory(this, it) }
-                    .forEach { createContentEntry(module, it) }
-                return root
-            }
-        }
+    override fun getProjectDescriptor(): LightProjectDescriptor = ProjectDescriptor()
 
     protected fun modifyTemplateConfiguration(f: CargoCommandConfiguration.() -> Unit) {
         val configurationType = CargoCommandConfigurationType.getInstance()
@@ -63,7 +56,7 @@ abstract class RunConfigurationProducerTestBase : RsTestBase() {
     }
 
     protected fun checkOnFiles(vararg files: PsiElement) {
-        TestApplicationManagerWrapper.getInstance().setDataProvider(object : TestDataProvider(project) {
+        TestApplicationManager.getInstance().setDataProvider(object : TestDataProvider(project) {
             override fun getData(dataId: String): Any? =
                 if (PSI_ELEMENT_ARRAY.`is`(dataId)) files else super.getData(dataId)
         }, testRootDisposable)
@@ -241,6 +234,31 @@ abstract class RunConfigurationProducerTestBase : RsTestBase() {
             val offset = if (caret == -1) null else caret
             val cleanedCode = code.replace("/*caret*/", "")
             return File(path, cleanedCode, offset).also { files.add(it) }
+        }
+    }
+
+    private class ProjectDescriptor : LightProjectDescriptor() {
+        @Throws(Exception::class)
+        override fun setUpProject(project: Project, handler: SetupHandler) {
+            val setupHandler = object : SetupHandler  {
+
+                private lateinit var module: Module
+
+                override fun moduleCreated(module: Module) {
+                    handler.moduleCreated(module)
+                    this.module = module
+                }
+
+                override fun sourceRootCreated(sourceRoot: VirtualFile) {
+                    handler.sourceRootCreated(sourceRoot)
+                    val sourceRoots = CargoConstants.ProjectLayout.sources + CargoConstants.ProjectLayout.tests
+                    sourceRoots
+                        .map { sourceRoot.createChildDirectory(this, it) }
+                        .forEach { createContentEntry(module, it) }
+                }
+            }
+
+            super.setUpProject(project, setupHandler)
         }
     }
 }

@@ -182,14 +182,15 @@ fun AnnotationHolder.createAnnotationsForFile(file: RsFile, annotationResult: Rs
         // We can't control what messages cargo generates, so we can't test them well.
         // Let's use special message for tests to distinguish annotation from external linter
         val annotationMessage = if (isUnitTestMode) TEST_MESSAGE else message.message
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        createAnnotation(message.severity, message.textRange, annotationMessage, message.htmlTooltip)
-            .apply {
-                problemGroup = ProblemGroup { annotationMessage }
-                setNeedsUpdateOnTyping(true)
-                message.quickFixes.forEach(::registerFix)
-            }
+        val annotationBuilder = newAnnotation(message.severity, annotationMessage)
+            .tooltip(message.htmlTooltip)
+            .range(message.textRange)
+            .problemGroup { annotationMessage }
+            .needsUpdateOnTyping(true)
+
+        message.quickFixes.forEach { f -> annotationBuilder.withFix(f) }
+
+        annotationBuilder.create()
     }
 }
 
@@ -197,19 +198,12 @@ class RsExternalLinterResult(commandOutput: List<String>) {
     val messages: List<CargoTopMessage> = commandOutput.asSequence()
         .filter { MESSAGE_REGEX.matches(it) }
         .map { JsonReader(StringReader(it)).apply { isLenient = true } }
-        .map {
-            // BACKCOMPAT: 2019.3
-            @Suppress("DEPRECATION")
-            PARSER.parse(it)
-        }
+        .map { JsonParser.parseReader(it) }
         .filter { it.isJsonObject }
         .mapNotNull { CargoTopMessage.fromJson(it.asJsonObject) }
         .toList()
 
     companion object {
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        private val PARSER = JsonParser()
         private val MESSAGE_REGEX = """\s*\{.*"message".*""".toRegex()
     }
 }

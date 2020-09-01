@@ -7,13 +7,10 @@
 
 | Build Status |                                                                              |
 |--------------|------------------------------------------------------------------------------|
-| Travis       | [![Travis Build Status][travis-build-status-svg]][travis-build-status]       |
-| AppVeyor     | [![AppVeyor Build Status][appveyor-build-status-svg]][appveyor-build-status] |
+| Check        | [![Check Status][check-status-svg]][check-status]                            |
 | Stable       | [![Stable Build Status][stable-build-status-svg]][stable-build-status]       |
 | Beta         | [![Beta Build Status][beta-build-status-svg]][beta-build-status]             |
 | Nightly      | [![Nightly Build Status][nightly-build-status-svg]][nightly-build-status]    |
-| TeamCity     | [![TeamCity Build Status][teamcity-build-status-svg]][teamcity-build-status] |
-
 
 ## Installation & Usage
 
@@ -23,25 +20,27 @@ the [changelog](https://intellij-rust.github.io/thisweek/).
 If you want to jump straight in, open `Settings > Plugins > Marketplace` in your IDE,
 search for _Rust_ and install the plugin. To open an existing project, use **File | Open** and point to the directory containing `Cargo.toml`. For creating projects, use the **Rust** template. You can find more details in the [Quick Start Guide](https://intellij-rust.github.io/docs/quick-start.html). 
 
-Unstable master branch builds can be downloaded from [TeamCity].
-
 ## Compatible IDEs
 
-The plugin is compatible with all IntelliJ-based IDEs starting from the version 2019.3, with the following differences in the sets of the available features:
+The plugin is compatible with all IntelliJ-based IDEs starting from the version 2020.1, with the following differences in the sets of the available features:
 
 
-|                        | Open-source and Educational IDEs<sup>*</sup> | [CLion] (commercial) | [IntelliJ IDEA] Ultimate, [PyCharm] Professional, other commercial IDEs |
-|------------------------|---|---|---|
-| Language support       | + | + | + |
-| Cargo support          | + | + | + |
-| Code coverage          | + | + | + |
-| Debugger               | - | + | - |
-| Profiler               | - | + | - |
-| Valgrind Memcheck      | - | + | - |
-| [Detecting duplicates] | - | + | + |
+|                        | Open-source and Educational IDEs<sup>*</sup> | [CLion] (commercial) | [IntelliJ IDEA] Ultimate (commercial) | [PyCharm] Professional, [GoLand], other commercial IDEs |
+|------------------------|---|---|---|---|
+| Language support       | + | + | + | + |
+| Cargo support          | + | + | + | + |
+| Code coverage          | + | + | + | + |
+| Debugger               | - | + | +** | - |
+| Profiler               | - | + | - | - |
+| Valgrind Memcheck      | - | + | - | - |
+| [Detecting duplicates] | - | + | + | + |
 
 
 \* [IntelliJ IDEA] Community Edition, [PyCharm] Community Edition, [PyCharm Edu and IntelliJ IDEA Edu].
+
+\** Requires the
+[Native Debugging Support](https://plugins.jetbrains.com/plugin/12775-native-debugging-support) plugin. 
+Available on macOS and Linux, LLDB only.
 
 ## TOML
 
@@ -59,7 +58,6 @@ understand the high-level structure of the codebase. If you are not sure where t
 [help wanted]: https://github.com/intellij-rust/intellij-rust/labels/help%20wanted
 [CONTRIBUTING.md]: CONTRIBUTING.md
 [ARCHITECTURE.md]: ARCHITECTURE.md
-[TeamCity]: https://teamcity.jetbrains.com/guestAuth/repository/download/IntellijIdeaPlugins_Rust_192_TestIdea/.lastSuccessful/intellij-rust-0.2.104.{build.number}-192-dev.zip
 [intellij-toml]: intellij-toml/
 
 <!-- Badges -->
@@ -70,27 +68,22 @@ understand the high-level structure of the codebase. If you are not sure where t
 [plugin-version-svg]: https://img.shields.io/jetbrains/plugin/v/8182-rust.svg
 [plugin-downloads-svg]: https://img.shields.io/jetbrains/plugin/d/8182-rust.svg
 
-[travis-build-status]: https://travis-ci.org/intellij-rust/intellij-rust?branch=master
-[travis-build-status-svg]: https://travis-ci.org/intellij-rust/intellij-rust.svg?branch=master
+[check-status]: https://github.com/intellij-rust/intellij-rust/actions?query=workflow%3Acheck+event%3Apush+branch%3Amaster
+[check-status-svg]: https://github.com/intellij-rust/intellij-rust/workflows/check/badge.svg?branch=master&event=push
 
-[appveyor-build-status]: https://ci.appveyor.com/project/intellij-rust/intellij-rust/branch/master
-[appveyor-build-status-svg]: https://ci.appveyor.com/api/projects/status/xf8792c7p3637060?svg=true
+[stable-build-status]: https://github.com/intellij-rust/intellij-rust/actions?query=workflow%3A%22rust+release%22+event%3Arepository_dispatch
+[stable-build-status-svg]: https://github.com/intellij-rust/intellij-rust/workflows/rust%20release/badge.svg?event=repository_dispatch
 
-[teamcity-build-status]: https://teamcity.jetbrains.com/viewType.html?buildTypeId=IntellijIdeaPlugins_Rust_192_TestIdea&guest=1
-[teamcity-build-status-svg]: https://teamcity.jetbrains.com/app/rest/builds/buildType:IntellijIdeaPlugins_Rust_192_TestIdea/statusIcon.svg
+[beta-build-status]: https://github.com/intellij-rust/intellij-rust/actions?query=workflow%3A%22rust+release%22+event%3Aschedule
+[beta-build-status-svg]: https://github.com/intellij-rust/intellij-rust/workflows/rust%20release/badge.svg?event=schedule
 
-[stable-build-status]: https://teamcity.jetbrains.com/viewType.html?buildTypeId=IntellijIdeaPlugins_Rust_192_UploadStable&guest=1
-[stable-build-status-svg]: https://teamcity.jetbrains.com/app/rest/builds/buildType:IntellijIdeaPlugins_Rust_192_UploadStable/statusIcon.svg
-
-[beta-build-status]: https://teamcity.jetbrains.com/viewType.html?buildTypeId=IntellijIdeaPlugins_Rust_192_UploadBeta&guest=1
-[beta-build-status-svg]: https://teamcity.jetbrains.com/app/rest/builds/buildType:IntellijIdeaPlugins_Rust_192_UploadBeta/statusIcon.svg
-
-[nightly-build-status]: https://teamcity.jetbrains.com/viewType.html?buildTypeId=IntellijIdeaPlugins_Rust_192_UploadNightly&guest=1
-[nightly-build-status-svg]: https://teamcity.jetbrains.com/app/rest/builds/buildType:IntellijIdeaPlugins_Rust_192_UploadNightly/statusIcon.svg
+[nightly-build-status]: https://github.com/intellij-rust/intellij-rust/actions?query=workflow%3A%22rust+nightly%22
+[nightly-build-status-svg]: https://github.com/intellij-rust/intellij-rust/workflows/rust%20nightly/badge.svg
 
 
 [IntelliJ IDEA]: https://www.jetbrains.com/idea/
 [CLion]: https://www.jetbrains.com/clion/
 [PyCharm]: https://www.jetbrains.com/pycharm/
+[GoLand]: https://www.jetbrains.com/go/
 [PyCharm Edu and IntelliJ IDEA Edu]: https://www.jetbrains.com/education
 [Detecting duplicates]: https://www.jetbrains.com/help/idea/analyzing-duplicates.html

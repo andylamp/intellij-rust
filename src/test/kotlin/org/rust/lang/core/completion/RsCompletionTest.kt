@@ -126,6 +126,18 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """)
 
+    fun `test use self`() = doSingleCompletion("""
+        use se/*caret*/
+    """, """
+        use self::/*caret*/
+    """)
+
+    fun `test use super`() = doSingleCompletion("""
+        mod m { use su/*caret*/ }
+    """, """
+        mod m { use super::/*caret*/ }
+    """)
+
     fun `test use glob`() = doSingleCompletion("""
         mod foo { pub fn quux() {} }
 
@@ -308,6 +320,14 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """)
 
+    fun `test no outside type in struct field pattern`() = checkNotContainsCompletion("T", """
+        struct T;
+        struct S { a: i32 }
+        fn main() {
+            let S { /*caret*/ } = S{ a: 0 };
+        }
+    """)
+
     fun `test enum field`() = doSingleCompletion("""
         enum E { X { bazbarfoo: i32 } }
         fn main() {
@@ -474,6 +494,22 @@ class RsCompletionTest : RsCompletionTestBase() {
             use self::Expr::*;
             match e {
                 Unit/*caret*/
+            }
+        }
+    """)
+
+    fun `test complete enum variants after Self`() = doSingleCompletion("""
+        enum Expr { Unit, BinOp(Box<Expr>, Box<Expr>) }
+        impl Expr {
+            fn new() -> Self {
+                Self::B/*caret*/
+            }
+        }
+    """, """
+        enum Expr { Unit, BinOp(Box<Expr>, Box<Expr>) }
+        impl Expr {
+            fn new() -> Self {
+                Self::BinOp(/*caret*/)
             }
         }
     """)
@@ -661,6 +697,178 @@ class RsCompletionTest : RsCompletionTestBase() {
        fn main() {
             let x = crate::/*caret*/
        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in path constructor 1`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        fn main() {
+            std::path::Path::new("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        fn main() {
+            std::path::Path::new("foo.rs/*caret*/");
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in path constructor 2`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        use std::path::Path;
+        fn main() {
+            Path::new("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        use std::path::Path;
+        fn main() {
+            Path::new("foo.rs/*caret*/");
+        }
+    """)
+
+    // enable once name resolution of <Foo as Trait>::function is fixed
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test do not complete paths in path trait impl`() {
+        expect<IllegalStateException> {
+            checkNoCompletionByFileTree("""
+        //- main.rs
+            use std::path::Path;
+            trait Foo {
+                fn new(x: &str) -> i32;
+            }
+            impl Foo for Path {
+                fn new(x: &str) -> i32 {
+                    123
+                }
+            }
+            fn main() {
+                <Path as Foo>::new("fo/*caret*/");
+            }
+        //- foo.rs
+            pub struct Foo;
+        """)
+        }
+    }
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in pathbuf constructor`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        fn main() {
+            std::path::PathBuf::from("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        fn main() {
+            std::path::PathBuf::from("foo.rs/*caret*/");
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in asref path`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        fn main() {
+            std::fs::canonicalize("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        fn main() {
+            std::fs::canonicalize("foo.rs/*caret*/");
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in method call`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        struct Bar;
+        impl Bar {
+            fn foo<T: AsRef<std::path::Path>>(&self, path: T) {}
+        }
+
+        fn main() {
+            Bar.foo("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        struct Bar;
+        impl Bar {
+            fn foo<T: AsRef<std::path::Path>>(&self, path: T) {}
+        }
+
+        fn main() {
+            Bar.foo("foo.rs/*caret*/");
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in ufcs call`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        struct Bar;
+        impl Bar {
+            fn foo<T: AsRef<std::path::Path>>(&self, path: T) {}
+        }
+
+        fn main() {
+            Bar::foo(&Bar, "fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        struct Bar;
+        impl Bar {
+            fn foo<T: AsRef<std::path::Path>>(&self, path: T) {}
+        }
+
+        fn main() {
+            Bar::foo(&Bar, "foo.rs/*caret*/");
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test do not complete paths in self parameter of ufcs call`() = checkNoCompletionByFileTree("""
+    //- main.rs
+        struct Bar;
+        impl Bar {
+            fn foo<T: AsRef<std::path::Path>>(&self, path: T) {}
+        }
+
+        fn main() {
+            Bar::foo("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete paths in impl asref`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        fn foo(path: impl AsRef<std::path::Path>) {}
+
+        fn main() {
+            foo("fo/*caret*/");
+        }
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        fn foo(path: impl AsRef<std::path::Path>) {}
+
+        fn main() {
+            foo("foo.rs/*caret*/");
+        }
+    """)
+
+    fun `test do not complete paths in string literal`() = checkNoCompletionByFileTree("""
+    //- main.rs
+        fn main() {
+            let s = "fo/*caret*/";
+        }
+    //- foo.rs
+        pub struct Foo;
     """)
 
     fun `test complete paths in include macro`() = doSingleCompletionByFileTree("""
@@ -877,4 +1085,167 @@ class RsCompletionTest : RsCompletionTestBase() {
             Foo.foo()/*caret*/
         }
     """)
+
+    fun `test complete type parameters in let binding`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x: Frob/*caret*/
+        }
+    """, """
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x: Frobnicate</*caret*/>
+        }
+    """)
+
+    fun `test complete type parameters in parameter`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn foo(a: Frob/*caret*/) {}
+    """, """
+        struct Frobnicate<T>(T);
+        fn foo(a: Frobnicate</*caret*/>) {}
+    """)
+
+    fun `test complete type parameters in generic function call`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn gen<T>(t: T) {}
+        fn foo() {
+            gen::<Frob/*caret*/
+        }
+    """, """
+        struct Frobnicate<T>(T);
+        fn gen<T>(t: T) {}
+        fn foo() {
+            gen::<Frobnicate</*caret*/>
+        }
+    """)
+
+    fun `test move cursor if angle brackets already exist`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x: Frob/*caret*/<>
+        }
+    """, """
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x: Frobnicate</*caret*/>
+        }
+    """)
+
+    fun `test don't complete type arguments in expression context 1`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x = Frob/*caret*/
+        }
+    """, """
+        struct Frobnicate<T>(T);
+        fn main() {
+            let x = Frobnicate/*caret*/
+        }
+    """)
+
+    fun `test don't complete type arguments in expression context 2`() = doSingleCompletion("""
+        struct Frobnicate<T>(T);
+        fn main() {
+            if (Frob/*caret*/
+        }
+    """, """
+        struct Frobnicate<T>(T);
+        fn main() {
+            if (Frobnicate/*caret*/
+        }
+    """)
+
+    fun `test don't complete type arguments in use item`() = doSingleCompletion("""
+        mod a {
+            pub struct Frobnicate<T>(T);
+        }
+        use a::Frob/*caret*/
+    """, """
+        mod a {
+            pub struct Frobnicate<T>(T);
+        }
+        use a::Frobnicate;/*caret*/
+    """)
+
+    fun `test don't complete type arguments if all type parameters have a default`() = doSingleCompletion("""
+        struct Frobnicate<T=u32,R=i32>(T, R);
+        fn main() {
+            let x: Frob/*caret*/
+        }
+    """, """
+        struct Frobnicate<T=u32,R=i32>(T, R);
+        fn main() {
+            let x: Frobnicate/*caret*/
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete parentheses for Fn trait`() = checkCompletion("Fn", """
+        fn foo(f: &Fn/*caret*/) {}
+    """, """
+        fn foo(f: &Fn(/*caret*/)) {}
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete parentheses for FnMut trait`() = doSingleCompletion("""
+        fn foo(f: &FnMut/*caret*/) {}
+    """, """
+        fn foo(f: &FnMut(/*caret*/)) {}
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test complete parentheses for FnOnce trait`() = doSingleCompletion("""
+        fn foo(f: &FnOnce/*caret*/) {}
+    """, """
+        fn foo(f: &FnOnce(/*caret*/)) {}
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test move cursor if parentheses of Fn trait already exist`() = doSingleCompletion("""
+        fn foo(f: &FnOnce/*caret*/()) {}
+    """, """
+        fn foo(f: &FnOnce(/*caret*/)) {}
+    """)
+
+    fun `test do not insert second parenthesis 1`() = checkCompletion("foo", """
+        fn foo() {}
+        fn foo2() {}
+        fn main() {
+            foo/*caret*/
+        }
+    """, """
+        fn foo() {}
+        fn foo2() {}
+        fn main() {
+            foo()/*caret*/
+        }
+    """, completionChar = '(', testmark = Testmarks.doNotAddOpenParenCompletionChar)
+
+    fun `test do not insert second parenthesis 2`() = checkCompletion("V1", """
+        enum E {
+            V1(i32),
+            V2(i32)
+        }
+        fn main() {
+            E::V/*caret*/
+        }
+    """, """
+        enum E {
+            V1(i32),
+            V2(i32)
+        }
+        fn main() {
+            E::V1(/*caret*/)
+        }
+    """, completionChar = '(', testmark = Testmarks.doNotAddOpenParenCompletionChar)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test do not insert second parenthesis 3`() = checkCompletion("FnOnce", """
+        struct FnOnceStruct;
+        fn foo(f: FnOnce/*caret*/) {}
+    """, """
+        struct FnOnceStruct;
+        fn foo(f: FnOnce(/*caret*/)) {}
+    """, completionChar = '(', testmark = Testmarks.doNotAddOpenParenCompletionChar)
 }

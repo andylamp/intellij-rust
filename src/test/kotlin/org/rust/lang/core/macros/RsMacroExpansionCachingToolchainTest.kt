@@ -6,10 +6,8 @@
 package org.rust.lang.core.macros
 
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.impl.LaterInvocator
 import com.intellij.openapi.application.runWriteAction
-import com.intellij.openapi.util.BuildNumber
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapiext.Testmark
@@ -17,6 +15,7 @@ import com.intellij.testFramework.builders.ModuleFixtureBuilder
 import com.intellij.testFramework.fixtures.impl.TempDirTestFixtureImpl
 import com.intellij.util.io.delete
 import org.intellij.lang.annotations.Language
+import org.rust.MinRustcVersion
 import org.rust.TestProject
 import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.model.cargoProjects
@@ -36,14 +35,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
     private val dirFixture = TempDirTestFixtureImpl()
     private var macroExpansionServiceDisposable: Disposable? = null
 
-    override fun runTest() {
-        // fixme on 2020.1
-        if (ApplicationInfo.getInstance().build <= BuildNumber.fromString("193")) {
-            super.runTest()
-        } else {
-            System.err.println("ApplySuggestionFixTest is temporarily disabled for 201.* builds")
-        }
-    }
+    override val disableMissedCacheAssertions: Boolean get() = false
 
     override fun setUp() {
         dirFixture.setUp()
@@ -141,6 +133,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
+    @MinRustcVersion("1.33.0")
     fun `test touch definition at separate file`() = stubBasedRefMatch.checkReExpanded(touchFile("src/foo.rs"), """
         //- foo.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -155,6 +148,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
+    @MinRustcVersion("1.33.0")
     fun `test touch usage at separate file`() = refsRecoverExactHit.checkReExpanded(touchFile("src/main.rs"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -170,6 +164,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(aaa);
     """, "foo")
 
+    @MinRustcVersion("1.33.0")
     fun `test edit usage at separate file`() = refsRecoverNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -185,6 +180,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(a);
     """, "foo")
 
+    @MinRustcVersion("1.33.0")
     fun `test edit definition at separate file`() = stubBasedRefMatch.checkReExpanded(replaceInFile("src/def.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { fn $ i() { aaa; } } }

@@ -15,6 +15,7 @@ ArtsiomCh
 ashleysommer
 AtomicInteger
 atsky
+avrong
 bc-lee
 bgourlie
 bmusin
@@ -30,6 +31,7 @@ devurandom
 dima74
 Dimonchik0036
 emmericp
+Exidex
 Falkenfighter
 fan-tom
 farodin91
@@ -63,6 +65,7 @@ lundibundi
 madisp
 majecty
 maraisr
+MarkDrobnak
 matklad
 mbStavola
 mcarlin
@@ -73,6 +76,7 @@ mibac138
 mitchhentges
 mkaput
 mrhota
+mrobakowski
 msmorgan
 netvl
 nicholastmosher
@@ -82,11 +86,14 @@ oleg-semenov
 orium
 ortem
 osialr
+ozkriff
+panstromek
 pasa
 pavel-v-chernykh
 pcholakov
 pocket7878
 rrevenantt
+saaryogev
 sanmai-NL
 SeekingMeaning
 sgift
@@ -103,6 +110,7 @@ srjek
 stigger
 Stzx
 t-kameyama
+tamird
 ThoseGrapefruits
 tov
 ttaomae

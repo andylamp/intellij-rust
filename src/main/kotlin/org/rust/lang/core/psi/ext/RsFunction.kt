@@ -104,6 +104,23 @@ val RsFunction.returnType: Ty
 
 val RsFunction.abi: RsExternAbi? get() = externAbi ?: (parent as? RsForeignModItem)?.externAbi
 
+val RsFunction.declaration: String
+    get() = buildString {
+        val const = const
+        if (const != null)
+            append("${const.text} ")
+        append(identifier.text)
+        val currentTypeParameterList = typeParameterList
+        if (currentTypeParameterList != null)
+            append(currentTypeParameterList.text)
+        val valueParameterList = valueParameterList
+        if (valueParameterList != null)
+            append(valueParameterList.text)
+        val retType = retType
+        if (retType != null)
+            append(retType.text)
+    }
+
 /**
  * A function is unsafe if defined with `unsafe` modifier or if defined inside a certain `extern`
  * block. But [RsFunction.isUnsafe] takes into account only `unsafe` modifier. [isActuallyUnsafe]
@@ -159,16 +176,23 @@ abstract class RsFunctionImplMixin : RsStubbedNamedElementImpl<RsFunctionStub>, 
     final override val innerAttrList: List<RsInnerAttr>
         get() = stubOnlyBlock?.innerAttrList.orEmpty()
 
-    override fun getIcon(flags: Int): Icon = when (owner) {
-        is RsAbstractableOwner.Free, is RsAbstractableOwner.Foreign ->
-            if (isTest) RsIcons.FUNCTION.addTestMark() else RsIcons.FUNCTION
+    override fun getIcon(flags: Int): Icon {
+        val baseIcon = when (val owner = owner) {
+            is RsAbstractableOwner.Free, is RsAbstractableOwner.Foreign ->
+                if (isTest) RsIcons.FUNCTION.addTestMark() else RsIcons.FUNCTION
 
-        is RsAbstractableOwner.Trait, is RsAbstractableOwner.Impl -> when {
-            isAssocFn && isAbstract -> RsIcons.ABSTRACT_ASSOC_FUNCTION
-            isAssocFn -> RsIcons.ASSOC_FUNCTION
-            isAbstract -> RsIcons.ABSTRACT_METHOD
-            else -> RsIcons.METHOD
+            is RsAbstractableOwner.Trait, is RsAbstractableOwner.Impl -> {
+                val icon = when {
+                    isAssocFn && isAbstract -> RsIcons.ABSTRACT_ASSOC_FUNCTION
+                    isAssocFn -> RsIcons.ASSOC_FUNCTION
+                    isAbstract -> RsIcons.ABSTRACT_METHOD
+                    else -> RsIcons.METHOD
+                }
+                if (!owner.isInherentImpl) return icon
+                icon
+            }
         }
+        return iconWithVisibility(flags, baseIcon)
     }
 
     override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)

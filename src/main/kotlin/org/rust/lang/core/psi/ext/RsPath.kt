@@ -15,6 +15,7 @@ import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.resolve.*
 import org.rust.lang.core.resolve.ref.*
 import org.rust.lang.core.stubs.RsPathStub
+import org.rust.lang.core.types.ty.TyPrimitive
 
 private val RS_PATH_KINDS = tokenSetOf(IDENTIFIER, SELF, SUPER, CSELF, CRATE)
 
@@ -41,6 +42,14 @@ tailrec fun RsPath.basePath(): RsPath {
     return if (qualifier == null) this else qualifier.basePath()
 }
 
+/** For `Foo::bar` in `Foo::bar::baz::quux` returns `Foo::bar::baz::quux` */
+tailrec fun RsPath.rootPath(): RsPath {
+    // Use `parent` instead of `context` because of better performance.
+    // Assume nobody set a context for a part of a path
+    val parent = parent
+    return if (parent is RsPath) parent.rootPath() else this
+}
+
 val RsPath.textRangeOfLastSegment: TextRange
     get() = TextRange(referenceNameElement.startOffset, typeArgumentList?.endOffset ?: referenceNameElement.endOffset)
 
@@ -63,7 +72,7 @@ val RsPath.qualifier: RsPath?
     }
 
 fun RsPath.allowedNamespaces(isCompletion: Boolean = false): Set<Namespace> = when (val parent = parent) {
-    is RsPath, is RsTypeElement, is RsTraitRef, is RsStructLiteral, is RsPatStruct -> TYPES
+    is RsPath, is RsTypeReference, is RsTraitRef, is RsStructLiteral, is RsPatStruct -> TYPES
     is RsUseSpeck -> when {
         // use foo::bar::{self, baz};
         //     ~~~~~~~~
@@ -79,6 +88,12 @@ fun RsPath.allowedNamespaces(isCompletion: Boolean = false): Set<Namespace> = wh
     is RsPathCodeFragment -> parent.ns
     else -> TYPES_N_VALUES
 }
+
+val RsPath.isUnresolved: Boolean
+    get() {
+        val reference = reference ?: return false
+        return TyPrimitive.fromPath(this) == null && reference.multiResolve().isEmpty()
+    }
 
 val RsPath.lifetimeArguments: List<RsLifetime> get() = typeArgumentList?.lifetimeList.orEmpty()
 
@@ -121,7 +136,7 @@ abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
             //     pub(in self) mod bar {}
             //          //^ containingMod == `foo`
             // ```
-            val visParent = contextStrict<RsVis>()?.context
+            val visParent = (rootPath().parent as? RsVisRestriction)?.parent?.parent
             return if (visParent is RsMod) visParent.containingMod else super.containingMod
         }
 }

@@ -7,32 +7,33 @@ package org.rust.lang.core.macros
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.ModificationTracker
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
-import com.intellij.openapi.vfs.VirtualFileWithId
 import com.intellij.openapi.vfs.newvfs.FileAttribute
 import com.intellij.psi.PsiAnchor
 import com.intellij.psi.PsiDocumentManager
-import com.intellij.psi.PsiManager
 import com.intellij.psi.StubBasedPsiElement
 import com.intellij.psi.impl.source.StubbedSpine
-import com.intellij.util.indexing.FileBasedIndexScanRunnableCollector
 import gnu.trove.TIntObjectHashMap
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionManagerImpl.Testmarks
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.RsMacro
 import org.rust.lang.core.psi.RsMacroCall
 import org.rust.lang.core.psi.ext.bodyHash
-import org.rust.lang.core.psi.ext.containingCargoTarget
+import org.rust.lang.core.psi.ext.containingCrate
 import org.rust.lang.core.psi.ext.resolveToMacro
 import org.rust.lang.core.psi.ext.stubDescendantsOfTypeStrict
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
@@ -96,7 +97,7 @@ class ExpandedMacroStorage(val project: Project) {
                 getOrCreateSourceFile(file) ?: error("Non-root source files are not supported")
             }
         }
-        return runReadActionInSmartMode(project) {
+        return runReadAction {
             makeValidationTask(false, v2)
         }
     }
@@ -132,7 +133,8 @@ class ExpandedMacroStorage(val project: Project) {
         callHash: HashCode?,
         defHash: HashCode?,
         expansionFile: VirtualFile?,
-        ranges: RangeMap?
+        ranges: RangeMap?,
+        expansionTextHash: Long
     ): ExpandedMacroInfoImpl {
         checkWriteAccessAllowed()
         _modificationTracker.incModificationCount()
@@ -145,6 +147,7 @@ class ExpandedMacroStorage(val project: Project) {
             expansionFile,
             defHash,
             callHash,
+            expansionTextHash,
             oldInfo.macroCallStubIndex,
             oldInfo.macroCallStrongRef
         )
@@ -236,7 +239,7 @@ class ExpandedMacroStorage(val project: Project) {
     }
 }
 
-private const val STORAGE_VERSION = 10
+private const val STORAGE_VERSION = 12
 private const val RANGE_MAP_ATTRIBUTE_VERSION = 2
 
 class SerializedExpandedMacroStorage private constructor(
@@ -350,7 +353,7 @@ class SourceFile(
 
     // Should not be lazy b/c target/pkg/origin can be changed
     private val isBelongToWorkspace: Boolean
-        get() = rootSourceFile.loadPsi()?.containingCargoTarget?.pkg?.origin == PackageOrigin.WORKSPACE
+        get() = rootSourceFile.loadPsi()?.containingCrate?.origin == PackageOrigin.WORKSPACE
 
     /**
      * Checks that [modificationStamp], [infos] content, [ExpandedMacroInfoImpl.macroCallStrongRef] or
@@ -493,27 +496,41 @@ class SourceFile(
         return extract(calls)
     }
 
+    private fun shouldIndexFile(project: Project, file: VirtualFile): Boolean {
+        val index = ProjectFileIndex.getInstance(project)
+        if (!(index.isInContent(file) || index.isInLibrary(file))) {
+            return false
+        }
+        return !FileTypeManager.getInstance().isFileIgnored(file)
+    }
+
     private fun extract(calls: List<RsMacroCall>?): List<Pipeline.Stage1ResolveAndExpand>? {
         checkReadAccessAllowed() // Needed to access PSI
         checkIsSmartMode(project)
 
-        val isExpansionFile = project.macroExpansionManager.isExpansionFile(file)
-        val isIndexedFile = file.isValid && (
-            FileBasedIndexScanRunnableCollector.getInstance(project).shouldCollect(file) || isExpansionFile)
+        val isExpansionFile = MacroExpansionManager.isExpansionFile(file)
+        val isIndexedFile = file.isValid && (isExpansionFile || shouldIndexFile(project, file))
 
-        val stages1 = if (!isIndexedFile) {
-            // The file is now outside of the project, so we should not access it.
-            // All infos of this file should be invalidated
+        val invalidateFileInfos = {
             syncAndMapInfos { info ->
                 info.markInvalid()
                 info.makeInvalidationPipeline()
             }
-        } else {
-            // If project file doesn't have crate root
-            // we shouldn't try to expand its macro calls
+        }
+
+        val stages1 = if (!isIndexedFile) {
+            // The file is now outside of the project, so we should not access it.
+            // All infos of this file should be invalidated
+            invalidateFileInfos()
+        } else run {
             if (!isExpansionFile) {
                 val psiFile = loadPsi()
-                if (psiFile != null && psiFile.crateRoot == null) return null
+                if (psiFile != null) {
+                    // If project file doesn't have crate root
+                    // we shouldn't try to expand its macro calls
+                    if (psiFile.crateRoot == null) return null
+                    if (!psiFile.isDeeplyEnabledByCfg) return@run invalidateFileInfos()
+                }
             }
             matchRefs(MakePipeline(), calls)
         }
@@ -545,9 +562,11 @@ class SourceFile(
     private fun freshExtractMacros(prefetchedCalls: List<RsMacroCall>?) {
         val psi = loadPsi() ?: return
         val calls = prefetchedCalls ?: psi.stubDescendantsOfTypeStrict<RsMacroCall>().filter { it.isTopLevelExpansion }
-        val newInfos = calls.map { call ->
-            ExpandedMacroInfoImpl(this, null, null, call.bodyHash, call.calcStubIndex())
-        }
+        val newInfos = calls
+            .filter { it.isEnabledByCfg }
+            .map { call ->
+                ExpandedMacroInfoImpl.newStubLinked(this, call)
+            }
         switchToStubRefsInReadAction(RefKind.FRESH) { infos ->
             check(infos.isEmpty())
             infos.addAll(newInfos)
@@ -589,7 +608,7 @@ class SourceFile(
                 bindList += Pair(info, call.calcStubIndex())
             } else {
                 Testmarks.refsRecoverNotHit.hit()
-                infosToAdd += ExpandedMacroInfoImpl(this, null, null, call.bodyHash, call.calcStubIndex())
+                infosToAdd += ExpandedMacroInfoImpl.newStubLinked(this, call)
             }
         }
 
@@ -820,6 +839,7 @@ private tailrec fun SourceFile.findRootSourceFile(): SourceFile {
 interface ExpandedMacroInfo {
     val sourceFile: SourceFile
     val expansionFile: VirtualFile?
+    val expansionFileHash: Long
     fun getMacroCall(): RsMacroCall?
     fun isUpToDate(call: RsMacroCall, def: RsMacro?): Boolean
     fun getExpansion(): MacroExpansion?
@@ -830,6 +850,7 @@ class ExpandedMacroInfoImpl(
     override val expansionFile: VirtualFile?,
     private val defHash: HashCode?,
     val callHash: HashCode?,
+    override val expansionFileHash: Long = 0,
     var macroCallStubIndex: Int = -1,
     var macroCallStrongRef: RsMacroCall? = null
 ) : ExpandedMacroInfo {
@@ -851,11 +872,15 @@ class ExpandedMacroInfoImpl(
     private fun getExpansionPsi(): RsFile? {
         val expansionFile = expansionFile?.takeIf { it.isValid } ?: return null
         testAssert { expansionFile.fileType == RsFileType }
-        return PsiManager.getInstance(sourceFile.project).findFile(expansionFile) as? RsFile
+        return expansionFile.toPsiFile(sourceFile.project) as? RsFile
     }
 
     fun makePipeline(call: RsMacroCall?): Pipeline.Stage1ResolveAndExpand {
-        return if (call != null) ExpansionPipeline.Stage1(call, this) else InvalidationPipeline.Stage1(this)
+        return if (call != null && call.isEnabledByCfg) {
+            ExpansionPipeline.Stage1(call, this)
+        } else {
+            InvalidationPipeline.Stage1(this)
+        }
     }
 
     fun makeInvalidationPipeline(): Pipeline.Stage1ResolveAndExpand =
@@ -866,8 +891,14 @@ class ExpandedMacroInfoImpl(
             writeUTFNullable(expansionFileUrl)
             writeHashCodeNullable(defHash)
             writeHashCodeNullable(callHash)
+            writeLong(expansionFileHash)
             writeInt(macroCallStubIndex)
         }
+    }
+
+    companion object {
+        fun newStubLinked(sf: SourceFile, call: RsMacroCall): ExpandedMacroInfoImpl =
+            ExpandedMacroInfoImpl(sf, null, null, call.bodyHash, macroCallStubIndex = call.calcStubIndex())
     }
 }
 
@@ -875,6 +906,7 @@ private data class SerializedExpandedMacroInfo(
     val expansionFileUrl: String?,
     val callHash: HashCode?,
     val defHash: HashCode?,
+    val expansionFileHash: Long,
     val stubIndex: Int
 ) {
     fun toExpandedMacroInfo(sourceFile: SourceFile): ExpandedMacroInfoImpl? {
@@ -888,6 +920,7 @@ private data class SerializedExpandedMacroInfo(
             file,
             callHash,
             defHash,
+            expansionFileHash,
             stubIndex
         )
     }
@@ -898,6 +931,7 @@ private data class SerializedExpandedMacroInfo(
                 data.readUTFNullable(),
                 data.readHashCodeNullable(),
                 data.readHashCodeNullable(),
+                data.readLong(),
                 data.readInt()
             )
         }
@@ -957,8 +991,6 @@ private fun StubBasedPsiElement<*>.calcStubIndex(): Int {
     return index
 }
 
-private val VirtualFile.fileId: Int
-    get() = (this as VirtualFileWithId).id
 
 /** We use [WeakReference] because uncached [loadRangeMap] is quite cheap */
 private val MACRO_RANGE_MAP_CACHE_KEY: Key<WeakReference<RangeMap>> = Key.create("MACRO_RANGE_MAP_CACHE_KEY")

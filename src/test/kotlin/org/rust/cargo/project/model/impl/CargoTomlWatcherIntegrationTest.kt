@@ -7,12 +7,19 @@ package org.rust.cargo.project.model.impl
 
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.openapi.vfs.VirtualFileManager
 import org.rust.cargo.RsWithToolchainTestBase
+import org.rust.cargo.project.model.cargoProjects
 import org.rust.fileTree
 import org.rust.lang.core.psi.RsPath
 
 class CargoTomlWatcherIntegrationTest : RsWithToolchainTestBase() {
     fun `test Cargo toml is refreshed`() {
+        val watcher = CargoTomlWatcher(project.cargoProjects, fun() {
+            project.cargoProjects.refreshAllProjects()
+        })
+        project.messageBus.connect(testRootDisposable).subscribe(VirtualFileManager.VFS_CHANGES, watcher)
+
         val p = fileTree {
             toml("Cargo.toml", """
                 [package]

@@ -7,7 +7,6 @@ package org.rust.cargo.runconfig.command
 
 import com.intellij.execution.BeforeRunTask
 import com.intellij.execution.Executor
-import com.intellij.execution.ExternalizablePath
 import com.intellij.execution.configuration.EnvironmentVariablesData
 import com.intellij.execution.configurations.*
 import com.intellij.execution.runners.ExecutionEnvironment
@@ -18,16 +17,16 @@ import com.intellij.util.execution.ParametersListUtil
 import org.jdom.Element
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
-import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
-import org.rust.cargo.runconfig.CargoRunState
-import org.rust.cargo.runconfig.CargoTestRunState
+import org.rust.cargo.runconfig.*
 import org.rust.cargo.runconfig.buildtool.CargoBuildTaskProvider
 import org.rust.cargo.runconfig.ui.CargoCommandConfigurationEditor
 import org.rust.cargo.toolchain.BacktraceMode
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.toolchain.RustChannel
 import org.rust.cargo.toolchain.RustToolchain
+import org.rust.ide.experiments.RsExperiments
+import org.rust.openapiext.isFeatureEnabled
 import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.run
@@ -47,7 +46,6 @@ class CargoCommandConfiguration(
     var channel: RustChannel = RustChannel.DEFAULT
     var command: String = "run"
     var allFeatures: Boolean = false
-    var nocapture: Boolean = false
     var emulateTerminal: Boolean = false
     var backtrace: BacktraceMode = BacktraceMode.SHORT
     var workingDirectory: Path? = project.cargoProjects.allProjects.firstOrNull()?.workingDirectory
@@ -67,7 +65,6 @@ class CargoCommandConfiguration(
         element.writeEnum("channel", channel)
         element.writeString("command", command)
         element.writeBool("allFeatures", allFeatures)
-        element.writeBool("nocapture", nocapture)
         element.writeBool("emulateTerminal", emulateTerminal)
         element.writeEnum("backtrace", backtrace)
         element.writePath("workingDirectory", workingDirectory)
@@ -83,7 +80,6 @@ class CargoCommandConfiguration(
         element.readEnum<RustChannel>("channel")?.let { channel = it }
         element.readString("command")?.let { command = it }
         element.readBool("allFeatures")?.let { allFeatures = it }
-        element.readBool("nocapture")?.let { nocapture = it }
         element.readBool("emulateTerminal")?.let { emulateTerminal = it }
         element.readEnum<BacktraceMode>("backtrace")?.let { backtrace = it }
         element.readPath("workingDirectory")?.let { workingDirectory = it }
@@ -94,7 +90,6 @@ class CargoCommandConfiguration(
         channel = cmd.channel
         command = ParametersListUtil.join(cmd.command, *cmd.additionalArguments.toTypedArray())
         allFeatures = cmd.allFeatures
-        nocapture = cmd.nocapture
         emulateTerminal = cmd.emulateTerminal
         backtrace = cmd.backtraceMode
         workingDirectory = cmd.workingDirectory
@@ -113,17 +108,16 @@ class CargoCommandConfiguration(
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
         CargoCommandConfigurationEditor(project)
 
-    override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState? =
-        clean().ok?.let {
-            if (command.startsWith("test") &&
-                project.rustSettings.showTestToolWindow &&
-                !command.contains("--nocapture") &&
-                !nocapture) {
-                CargoTestRunState(environment, this, it)
-            } else {
-                CargoRunState(environment, this, it)
-            }
+    override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState? {
+        val config = clean().ok ?: return null
+        return if (command.startsWith("test") &&
+            isFeatureEnabled(RsExperiments.TEST_TOOL_WINDOW) &&
+            !command.contains("--nocapture")) {
+            CargoTestRunState(environment, this, config)
+        } else {
+            CargoRunState(environment, this, config)
         }
+    }
 
     sealed class CleanConfiguration {
         class Ok(
@@ -133,7 +127,7 @@ class CargoCommandConfiguration(
 
         class Err(val error: RuntimeConfigurationError) : CleanConfiguration()
 
-        val ok: CleanConfiguration.Ok? get() = this as? Ok
+        val ok: Ok? get() = this as? Ok
 
         companion object {
             fun error(message: String) = Err(RuntimeConfigurationError(message))
@@ -156,7 +150,6 @@ class CargoCommandConfiguration(
                 channel,
                 env,
                 allFeatures,
-                nocapture,
                 emulateTerminal
             )
         }
@@ -174,6 +167,8 @@ class CargoCommandConfiguration(
 
         return CleanConfiguration.Ok(cmd, toolchain)
     }
+
+    override fun suggestedName(): String? = command.substringBefore(' ').capitalize()
 
     companion object {
         fun findCargoProject(project: Project, additionalArgs: List<String>, workingDirectory: Path?): CargoProject? {
@@ -201,46 +196,3 @@ class CargoCommandConfiguration(
 }
 
 val CargoProject.workingDirectory: Path get() = manifest.parent
-
-private fun Element.writeString(name: String, value: String) {
-    val opt = org.jdom.Element("option")
-    opt.setAttribute("name", name)
-    opt.setAttribute("value", value)
-    addContent(opt)
-}
-
-private fun Element.readString(name: String): String? =
-    children
-        .find { it.name == "option" && it.getAttributeValue("name") == name }
-        ?.getAttributeValue("value")
-
-private fun Element.writeBool(name: String, value: Boolean) {
-    writeString(name, value.toString())
-}
-
-private fun Element.readBool(name: String): Boolean? =
-    readString(name)?.toBoolean()
-
-private fun <E : Enum<*>> Element.writeEnum(name: String, value: E) {
-    writeString(name, value.name)
-}
-
-private inline fun <reified E : Enum<E>> Element.readEnum(name: String): E? {
-    val variantName = readString(name) ?: return null
-    return try {
-        java.lang.Enum.valueOf(E::class.java, variantName)
-    } catch (_: IllegalArgumentException) {
-        null
-    }
-}
-
-private fun Element.writePath(name: String, value: Path?) {
-    if (value != null) {
-        val s = ExternalizablePath.urlValue(value.toString())
-        writeString(name, s)
-    }
-}
-
-private fun Element.readPath(name: String): Path? {
-    return readString(name)?.let { Paths.get(ExternalizablePath.localPathValue(it)) }
-}

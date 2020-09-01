@@ -220,7 +220,6 @@ class TestRunConfigurationProducerTest : RunConfigurationProducerTestBase() {
         modifyTemplateConfiguration {
             channel = RustChannel.NIGHTLY
             allFeatures = true
-            nocapture = true
             emulateTerminal = true
             backtrace = BacktraceMode.FULL
             env = EnvironmentVariablesData.create(mapOf("FOO" to "BAR"), true)
@@ -331,5 +330,12 @@ class TestRunConfigurationProducerTest : RunConfigurationProducerTestBase() {
             ?.rootDir
             ?.toPsiDirectory(project)!!
         checkOnFiles(packageRoot)
+    }
+
+    fun `test ignored test is run with ignored option`() {
+        testProject {
+            lib("foo", "src/lib.rs", "#[ignore] #[test] fn test_foo() { /*caret*/assert!(true); }").open()
+        }
+        checkOnLeaf()
     }
 }

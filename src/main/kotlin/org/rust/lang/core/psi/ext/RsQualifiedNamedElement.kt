@@ -13,9 +13,11 @@ import com.intellij.psi.stubs.StubIndex
 import com.intellij.psi.stubs.StubIndexKey
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.util.AutoInjectedCrates.STD
+import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsQualifiedName.ChildItemType.*
 import org.rust.lang.core.psi.ext.RsQualifiedName.ParentItemType.*
+import org.rust.lang.core.stubs.index.ReexportKey
 import org.rust.lang.core.stubs.index.RsExternCrateReexportIndex
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
@@ -25,19 +27,51 @@ interface RsQualifiedNamedElement : RsNamedElement {
     val crateRelativePath: String?
 }
 
+/** Always starts with crate root name */
 val RsQualifiedNamedElement.qualifiedName: String?
     get() {
         val inCratePath = crateRelativePath ?: return null
-        val cargoTarget = containingCargoTarget?.normName ?: return null
+        val cargoTarget = containingCrate?.normName ?: return null
         return "$cargoTarget$inCratePath"
     }
+
+/** Starts with 'crate' instead of crate root name if `context` is in same crate */
+fun RsQualifiedNamedElement.qualifiedNameInCrate(context: RsElement): String? {
+    val crateRelativePath = crateRelativePath
+    if (context.crateRoot != crateRoot || crateRelativePath == null) {
+        return qualifiedName
+    }
+
+    check(crateRelativePath.isEmpty() || crateRelativePath.startsWith("::"))
+    return "crate$crateRelativePath"
+}
+
+/** If `this` is `crate::inner1::inner2::foo` and `context` is `crate::inner1`, then returns `inner2::foo` */
+fun RsQualifiedNamedElement.qualifiedNameRelativeTo(context: RsMod): String? {
+    val absolutePath = qualifiedNameInCrate(context) ?: return null
+    if (!containingMod.superMods.contains(context)) return absolutePath
+    return convertPathToRelativeIfPossible(context, absolutePath)
+}
+
+fun convertPathToRelativeIfPossible(context: RsMod, absolutePath: String): String {
+    val contextModPath = context.crateRelativePath ?: return absolutePath
+    val contextModPathPrefix = "crate$contextModPath::"
+    if (!absolutePath.startsWith(contextModPathPrefix)) return absolutePath
+    val relativePath = absolutePath.removePrefix(contextModPathPrefix)
+
+    val cargoWorkspace = context.cargoWorkspace ?: return relativePath
+    if (cargoWorkspace.packages.any { relativePath.startsWith("${it.normName}::") }) {
+        return "self::$relativePath"
+    }
+    return relativePath
+}
 
 @Suppress("DataClassPrivateConstructor")
 data class RsQualifiedName private constructor(
     val crateName: String,
     val modSegments: List<String>,
     val parentItem: Item,
-    val childItem: Item?
+    val childItems: List<Item>
 ) {
 
     fun toUrlPath(): String {
@@ -46,7 +80,7 @@ data class RsQualifiedName private constructor(
         val (pageName, anchor) = if (parentItem.type == MOD || parentItem.type == CRATE) {
             "index.html" to ""
         } else {
-            "$parentItem.html" to (if (childItem != null) "#$childItem" else "")
+            "$parentItem.html" to if (childItems.isNotEmpty()) childItems.joinToString(separator = ".", prefix = "#") else ""
         }
         segments += pageName
         return segments.joinToString(separator = "/", postfix = anchor)
@@ -54,7 +88,7 @@ data class RsQualifiedName private constructor(
 
     /** Tries to find rust qualified name element related to this qualified name */
     fun findPsiElement(psiManager: PsiManager, context: RsElement): RsQualifiedNamedElement? {
-        val item = childItem ?: parentItem
+        val item = childItems.lastOrNull() ?: parentItem
 
         // If it's link to crate, try to find the corresponding `lib.rs` file
         if (item.type == CRATE) {
@@ -66,7 +100,7 @@ data class RsQualifiedName private constructor(
         // First: look for `RsQualifiedNamedElement` with the same name as expected,
         // generate sequence of all possible reexports of this element and check
         // if any variant has the same `RsQualifiedName`
-        var result = lookupInIndex(project, RsNamedElementIndex.KEY) { element ->
+        var result = lookupInIndex(project, RsNamedElementIndex.KEY, { it }) { element ->
             if (element !is RsQualifiedNamedElement) return@lookupInIndex null
             val candidate = if (element is RsModDeclItem && item.type == MOD) {
                 element.reference.resolve() as? RsMod ?: return@lookupInIndex null
@@ -81,7 +115,7 @@ data class RsQualifiedName private constructor(
             // look over all direct item reexports (considering possible new alias),
             // generate sequence of all possible reexports for each element and check
             // if any variant has the same `RsQualifiedName`
-            result = lookupInIndex(project, RsReexportIndex.KEY) { useSpeck ->
+            result = lookupInIndex(project, RsReexportIndex.KEY, ReexportKey::ProducedNameKey) { useSpeck ->
                 if (useSpeck.isStarImport) return@lookupInIndex null
                 val candidate = useSpeck.path?.reference?.resolve() as? RsQualifiedNamedElement
                     ?: return@lookupInIndex null
@@ -113,16 +147,17 @@ data class RsQualifiedName private constructor(
         return psiManager.findFile(crateRoot)?.rustFile
     }
 
-    private inline fun <reified T : RsElement> lookupInIndex(
+    private inline fun <reified T : RsElement, K> lookupInIndex(
         project: Project,
-        indexKey: StubIndexKey<String, T>,
+        indexKey: StubIndexKey<K, T>,
+        keyProducer: (String) -> K,
         crossinline transform: (T) -> QualifiedNamedItem?
     ): RsQualifiedNamedElement? {
         var result: RsQualifiedNamedElement? = null
-        val item = childItem ?: parentItem
+        val item = childItems.lastOrNull() ?: parentItem
         StubIndex.getInstance().processElements(
             indexKey,
-            item.name,
+            keyProducer(item.name),
             project,
             GlobalSearchScope.allScope(project),
             T::class.java
@@ -147,26 +182,26 @@ data class RsQualifiedName private constructor(
             val segments = path.split("/")
             if (segments.size < 2) return null
 
-            val (parentItem, childItem) = if (segments.size == 2 && segments[1] == "index.html") {
-                Item(segments[0], CRATE) to null
+            val (parentItem, childItems) = if (segments.size == 2 && segments[1] == "index.html") {
+                Item(segments[0], CRATE) to emptyList()
             } else {
                 // Last segment contains info about item type and name
                 // and it should have the following structure:
-                // parentItem ( '#' childItem )?
+                // parentItem ( '#' childItem (. childItem)? )?
                 val itemParts = segments.last().split("#")
                 val parentRaw = itemParts[0]
-                val childRaw = itemParts.getOrNull(1)
+                val childrenRaw = itemParts.getOrNull(1)
 
                 val parentItem = parentItem(segments[segments.lastIndex - 1], parentRaw) ?: return null
-                val childItem = if (childRaw != null) {
-                    childItem(childRaw) ?: return null
+                val childItems = if (childrenRaw != null) {
+                    childItems(childrenRaw) ?: return null
                 } else {
-                    null
+                    emptyList()
                 }
-                parentItem to childItem
+                parentItem to childItems
             }
 
-            return RsQualifiedName(segments[0], segments.subList(1, segments.lastIndex), parentItem, childItem)
+            return RsQualifiedName(segments[0], segments.subList(1, segments.lastIndex), parentItem, childItems)
         }
 
         private fun parentItem(prevSegment: String, raw: String): Item? {
@@ -181,27 +216,30 @@ data class RsQualifiedName private constructor(
             return Item(parts[1], type)
         }
 
-        private fun childItem(raw: String): Item? {
+        private fun childItems(raw: String): List<Item>? {
             val parts = raw.split(".")
-            if (parts.size != 2) return null
-            val type = ChildItemType.fromString(parts[0]) ?: return null
-            return Item(parts[1], type)
+            if (parts.size != 2 && parts.size != 4) return null
+
+            return parts.windowed(size = 2, step = 2).map { (type, name) ->
+                val itemType = ChildItemType.fromString(type) ?: return null
+                Item(name, itemType)
+            }
         }
 
         @JvmStatic
         fun from(element: RsQualifiedNamedElement): RsQualifiedName? {
             val parent = parentItem(element)
 
-            val (parentItem, childItem) = if (parent != null) {
-                parent to (element.toChildItem() ?: return null)
+            val (parentItem, childItems) = if (parent != null) {
+                parent to (element.toChildItems() ?: return null)
             } else {
                 val parentItem = element.toParentItem() ?: return null
-                parentItem to null
+                parentItem to emptyList()
             }
             val crateName = if (parentItem.type == PRIMITIVE) {
                 STD
             } else {
-                element.containingCargoTarget?.normName ?: return null
+                element.containingCrate?.normName ?: return null
             }
 
             val modSegments = if (parentItem.type == PRIMITIVE || parentItem.type == MACRO) {
@@ -215,12 +253,12 @@ data class RsQualifiedName private constructor(
                     .map { it.modName ?: return null }
             }
 
-            return RsQualifiedName(crateName, modSegments, parentItem, childItem)
+            return RsQualifiedName(crateName, modSegments, parentItem, childItems)
         }
 
         @JvmStatic
         fun from(qualifiedNamedItem: QualifiedNamedItem): RsQualifiedName? {
-            val crateName = qualifiedNamedItem.containingCargoTarget?.normName ?: return null
+            val crateName = qualifiedNamedItem.containingCrate?.normName ?: return null
             val modSegments = mutableListOf<String>()
 
             val (parentItem, childItem) = qualifiedNamedItem.item.toItems() ?: return null
@@ -241,17 +279,17 @@ data class RsQualifiedName private constructor(
         @JvmStatic
         fun from(path: RsPath): RsQualifiedName? {
             val primitiveType = TyPrimitive.fromPath(path) ?: return null
-            return RsQualifiedName(STD, emptyList(), Item.primitive(primitiveType.name), null)
+            return RsQualifiedName(STD, emptyList(), Item.primitive(primitiveType.name), emptyList())
         }
 
-        private fun RsQualifiedNamedElement.toItems(): Pair<Item, Item?>? {
+        private fun RsQualifiedNamedElement.toItems(): Pair<Item, List<Item>>? {
             val parent = parentItem(this)
 
             return if (parent != null) {
-                parent to (toChildItem() ?: return null)
+                parent to (toChildItems() ?: return null)
             } else {
                 val parentItem = toParentItem() ?: return null
-                parentItem to null
+                parentItem to emptyList()
             }
         }
 
@@ -267,14 +305,17 @@ data class RsQualifiedName private constructor(
                     }
                 }
                 is RsEnumVariant -> element.parentEnum
-                is RsNamedFieldDecl -> element.parentStruct
+                is RsNamedFieldDecl -> {
+                    val owner = element.owner
+                    (owner as? RsEnumVariant)?.parentEnum ?: owner
+                }
                 else -> return null
             }
             return parentItem?.toParentItem()
         }
 
         private fun RsTypeReference.toParentItem(): Item? {
-            return when (val type = typeElement) {
+            return when (val type = skipParens()) {
                 is RsTupleType -> Item.primitive("tuple")
                 is RsFnPointerType -> Item.primitive("fn")
                 is RsArrayType -> Item.primitive(if (type.isSlice) "slice" else "array")
@@ -310,10 +351,10 @@ data class RsQualifiedName private constructor(
                 is RsTypeAlias -> TYPE
                 is RsFunction -> FN
                 is RsConstant -> CONSTANT
-                is RsMacro -> MACRO
+                is RsMacro, is RsMacro2 -> MACRO
                 is RsMod -> {
                     if (isCrateRoot) {
-                        val crateName = containingCargoTarget?.normName ?: return null
+                        val crateName = containingCrate?.normName ?: return null
                         return Item(crateName, CRATE, this)
                     }
                     MOD
@@ -324,17 +365,29 @@ data class RsQualifiedName private constructor(
             return Item(name, itemType, this)
         }
 
-        private fun RsQualifiedNamedElement.toChildItem(): Item? {
+        private fun RsQualifiedNamedElement.toChildItems(): List<Item>? {
             val name = name ?: return null
+            val result = mutableListOf<Item>()
             val type = when (this) {
                 is RsEnumVariant -> VARIANT
-                is RsNamedFieldDecl -> if (parentStruct != null) STRUCTFIELD else return null
+                is RsNamedFieldDecl -> {
+                    when (val owner = owner) {
+                        is RsStructItem -> STRUCTFIELD
+                        is RsEnumVariant -> {
+                            val variantName = owner.name ?: return null
+                            result += Item(variantName, VARIANT, owner)
+                            FIELD
+                        }
+                        else -> return null
+                    }
+                }
                 is RsTypeAlias -> ASSOCIATEDTYPE
                 is RsConstant -> ASSOCIATEDCONSTANT
                 is RsFunction -> if (isAbstract) TYMETHOD else METHOD
                 else -> return null
             }
-            return Item(name, type, this)
+            result += Item(name, type, this)
+            return result
         }
     }
 
@@ -406,6 +459,7 @@ data class RsQualifiedName private constructor(
 
     enum class ChildItemType : ItemType {
         VARIANT,
+        FIELD,
         STRUCTFIELD,
         ASSOCIATEDTYPE,
         ASSOCIATEDCONSTANT,
@@ -418,6 +472,7 @@ data class RsQualifiedName private constructor(
             fun fromString(name: String): ChildItemType? {
                 return when (name) {
                     "variant" -> VARIANT
+                    "field" -> FIELD
                     "structfield" -> STRUCTFIELD
                     "associatedtype" -> ASSOCIATEDTYPE
                     "associatedconstant" -> ASSOCIATEDCONSTANT
@@ -438,7 +493,7 @@ sealed class QualifiedNamedItem(val item: RsQualifiedNamedElement) {
     abstract val itemName: String?
     abstract val isPublic: Boolean
     abstract val superMods: List<ModWithName>?
-    abstract val containingCargoTarget: CargoWorkspace.Target?
+    abstract val containingCrate: Crate?
 
     val parentCrateRelativePath: String?
         get() {
@@ -459,7 +514,7 @@ sealed class QualifiedNamedItem(val item: RsQualifiedNamedElement) {
         }
 
     override fun toString(): String {
-        return "${containingCargoTarget?.normName}::$crateRelativePath"
+        return "${containingCrate?.normName}::$crateRelativePath"
     }
 
     class ExplicitItem(item: RsQualifiedNamedElement) : QualifiedNamedItem(item) {
@@ -467,7 +522,7 @@ sealed class QualifiedNamedItem(val item: RsQualifiedNamedElement) {
         override val isPublic: Boolean get() = (item as? RsVisible)?.isPublic == true
         override val superMods: List<ModWithName>?
             get() = (if (item is RsMod) item.`super` else item.containingMod)?.superMods?.map { ModWithName(it) }
-        override val containingCargoTarget: CargoWorkspace.Target? get() = item.containingCargoTarget
+        override val containingCrate: Crate? get() = item.containingCrate
     }
 
     class ReexportedItem private constructor(
@@ -478,7 +533,7 @@ sealed class QualifiedNamedItem(val item: RsQualifiedNamedElement) {
 
         override val isPublic: Boolean get() = true
         override val superMods: List<ModWithName>? get() = reexportItem.containingMod.superMods.map { ModWithName(it) }
-        override val containingCargoTarget: CargoWorkspace.Target? get() = reexportItem.containingCargoTarget
+        override val containingCrate: Crate? get() = reexportItem.containingCrate
 
         companion object {
             fun from(useSpeck: RsUseSpeck, item: RsQualifiedNamedElement): ReexportedItem {
@@ -505,7 +560,7 @@ sealed class QualifiedNamedItem(val item: RsQualifiedNamedElement) {
                 mods += reexportedModItem.superMods.orEmpty()
                 return mods
             }
-        override val containingCargoTarget: CargoWorkspace.Target? get() = reexportedModItem.containingCargoTarget
+        override val containingCrate: Crate? get() = reexportedModItem.containingCrate
     }
 
     data class ModWithName(val modItem: RsMod, val modName: String? = modItem.modName)
@@ -533,19 +588,22 @@ private fun QualifiedNamedItem.collectImportItems(
     val importItems = mutableListOf(this)
     val superMods = superMods.orEmpty()
     superMods.forEachIndexed { index, ancestorMod ->
-        val modName = ancestorMod.modItem.modName ?: return@forEachIndexed
-        RsReexportIndex.findReexportsByName(project, modName)
+        val modItem = ancestorMod.modItem
+        val modOriginalName = (if (modItem.isCrateRoot) modItem.containingCrate?.normName else modItem.modName)
+            ?: return@forEachIndexed
+
+        RsReexportIndex.findReexportsByOriginalName(project, modOriginalName)
             .mapNotNull {
                 if (it in visited) return@mapNotNull null
                 val reexportedMod = it.pathOrQualifier?.reference?.resolve() as? RsMod
-                if (reexportedMod != ancestorMod.modItem) return@mapNotNull null
+                if (reexportedMod != modItem) return@mapNotNull null
                 it to reexportedMod
             }
             .forEach { (useSpeck, reexportedMod) ->
                 // only public items can be reexported
                 if (!useSpeck.isStarImport && !reexportedMod.isPublic) return@forEach
                 visited += useSpeck
-                val (mod, endModIndex) = if (!useSpeck.isStarImport) {
+                val (mod, explicitSuperMods) = if (!useSpeck.isStarImport) {
                     // In case of general reexport
                     //
                     // ```rust
@@ -560,8 +618,29 @@ private fun QualifiedNamedItem.collectImportItems(
                     // ```
                     //
                     // reexportedMod is `baz` (from `pub use bar::baz` use item).
-                    // And we should generate "foo::baz::Baz" item from "foo::[bar::]baz::Baz"
-                    reexportedMod to index + 1
+                    // And we should generate "foo::[baz::]Baz" item from "foo::[bar::baz::]Baz"
+                    //                                ^                              /
+                    //                                 \____________________________/
+                    //
+                    // In case of reexport with alias
+                    //
+                    // ```rust
+                    // mod foo {
+                    //     pub use bar::baz as qqq; // <---
+                    //     mod bar {
+                    //         pub mod baz {
+                    //             public struct Baz;
+                    //         }
+                    //     }
+                    // }
+                    // ```
+                    //
+                    // reexportedMod is `baz` with `qqq` name (from `pub use bar::baz as qqq` use item).
+                    // And we should generate "foo::[qqq::]Baz" item from "foo::[bar::baz::]Baz"
+                    //                                ^                              /
+                    //                                 \____________________________/
+                    val explicitSuperMods = superMods.subList(0, index) + QualifiedNamedItem.ModWithName(reexportedMod, useSpeck.nameInScope)
+                    reexportedMod to explicitSuperMods
                 } else {
                     // Otherwise (when use item has wildcard)
                     //
@@ -579,12 +658,14 @@ private fun QualifiedNamedItem.collectImportItems(
                     // reexportedMod is still `baz` (from `pub use bar::baz::*` use item).
                     // But we should replace it with `foo` mod because use item with wildcard reexports
                     // children items of `baz` to `foo` instead of `baz` itself,
-                    // i.e. generate "foo::Baz" item from "foo::[bar::baz::]Baz"
-                    useSpeck.containingMod to index
+                    // i.e. generate "foo::[]Baz" item from "foo::[bar::baz::]Baz"
+                    //                     ^                              /
+                    //                      \____________________________/
+                    useSpeck.containingMod to superMods.subList(0, index)
                 }
                 val items = QualifiedNamedItem.ReexportedItem.from(useSpeck, mod).collectImportItems(project, visited)
                 importItems += items.map {
-                    QualifiedNamedItem.CompositeItem(itemName, isPublic, it, superMods.subList(0, endModIndex), item)
+                    QualifiedNamedItem.CompositeItem(itemName, isPublic, it, explicitSuperMods, item)
                 }
                 visited -= useSpeck
             }

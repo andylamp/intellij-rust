@@ -10,22 +10,26 @@ import com.intellij.lang.documentation.AbstractDocumentationProvider
 import com.intellij.lang.documentation.DocumentationMarkup
 import com.intellij.openapiext.Testmark
 import com.intellij.openapiext.hitOnFalse
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiManager
+import com.intellij.psi.*
 import org.rust.cargo.project.workspace.PackageOrigin.DEPENDENCY
 import org.rust.cargo.project.workspace.PackageOrigin.STDLIB
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.ide.presentation.presentableQualifiedName
 import org.rust.ide.presentation.presentationInfo
+import org.rust.ide.presentation.render
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.TyPrimitive
 import org.rust.lang.core.types.type
+import org.rust.lang.doc.RsDocRenderMode
+import org.rust.lang.doc.docElements
 import org.rust.lang.doc.documentationAsHtml
 import org.rust.openapiext.escaped
 import org.rust.stdext.joinToWithBuffer
+import java.util.function.Consumer
 
-class RsDocumentationProvider : AbstractDocumentationProvider() {
+@Suppress("UnstableApiUsage")
+abstract class RsDocumentationProviderBase : AbstractDocumentationProvider() {
 
     override fun generateDoc(element: PsiElement, originalElement: PsiElement?): String? {
         val buffer = StringBuilder()
@@ -55,6 +59,15 @@ class RsDocumentationProvider : AbstractDocumentationProvider() {
         }
     }
 
+    override fun collectDocComments(file: PsiFile, sink: Consumer<PsiDocCommentBase>) {
+        if (file !is RsFile) return
+        for (element in SyntaxTraverser.psiTraverser(file)) {
+            if (element is RsDocCommentImpl) {
+                sink.accept(element)
+            }
+        }
+    }
+
     private fun generateDoc(element: RsDocAndAttributeOwner, buffer: StringBuilder) {
         definition(buffer) {
             element.header(it)
@@ -73,7 +86,7 @@ class RsDocumentationProvider : AbstractDocumentationProvider() {
 
     private fun generateDoc(element: RsPatBinding, buffer: StringBuilder) {
         val presentationInfo = element.presentationInfo ?: return
-        val type = element.type.toString().escaped
+        val type = element.type.render(useAliasNames = true).escaped
         buffer += presentationInfo.type
         buffer += " "
         buffer.b { it += presentationInfo.name }
@@ -130,7 +143,7 @@ class RsDocumentationProvider : AbstractDocumentationProvider() {
             if (element !is RsDocAndAttributeOwner ||
                 element !is RsQualifiedNamedElement ||
                 !element.hasExternalDocumentation) return emptyList()
-            val origin = element.containingCargoPackage?.origin
+            val origin = element.containingCrate?.origin
             RsQualifiedName.from(element) to origin
         }
 
@@ -222,7 +235,7 @@ private fun RsDocAndAttributeOwner.header(buffer: StringBuilder) {
     }
 }
 
-private fun RsDocAndAttributeOwner.signature(builder: StringBuilder) {
+fun RsDocAndAttributeOwner.signature(builder: StringBuilder) {
     val rawLines = when (this) {
         is RsNamedFieldDecl -> listOfNotNull(presentationInfo?.signatureText)
         is RsFunction -> {
@@ -256,6 +269,7 @@ private fun RsDocAndAttributeOwner.signature(builder: StringBuilder) {
             } else emptyList()
         }
         is RsMacro -> listOf("macro <b>$name</b>")
+        is RsImplItem -> declarationText
         else -> emptyList()
     }
     rawLines.joinTo(builder, "<br>")
@@ -429,7 +443,7 @@ private fun generatePathDocumentation(element: RsPath, buffer: StringBuilder) {
 }
 
 private fun generateTypeReferenceDocumentation(element: RsTypeReference, buffer: StringBuilder) {
-    when (val typeElement = element.typeElement) {
+    when (val typeElement = element.skipParens()) {
         is RsBaseType -> when (val kind = typeElement.kind) {
             RsBaseTypeKind.Unit -> buffer += "()"
             RsBaseTypeKind.Never -> buffer += "!"

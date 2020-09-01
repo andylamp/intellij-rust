@@ -29,6 +29,10 @@ class CargoGeneratedItemsResolveTest : RunConfigurationTestBase() {
         super.tearDown()
     }
 
+    // Disable creation of temp directory with test name
+    // because it leads to too long path and compilation of test rust project fails on Windows
+    override fun shouldContainTempFiles(): Boolean = false
+
     @MinRustcVersion("1.32.0")
     fun `test include in workspace project`() = withEnabledFetchOutDirFeature {
         val testProject = buildProject {
@@ -227,7 +231,7 @@ class CargoGeneratedItemsResolveTest : RunConfigurationTestBase() {
         }
     }
 
-    @MinRustcVersion("1.41.0-nightly")
+    @MinRustcVersion("1.41.0")
     fun `test include with build script info`() = withEnabledEvaluateBuildScriptsFeature {
         buildProject {
             toml("Cargo.toml", """
@@ -250,7 +254,7 @@ class CargoGeneratedItemsResolveTest : RunConfigurationTestBase() {
         }.checkReferenceIsResolved<RsPath>("src/lib.rs")
     }
 
-    @MinRustcVersion("1.41.0-nightly")
+    @MinRustcVersion("1.41.0")
     fun `test do not run build-plan if build script info is enough`() = withEnabledFetchOutDirFeature {
         withEnabledEvaluateBuildScriptsFeature {
             Cargo.Testmarks.fetchBuildPlan.checkNotHit {
@@ -741,7 +745,7 @@ class CargoGeneratedItemsResolveTest : RunConfigurationTestBase() {
                         f.write_all(text).unwrap()
                     }
                 """)
-            }
+            }.checkReferenceIsResolved<RsPath>("src/main.rs", toFile = ".../gen/hello.rs")
         }
     }
 
@@ -783,8 +787,33 @@ class CargoGeneratedItemsResolveTest : RunConfigurationTestBase() {
                         ).unwrap();
                     }
                 """)
-            }
+            }.checkReferenceIsResolved<RsPath>("src/main.rs", toFile = ".../hello.rs")
         }
+    }
+
+    @MinRustcVersion("1.32.0")
+    fun `test do not fail on compilation error`() = withEnabledEvaluateBuildScriptsFeature {
+        buildProject {
+            toml("Cargo.toml", """
+                [package]
+                name = "intellij-rust-test"
+                version = "0.1.0"
+                authors = []
+            """)
+
+            dir("src") {
+                rust("main.rs", """
+                    pub mod bar;
+                    fn main() {
+                        println!("{}", bar::message());
+                                            //^
+                    }
+                """)
+                rust("bar.rs", """
+                    pub fn message() -> String { } // compilation error
+                """)
+            }
+        }.checkReferenceIsResolved<RsPath>("src/main.rs", toFile = ".../src/bar.rs")
     }
 
     private fun withEnabledFetchOutDirFeature(action: () -> Unit) =

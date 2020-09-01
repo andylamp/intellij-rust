@@ -37,7 +37,6 @@ import org.rust.cargo.toolchain.Cargo
 import org.rust.cargo.toolchain.Cargo.Companion.cargoCommonPatch
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.toolchain.impl.CargoMetadata
-import org.rust.cargo.toolchain.prependArgument
 import org.rust.cargo.util.CargoArgsParser.Companion.parseArgs
 import org.rust.openapiext.saveAllDocuments
 import java.nio.file.Path
@@ -61,8 +60,7 @@ abstract class RsAsyncRunner(
     override fun execute(environment: ExecutionEnvironment, state: RunProfileState): Promise<RunContentDescriptor?> {
         saveAllDocuments()
 
-        (state as CargoRunStateBase).addCommandLinePatch(cargoCommonPatch)
-        val commandLine = state.prepareCommandLine()
+        val commandLine = (state as CargoRunStateBase).prepareCommandLine(cargoCommonPatch)
         val (commandArguments, executableArguments) = parseArgs(commandLine.command, commandLine.additionalArguments)
 
         val isTestRun = commandLine.command == "test"
@@ -71,10 +69,10 @@ abstract class RsAsyncRunner(
             if (cmdHasNoRun) commandLine else commandLine.prependArgument("--no-run")
         } else {
             commandLine.copy(command = "build", additionalArguments = commandArguments)
-        }
+        }.copy(emulateTerminal = false)
 
         val getRunCommand = { executablePath: Path ->
-            with(buildCommand) {
+            with(commandLine) {
                 Cargo.createGeneralCommandLine(
                     executablePath,
                     workingDirectory,
@@ -125,9 +123,16 @@ abstract class RsAsyncRunner(
 
     open fun checkToolchainConfigured(project: Project): Boolean = true
 
-    open fun checkToolchainSupported(state: CargoRunStateBase): Boolean = true
+    open fun checkToolchainSupported(host: String): BuildResult.ToolchainError? = null
 
-    open fun processUnsupportedToolchain(project: Project, promise: AsyncPromise<Binary?>) {}
+    open fun processUnsupportedToolchain(
+        project: Project,
+        toolchainError: BuildResult.ToolchainError,
+        promise: AsyncPromise<Binary?>
+    ) {
+        project.showErrorDialog(toolchainError.message)
+        promise.setResult(null)
+    }
 
     private fun buildProjectAndGetBinaryArtifactPath(
         project: Project,
@@ -162,10 +167,9 @@ abstract class RsAsyncRunner(
 
                         override fun run(indicator: ProgressIndicator) {
                             indicator.isIndeterminate = true
-                            if (!checkToolchainSupported(state)) {
-                                result = BuildResult.UnsupportedToolchain
-                                return
-                            }
+                            val host = state.rustVersion().rustc?.host.orEmpty()
+                            result = checkToolchainSupported(host)
+                            if (result != null) return
 
                             val processForJson = CapturingProcessHandler(
                                 cargo.toGeneralCommandLine(project, command.prependArgument("--message-format=json"))
@@ -179,9 +183,7 @@ abstract class RsAsyncRunner(
                             result = output.stdoutLines
                                 .mapNotNull {
                                     try {
-                                        // BACKCOMPAT: 2019.3
-                                        @Suppress("DEPRECATION")
-                                        val jsonElement = PARSER.parse(it)
+                                        val jsonElement = JsonParser.parseString(it)
                                         val jsonObject = if (jsonElement.isJsonObject) {
                                             jsonElement.asJsonObject
                                         } else {
@@ -205,17 +207,14 @@ abstract class RsAsyncRunner(
                                     }
                                     isSuitableTarget && (!isTestBuild || profile.test)
                                 }
-                                .flatMap {
-                                    // FIXME: correctly launch binaries for macos
-                                    it.filenames.filter { !it.endsWith(".dSYM") }
-                                }
+                                .flatMap { it.executables }
                                 .let(BuildResult::Binaries)
                         }
 
                         override fun onSuccess() {
                             when (val result = result!!) {
-                                is BuildResult.UnsupportedToolchain -> {
-                                    processUnsupportedToolchain(project, promise)
+                                is BuildResult.ToolchainError -> {
+                                    processUnsupportedToolchain(project, result, promise)
                                 }
                                 is BuildResult.Binaries -> {
                                     val binaries = result.paths
@@ -248,15 +247,6 @@ abstract class RsAsyncRunner(
     }
 
     companion object {
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
-        private val PARSER: JsonParser = JsonParser()
-
         class Binary(val path: Path)
-
-        private sealed class BuildResult {
-            data class Binaries(val paths: List<String>) : BuildResult()
-            object UnsupportedToolchain : BuildResult()
-        }
     }
 }

@@ -45,20 +45,24 @@ class Rustup(
             ?: emptyList()
 
     fun downloadStdlib(): DownloadResult<VirtualFile> {
-        val downloadProcessOutput = GeneralCommandLine(rustup)
-            .withWorkDirectory(projectDirectory)
-            .withParameters("component", "add", "rust-src")
-            .execute(null)
-
-        return if (downloadProcessOutput?.isSuccess == true) {
-            val sources = toolchain.getStdlibFromSysroot(projectDirectory) ?: return DownloadResult.Err("Failed to find stdlib in sysroot")
-            fullyRefreshDirectory(sources)
-            DownloadResult.Ok(sources)
-        } else {
-            val message = "rustup failed: `${downloadProcessOutput?.stderr ?: ""}`"
-            LOG.warn(message)
-            DownloadResult.Err(message)
+        // Sometimes we have stdlib but don't have write access to install it (for example, github workflow)
+        if (needInstallComponent("rust-src")) {
+            val downloadProcessOutput = GeneralCommandLine(rustup)
+                .withWorkDirectory(projectDirectory)
+                .withParameters("component", "add", "rust-src")
+                .execute(null)
+            if (downloadProcessOutput?.isSuccess != true) {
+                val message = "rustup failed: `${downloadProcessOutput?.stderr ?: ""}`"
+                LOG.warn(message)
+                return DownloadResult.Err(message)
+            }
         }
+
+        val sources = toolchain.getStdlibFromSysroot(projectDirectory)
+            ?: return DownloadResult.Err("Failed to find stdlib in sysroot")
+        LOG.info("stdlib path: ${sources.path}")
+        fullyRefreshDirectory(sources)
+        return DownloadResult.Ok(sources)
     }
 
     fun downloadComponent(owner: Disposable, componentName: String): DownloadResult<Unit> =
@@ -74,13 +78,22 @@ class Rustup(
             DownloadResult.Err(message)
         }
 
+    private fun needInstallComponent(componentName: String): Boolean {
+        val isInstalled = listComponents()
+            .find { (name, _) -> name.startsWith(componentName) }
+            ?.isInstalled
+            ?: return false
+
+        return !isInstalled
+    }
+
     companion object {
 
         fun checkNeedInstallClippy(project: Project, cargoProjectDirectory: Path): Boolean =
-            checkNeedInstallComponent(project, cargoProjectDirectory, "clippy-preview")
+            checkNeedInstallComponent(project, cargoProjectDirectory, "clippy")
 
         fun checkNeedInstallRustfmt(project: Project, cargoProjectDirectory: Path): Boolean =
-            checkNeedInstallComponent(project, cargoProjectDirectory, "rustfmt-preview")
+            checkNeedInstallComponent(project, cargoProjectDirectory, "rustfmt")
 
         // We don't want to install the component if:
         // 1. It is already installed
@@ -91,20 +104,12 @@ class Rustup(
             cargoProjectDirectory: Path,
             componentName: String
         ): Boolean {
-            val shortName = componentName.removeSuffix("-preview")
-
-            val needInstall = run {
-                val rustup = project.toolchain?.rustup(cargoProjectDirectory)
-                    ?: return false
-                val (_, isInstalled) = rustup.listComponents()
-                    .find { (name, _) -> name.startsWith(shortName) }
-                    ?: return false
-                !isInstalled
-            }
+            val rustup = project.toolchain?.rustup(cargoProjectDirectory) ?: return false
+            val needInstall = rustup.needInstallComponent(componentName)
 
             if (needInstall) {
                 project.showBalloon(
-                    "${shortName.capitalize()} is not installed",
+                    "${componentName.capitalize()} is not installed",
                     NotificationType.ERROR,
                     InstallComponentAction(cargoProjectDirectory, componentName)
                 )

@@ -16,13 +16,14 @@ import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.lang.core.completion.getOriginalOrSelf
+import org.rust.lang.core.crate.Crate
+import org.rust.lang.core.crate.findDependency
+import org.rust.lang.core.macros.findNavigationTargetIfMacroExpansion
 import org.rust.lang.core.psi.RsConstant
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsFile
-import org.rust.lang.core.psi.rustFile
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.processNestedScopesUpwards
-import org.rust.openapiext.toPsiFile
 
 interface RsElement : PsiElement {
     /**
@@ -46,18 +47,21 @@ fun PsiFileSystemItem.findCargoProject(): CargoProject? {
 }
 
 fun PsiFileSystemItem.findCargoPackage(): CargoWorkspace.Package? {
-    if (this is RsFile) return this.cargoTarget?.pkg
+    if (this is RsFile) return this.crate?.cargoTarget?.pkg
     val vFile = virtualFile ?: return null
     return project.cargoProjects.findPackageForFile(vFile)
 }
 
 val RsElement.containingCargoTarget: CargoWorkspace.Target?
-    get() = (contextualFile.originalFile as? RsFile)?.cargoTarget
+    get() = containingCrate?.cargoTarget
+
+val RsElement.containingCrate: Crate?
+    get() = (contextualFile.originalFile as? RsFile)?.crate
 
 val RsElement.containingCargoPackage: CargoWorkspace.Package? get() = containingCargoTarget?.pkg
 
 val PsiElement.edition: CargoWorkspace.Edition?
-    get() = contextOrSelf<RsElement>()?.containingCargoTarget?.edition
+    get() = contextOrSelf<RsElement>()?.containingCrate?.edition
 
 val PsiElement.isEdition2018: Boolean
     get() = edition == CargoWorkspace.Edition.EDITION_2018
@@ -79,11 +83,9 @@ val RsElement.isConstantLike: Boolean
     get() = this is RsConstant || (this is RsEnumVariant && isFieldless)
 
 fun RsElement.findDependencyCrateRoot(dependencyName: String): RsFile? {
-    return containingCargoPackage
+    return containingCrate
         ?.findDependency(dependencyName)
-        ?.crateRoot
-        ?.toPsiFile(project)
-        ?.rustFile
+        ?.rootMod
 }
 
 abstract class RsElementImpl(node: ASTNode) : ASTWrapperPsiElement(node), RsElement {
@@ -93,6 +95,10 @@ abstract class RsElementImpl(node: ASTNode) : ASTWrapperPsiElement(node), RsElem
 
     final override val crateRoot: RsMod?
         get() = (contextualFile as? RsElement)?.crateRoot
+
+    override fun getNavigationElement(): PsiElement {
+        return findNavigationTargetIfMacroExpansion() ?: super.getNavigationElement()
+    }
 }
 
 abstract class RsStubbedElementImpl<StubT : StubElement<*>> : StubBasedPsiElementBase<StubT>, RsElement {
@@ -107,6 +113,10 @@ abstract class RsStubbedElementImpl<StubT : StubElement<*>> : StubBasedPsiElemen
 
     final override val crateRoot: RsMod?
         get() = (contextualFile as? RsElement)?.crateRoot
+
+    override fun getNavigationElement(): PsiElement {
+        return findNavigationTargetIfMacroExpansion() ?: super.getNavigationElement()
+    }
 
     override fun toString(): String = "${javaClass.simpleName}($elementType)"
 }

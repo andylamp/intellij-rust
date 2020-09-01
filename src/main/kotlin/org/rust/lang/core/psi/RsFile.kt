@@ -14,6 +14,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.ModificationTracker
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileWithId
 import com.intellij.psi.FileViewProvider
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
@@ -28,9 +29,12 @@ import org.rust.lang.RsConstants
 import org.rust.lang.RsFileType
 import org.rust.lang.RsLanguage
 import org.rust.lang.core.completion.getOriginalOrSelf
+import org.rust.lang.core.crate.Crate
+import org.rust.lang.core.crate.crateGraph
+import org.rust.lang.core.crate.impl.DoctestCrate
 import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.macros.expandedFrom
-import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.lang.core.macros.macroExpansionManagerIfCreated
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.stubs.RsFileStub
@@ -69,7 +73,7 @@ class RsFile(
 
     val cargoProject: CargoProject? get() = cachedData.cargoProject
     val cargoWorkspace: CargoWorkspace? get() = cachedData.cargoWorkspace
-    val cargoTarget: CargoWorkspace.Target? get() = cachedData.cargoTarget
+    val crate: Crate? get() = cachedData.crate
     override val crateRoot: RsMod? get() = cachedData.crateRoot
     val isDeeplyEnabledByCfg: Boolean get() = cachedData.isDeeplyEnabledByCfg
 
@@ -78,7 +82,7 @@ class RsFile(
             val originalFile = originalFile
             if (originalFile != this) return (originalFile as? RsFile)?.cachedData ?: EMPTY_CACHED_DATA
 
-            val state = project.macroExpansionManager.expansionState
+            val state = project.macroExpansionManagerIfCreated?.expansionState
             // [RsModulesIndex.getDeclarationFor] behaves differently depending on whether macros are expanding
             val (key, cacheDependency) = if (state != null) {
                 CACHED_DATA_MACROS_KEY to state.stepModificationTracker
@@ -97,15 +101,18 @@ class RsFile(
         val declaration = declaration
         if (declaration != null) {
             val (file, isEnabledByCfg) = declaration.contextualFileAndIsEnabledByCfgOnThisWay()
-            return (file as? RsFile)?.cachedData?.copy(isDeeplyEnabledByCfg = isEnabledByCfg) ?: EMPTY_CACHED_DATA
+            val parentCachedData = (file as? RsFile)?.cachedData ?: return EMPTY_CACHED_DATA
+            return parentCachedData.copy(isDeeplyEnabledByCfg = parentCachedData.isDeeplyEnabledByCfg && isEnabledByCfg)
         }
 
         val possibleCrateRoot = this
-
-        val includingMod = RsIncludeMacroIndex.getIncludingMod(possibleCrateRoot)
-        if (includingMod != null) return (includingMod.contextualFile as? RsFile)?.cachedData ?: EMPTY_CACHED_DATA
-
         val crateRootVFile = possibleCrateRoot.virtualFile ?: return EMPTY_CACHED_DATA
+
+        val crate = project.crateGraph.findCrateByRootMod(crateRootVFile)
+        if (crate != null) {
+            // `possibleCrateRoot` is a "real" crate root only if we're able to find a `crate` for it
+            return CachedData(crate.cargoProject, crate.cargoWorkspace, possibleCrateRoot, crate)
+        }
 
         val injectedFromFile = crateRootVFile.getInjectedFromIfDoctestInjection(project)
         if (injectedFromFile != null) {
@@ -113,22 +120,19 @@ class RsFile(
             // Doctest injection file should be a crate root to resolve absolute paths inside injection.
             // Doctest contains a single "extern crate $crateName;" declaration at the top level, so
             // we should be able to resolve it by an absolute path
-            return cached.copy(crateRoot = possibleCrateRoot)
+            val doctestCrate = cached.crate?.let { DoctestCrate.inCrate(it, possibleCrateRoot) }
+            return cached.copy(crateRoot = possibleCrateRoot, crate = doctestCrate)
         }
 
+        val includingMod = RsIncludeMacroIndex.getIncludingMod(possibleCrateRoot)
+        if (includingMod != null) return (includingMod.contextualFile as? RsFile)?.cachedData ?: EMPTY_CACHED_DATA
+
+        // This occurs if the file is not included to the project's module structure, i.e. it's
+        // most parent module is not mentioned in the `Cargo.toml` as a crate root of some target
+        // (usually lib.rs or main.rs). It's anyway useful to know cargoProject&workspace in this case
         val cargoProject = project.cargoProjects.findProjectForFile(crateRootVFile) ?: return EMPTY_CACHED_DATA
         val workspace = cargoProject.workspace ?: return CachedData(cargoProject)
-        val cargoTarget = workspace.findTargetByCrateRoot(crateRootVFile)
-
-        return if (cargoTarget != null) {
-            // `possibleCrateRoot` is a "real" crate root only if we're able to find a target for it
-            CachedData(cargoProject, workspace, cargoTarget, possibleCrateRoot)
-        } else {
-            // This accurs if the file is not included to the project's module structure, i.e. it's
-            // most parent module is not mentioned in the `Cargo.toml` as a crate root of some target
-            // (usually lib.rs or main.rs). It's anyway useful to know cargoProject&workspace in this case
-            CachedData(cargoProject, workspace)
-        }
+        return CachedData(cargoProject, workspace)
     }
 
     override fun setName(name: String): PsiElement {
@@ -158,11 +162,20 @@ class RsFile(
         get() = getOwnedDirectory() != null
 
     override val isCrateRoot: Boolean
-        get() = originalFile == crateRoot
+        get() {
+            val file = originalFile.virtualFile ?: return false
+            return file is VirtualFileWithId && project.crateGraph.findCrateByRootMod(file) != null
+                || file.isDoctestInjection(project)
+        }
 
     override val visibility: RsVisibility get() {
         if (isCrateRoot) return RsVisibility.Public
         return declaration?.visibility ?: RsVisibility.Private
+    }
+
+    override val isPublic: Boolean get() {
+        if (isCrateRoot) return true
+        return declaration?.isPublic ?: false
     }
 
     val attributes: Attributes
@@ -174,13 +187,15 @@ class RsFile(
             return Attributes.NONE
         }
 
-    val declaration: RsModDeclItem? get() {
+    val declaration: RsModDeclItem? get() = declarations.firstOrNull()
+
+    val declarations: List<RsModDeclItem> get() {
         // XXX: without this we'll close over `thisFile`, and it's verboten
         // to store references to PSI inside `CachedValueProvider` other than
         // the key PSI element
-        val originalFile = originalFile as? RsFile ?: return null
+        val originalFile = originalFile as? RsFile ?: return emptyList()
 
-        val state = project.macroExpansionManager.expansionState
+        val state = project.macroExpansionManagerIfCreated?.expansionState
         // [RsModulesIndex.getDeclarationFor] behaves differently depending on whether macros are expanding
         val (key, cacheDependency) = if (state != null) {
             MOD_DECL_MACROS_KEY to state.stepModificationTracker
@@ -188,8 +203,9 @@ class RsFile(
             MOD_DECL_KEY to ModificationTracker.NEVER_CHANGED
         }
         return CachedValuesManager.getCachedValue(originalFile, key) {
+            val decl = if (isCrateRoot) emptyList() else RsModulesIndex.getDeclarationsFor(originalFile)
             CachedValueProvider.Result.create(
-                RsModulesIndex.getDeclarationFor(originalFile),
+                decl,
                 originalFile.rustStructureOrAnyPsiModificationTracker,
                 cacheDependency
             )
@@ -204,12 +220,8 @@ class RsFile(
 private data class CachedData(
     val cargoProject: CargoProject? = null,
     val cargoWorkspace: CargoWorkspace? = null,
-    val cargoTarget: CargoWorkspace.Target? = null,
-    /**
-     * May be not equal to [cargoTarget]'s [CargoWorkspace.Target.crateRoot].
-     * For example, in the case of doctest injection
-     */
     val crateRoot: RsFile? = null,
+    val crate: Crate? = null,
     val isDeeplyEnabledByCfg: Boolean = true
 )
 
@@ -225,17 +237,17 @@ val PsiFile.rustFile: RsFile? get() = this as? RsFile
 val VirtualFile.isNotRustFile: Boolean get() = !isRustFile
 val VirtualFile.isRustFile: Boolean get() = fileType == RsFileType
 
-private val MOD_DECL_KEY: Key<CachedValue<RsModDeclItem?>> = Key.create("MOD_DECL_KEY")
-private val MOD_DECL_MACROS_KEY: Key<CachedValue<RsModDeclItem?>> = Key.create("MOD_DECL_MACROS_KEY")
+private val MOD_DECL_KEY: Key<CachedValue<List<RsModDeclItem>>> = Key.create("MOD_DECL_KEY")
+private val MOD_DECL_MACROS_KEY: Key<CachedValue<List<RsModDeclItem>>> = Key.create("MOD_DECL_MACROS_KEY")
 
 private val CACHED_DATA_KEY: Key<CachedValue<CachedData>> = Key.create("CACHED_DATA_KEY")
 private val CACHED_DATA_MACROS_KEY: Key<CachedValue<CachedData>> = Key.create("CACHED_DATA_MACROS_KEY")
 
 private tailrec fun PsiElement.contextualFileAndIsEnabledByCfgOnThisWay(): Pair<PsiFile, Boolean> {
-    if (this is RsDocAndAttributeOwner && !isEnabledByCfg) return contextualFile to false
+    if (this is RsDocAndAttributeOwner && !isEnabledByCfgSelf) return contextualFile to false
     val contextOrMacro = (this as? RsExpandedElement)?.expandedFrom ?: context!!
     return if (contextOrMacro is PsiFile) {
-        contextOrMacro to (contextOrMacro !is RsDocAndAttributeOwner || contextOrMacro.isEnabledByCfg)
+        contextOrMacro to (contextOrMacro !is RsDocAndAttributeOwner || contextOrMacro.isEnabledByCfgSelf)
     } else {
         contextOrMacro.contextualFileAndIsEnabledByCfgOnThisWay()
     }

@@ -6,8 +6,8 @@
 package org.rust.lang.core.type
 
 import org.intellij.lang.annotations.Language
-import org.rust.ide.presentation.insertionSafeTextWithLifetimes
-import org.rust.ide.presentation.textWithAliasNames
+import org.rust.ide.presentation.render
+import org.rust.ide.presentation.renderInsertionSafe
 import org.rust.lang.core.psi.RsTypeReference
 import org.rust.lang.core.type.RsTypeResolvingTest.RenderMode.*
 import org.rust.lang.core.types.type
@@ -35,6 +35,22 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
         fn main() {
             let _: (S, T) = (S, T);
                  //^ (S, T)
+        }
+    """)
+
+    fun `test type in parens`() = testType("""
+        struct S;
+        fn main() {
+            let _: ((S));
+                 //^ S
+        }
+    """)
+
+    fun `test type of unclosed paren`() = testType("""
+        struct S;
+        fn main() {
+            let _: (;
+                 //^ <unknown>
         }
     """)
 
@@ -251,19 +267,19 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
     fun `test generic trait object`() = testType("""
         trait Trait<A> {}
         fn foo(_: &Trait<u8>) { unimplemented!() }
-                  //^ Trait<u8>
+                  //^ dyn Trait<u8>
     """)
 
     fun `test generic 'dyn Trait' trait object`() = testType("""
         trait Trait<A> {}
         fn foo(_: &dyn Trait<u8>) { unimplemented!() }
-                  //^ Trait<u8>
+                  //^ dyn Trait<u8>
     """)
 
     fun `test trait object with bound associated type`() = testType("""
         trait Trait { type Item; }
         fn foo(_: &Trait<Item=u8>) { unimplemented!() }
-                  //^ Trait<Item=u8>
+                  //^ dyn Trait<Item=u8>
     """)
 
     fun `test impl Trait`() = testType("""
@@ -420,8 +436,8 @@ class RsTypeResolvingTest : RsTypificationTestBase() {
         val ty = typeAtCaret.type
         val renderedTy = when (renderMode) {
             DEFAULT -> ty.toString()
-            WITH_LIFETIMES -> ty.insertionSafeTextWithLifetimes
-            WITH_ALIAS_NAMES -> ty.textWithAliasNames
+            WITH_LIFETIMES -> ty.renderInsertionSafe(includeLifetimeArguments = true)
+            WITH_ALIAS_NAMES -> ty.render(useAliasNames = true)
         }
         check(renderedTy == expectedType) {
             "$renderedTy != $expectedType"

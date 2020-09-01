@@ -165,10 +165,30 @@ class RsResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test if let with multiple patterns`() = checkByCode("""
+    fun `test if let with or pattern 1`() = checkByCode("""
         fn foo(x: V) {
             if let V1(v) | V2(v) = x {
                     //X
+                v;
+              //^
+            }
+        }
+    """)
+
+    fun `test if let with or pattern 2`() = checkByCode("""
+        fn foo(x: Option<V>) {
+            if let Some(V1(v) | V2(v)) = x {
+                         //X
+                v;
+              //^
+            }
+        }
+    """)
+
+    fun `test if let with or pattern 3`() = checkByCode("""
+        fn foo(x: Option<V>) {
+            if let Some(L(V1(v) | V2(v)) | R(V1(v) | V2(v))) = x {
+                           //X
                 v;
               //^
             }
@@ -205,10 +225,20 @@ class RsResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test while let with multiple patterns`() = checkByCode("""
+    fun `test while let with or pattern 1`() = checkByCode("""
         fn foo(x: V) {
             while let V1(v) | V2(v) = x {
                        //X
+                v;
+              //^
+            }
+        }
+    """)
+
+    fun `test while let with or pattern 2`() = checkByCode("""
+        fn foo(x: Option<V>) {
+            while let Some(V1(v) | V2(v)) = x {
+                            //X
                 v;
               //^
             }
@@ -557,6 +587,14 @@ class RsResolveTest : RsResolveTestBase() {
             let _ = E::X;
                      //^
         }
+    """)
+
+    fun `test enum Self in impl block`() = checkByCode("""
+        enum E { X }
+               //X
+
+        impl E { fn foo() -> Self { Self::X }}
+                                        //^
     """)
 
     fun `test enum variant 2`() = checkByCode("""
@@ -1126,7 +1164,7 @@ class RsResolveTest : RsResolveTestBase() {
         fn foo(x: i32) {
             match x {
                 X => 92
-            } //^
+            };//^
         }
     """)
 
@@ -1139,11 +1177,22 @@ class RsResolveTest : RsResolveTestBase() {
         }                     //^
     """)
 
-    fun `test pattern binding in let`() = checkByCode("""
+    fun `test pattern binding in let 1`() = checkByCode("""
         struct S { foo: i32 }
                   //X
         fn main() {
             let S { foo } = S { foo: 92 };
+                   //^
+            let x = foo;
+        }
+    """)
+
+    fun `test pattern binding in let 2`() = checkByCode("""
+        struct S { foo: i32 }
+                  //X
+        type A = S;
+        fn main() {
+            let A { foo } = A { foo: 92 };
                    //^
             let x = foo;
         }

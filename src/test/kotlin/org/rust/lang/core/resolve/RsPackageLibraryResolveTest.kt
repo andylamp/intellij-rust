@@ -77,7 +77,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     //- lib.rs
         // Missing #[macro_export] here
         macro_rules! foo_bar { () => {} }
-    """, NameResolutionTestmarks.missingMacroExport)
+    """)
 
     fun `test macro rules missing macro_use`() = stubOnlyResolve("""
     //- main.rs
@@ -327,6 +327,23 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro from import inside function wins over macro from crate root`() = stubOnlyResolve("""
+    //- lib.rs
+        #[macro_export]
+        macro_rules! foo { () => { /* 1 */ } }
+                    //X
+    //- main.rs
+        mod inner {
+            #[macro_export]
+            macro_rules! foo { () => { /* 2 */ } }
+        }
+        fn main() {
+            use test_package::foo;
+            foo!();
+        }  //^ lib.rs
+    """)
+
     fun `test import macro by non-root use item with aliased extern crate`() = stubOnlyResolve("""
     //- lib.rs
         extern crate dep_lib_target as aliased;
@@ -398,7 +415,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
 
         use dep_lib_target::Foo;
                             //^ dep-lib-new/lib.rs
-    """, NameResolutionTestmarks.otherVersionOfSameCrate)
+    """)
 
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
     fun `test resolve reference without extern crate item 1 (edition 2018)`() = stubOnlyResolve("""
@@ -662,6 +679,17 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         use dep_lib_target::Foo;
                           //^ dep-lib/lib.rs
     """, ItemResolutionTestmarks.extraAtomUse)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test import the same name as a crate name`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+        pub fn dep_lib_target(){}
+    //- lib.rs
+        use dep_lib_target::dep_lib_target;
+        use dep_lib_target::Foo;
+                           //^ dep-lib/lib.rs
+    """)
 
     // Issue https://github.com/intellij-rust/intellij-rust/issues/3912
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)

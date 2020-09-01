@@ -15,7 +15,6 @@ import com.intellij.openapi.editor.FoldingGroup
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiComment
-import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.tree.TokenSet
@@ -30,6 +29,7 @@ import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_EOL_DOC_CO
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.openapiext.document
 import java.lang.Integer.max
 import java.util.*
 
@@ -95,7 +95,12 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
 
         override fun visitModItem(o: RsModItem) = foldBetween(o, o.lbrace, o.rbrace)
 
-        override fun visitMacroArgument(o: RsMacroArgument) = foldBetween(o, o.lbrace, o.rbrace)
+        override fun visitMacroArgument(o: RsMacroArgument) {
+            val macroCall = o.parent as? RsMacroCall
+            if (macroCall?.bracesKind == MacroBraces.BRACES) {
+                foldBetween(o, o.lbrace, o.rbrace)
+            }
+        }
 
         override fun visitValueParameterList(o: RsValueParameterList) {
             if (o.valueParameterList.isEmpty()) return
@@ -133,7 +138,7 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
         private fun tryFoldBlockWhitespaces(block: RsBlock): Boolean {
             if (block.parent !is RsFunction) return false
 
-            val doc = PsiDocumentManager.getInstance(block.project).getDocument(block.containingFile) ?: return false
+            val doc = block.containingFile.document ?: return false
             val maxLength = rightMargin - block.getOffsetInLine(doc) - ONE_LINER_PLACEHOLDERS_EXTRA_LENGTH
             if (!block.isSingleLine(doc, maxLength)) return false
 

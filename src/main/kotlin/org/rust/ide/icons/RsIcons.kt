@@ -8,8 +8,6 @@ package org.rust.ide.icons
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.util.IconLoader
 import com.intellij.ui.LayeredIcon
-import com.intellij.ui.RowIcon
-import com.intellij.util.PlatformIcons
 import javax.swing.Icon
 
 /**
@@ -31,49 +29,63 @@ object RsIcons {
 
     // Marks
 
-    val FINAL_MARK = AllIcons.Nodes.FinalMark!!
-    val STATIC_MARK = AllIcons.Nodes.StaticMark!!
-    val TEST_MARK = AllIcons.Nodes.JunitTestMark!!
+    val FINAL_MARK = AllIcons.Nodes.FinalMark
+    val STATIC_MARK = AllIcons.Nodes.StaticMark
+    val TEST_MARK = AllIcons.Nodes.JunitTestMark
     val DOCS_MARK = IconLoader.getIcon("/icons/docsrs.svg")
 
     // Source code elements
 
-    val CRATE = AllIcons.Nodes.PpLib!!
-    val MODULE = AllIcons.Nodes.Package!!
+    val CRATE = AllIcons.Nodes.PpLib
+    val MODULE = IconLoader.getIcon("/icons/nodes/module.svg")
 
-    val TRAIT = AllIcons.Nodes.Interface!!
-    val STRUCT = AllIcons.Nodes.Class!!
-    val TYPE = IconLoader.getIcon("/icons/nodes/typeAlias.svg")
-    val IMPL = AllIcons.Nodes.AbstractClass!!
-    val ENUM = AllIcons.Nodes.Enum!!
-
-    val METHOD = AllIcons.Nodes.Method!!
+    val TRAIT = IconLoader.getIcon("/icons/nodes/trait.svg")
+    val STRUCT = IconLoader.getIcon("/icons/nodes/struct.svg")
+    val UNION = IconLoader.getIcon("/icons/nodes/union.svg")
+    val ENUM = IconLoader.getIcon("/icons/nodes/enum.svg")
+    val TYPE_ALIAS = IconLoader.getIcon("/icons/nodes/typeAlias.svg")
+    val IMPL = IconLoader.getIcon("/icons/nodes/impl.svg")
     val FUNCTION = IconLoader.getIcon("/icons/nodes/function.svg")
-    val ASSOC_FUNCTION = FUNCTION.addStaticMark()
-    val MACRO = AllIcons.General.ExclMark!!
+    val MACRO = AllIcons.General.ExclMark
 
-    val ABSTRACT_METHOD = AllIcons.Nodes.AbstractMethod!!
-    val ABSTRACT_FUNCTION = IconLoader.getIcon("/icons/nodes/abstractFunction.svg")
-    val ABSTRACT_ASSOC_FUNCTION = ABSTRACT_FUNCTION.addStaticMark()
-
-    val ATTRIBUTE = AllIcons.Nodes.Annotationtype!!
-    val MUT_ARGUMENT = AllIcons.Nodes.Parameter!!
-    val ARGUMENT = MUT_ARGUMENT.addFinalMark()
-    val FIELD = AllIcons.Nodes.Field!!
-    val MUT_BINDING = AllIcons.Nodes.Variable!!
-    val BINDING = MUT_BINDING.addFinalMark()
-    val GLOBAL_BINDING = IconLoader.getIcon("/icons/nodes/globalBinding.svg")
+    val GLOBAL_BINDING = IconLoader.getIcon("/icons/nodes/constant.svg")
     val CONSTANT = GLOBAL_BINDING.addFinalMark()
-    val MUT_STATIC = GLOBAL_BINDING.addStaticMark()
+    // TODO: look like we need separate icons for statics and constants
+    val MUT_STATIC = GLOBAL_BINDING
     val STATIC = MUT_STATIC.addFinalMark()
-    val ENUM_VARIANT = FIELD.addFinalMark().addStaticMark()
+
+    val METHOD = IconLoader.getIcon("/icons/nodes/method.svg")
+    val ASSOC_FUNCTION = FUNCTION.addStaticMark()
+    val ASSOC_CONSTANT = CONSTANT.addStaticMark()
+    val ASSOC_TYPE_ALIAS = TYPE_ALIAS.addStaticMark()
+
+    val ABSTRACT_METHOD = IconLoader.getIcon("/icons/nodes/abstractMethod.svg")
+    val ABSTRACT_ASSOC_FUNCTION = IconLoader.getIcon("/icons/nodes/abstractFunction.svg").addStaticMark()
+    val ABSTRACT_ASSOC_CONSTANT = IconLoader.getIcon("/icons/nodes/abstractConstant.svg").addStaticMark().addFinalMark()
+    val ABSTRACT_ASSOC_TYPE_ALIAS = IconLoader.getIcon("/icons/nodes/abstractTypeAlias.svg").addStaticMark()
+
+    val ATTRIBUTE = AllIcons.Nodes.Annotationtype
+    val MUT_ARGUMENT = AllIcons.Nodes.Parameter
+    val ARGUMENT = MUT_ARGUMENT.addFinalMark()
+    val MUT_BINDING = AllIcons.Nodes.Variable
+    val BINDING = MUT_BINDING.addFinalMark()
+
+    val FIELD = IconLoader.getIcon("/icons/nodes/field.svg")
+    val ENUM_VARIANT = IconLoader.getIcon("/icons/nodes/enumVariant.svg")
 
     // Gutter
 
-    val IMPLEMENTED = AllIcons.Gutter.ImplementedMethod!!
-    val IMPLEMENTING_METHOD = AllIcons.Gutter.ImplementingMethod!!
-    val OVERRIDING_METHOD = AllIcons.Gutter.OverridingMethod!!
-    val RECURSIVE_CALL = AllIcons.Gutter.RecursiveMethod!!
+    val IMPLEMENTED = AllIcons.Gutter.ImplementedMethod
+    val IMPLEMENTING_METHOD = AllIcons.Gutter.ImplementingMethod
+    val OVERRIDING_METHOD = AllIcons.Gutter.OverridingMethod
+    val RECURSIVE_CALL = AllIcons.Gutter.RecursiveMethod
+
+    // Repl
+
+    val REPL = IconLoader.getIcon("/icons/repl.svg")
+
+    val CARGO_GENERATE = IconLoader.getIcon("/icons/cargo-generate.svg")
+    val WASM_PACK = IconLoader.getIcon("/icons/wasm-pack.svg")
 }
 
 fun Icon.addFinalMark(): Icon = LayeredIcon(this, RsIcons.FINAL_MARK)
@@ -81,9 +93,6 @@ fun Icon.addFinalMark(): Icon = LayeredIcon(this, RsIcons.FINAL_MARK)
 fun Icon.addStaticMark(): Icon = LayeredIcon(this, RsIcons.STATIC_MARK)
 
 fun Icon.addTestMark(): Icon = LayeredIcon(this, RsIcons.TEST_MARK)
-
-fun Icon.addVisibilityIcon(pub: Boolean): RowIcon =
-    RowIcon(this, if (pub) PlatformIcons.PUBLIC_ICON else PlatformIcons.PRIVATE_ICON)
 
 fun Icon.multiple(): Icon {
     val compoundIcon = LayeredIcon(2)

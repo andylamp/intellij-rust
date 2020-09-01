@@ -9,7 +9,7 @@ import com.intellij.openapiext.hitOnFalse
 import com.intellij.psi.PsiElement
 import com.intellij.psi.codeStyle.NameUtil
 import com.intellij.psi.util.PsiTreeUtil
-import org.rust.ide.inspections.toSnakeCase
+import org.rust.ide.inspections.lints.toSnakeCase
 import org.rust.ide.refactoring.introduceVariable.IntroduceVariableTestmarks
 import org.rust.ide.utils.CallInfo
 import org.rust.lang.core.psi.*
@@ -55,7 +55,7 @@ fun RsExpr.suggestedNames(): SuggestedNames {
         is TyInteger -> names.addName("i")
         is TyTypeParameter -> names.addName(type.name)
         is TyAdt -> names.addName(type.item.name)
-        is TyTraitObject -> names.addName(type.trait.element.name)
+        is TyTraitObject -> type.traits.forEach { names.addName(it.element.name) }
     }
 
     val parent = this.parent

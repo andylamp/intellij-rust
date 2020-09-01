@@ -746,6 +746,18 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         } //^ i32
     """)
 
+    fun `test infer generic argument from trait bound (aliased impl)`() = testExpr("""
+        struct S<X>(X);
+        type Alias<X> = S<X>;
+        trait Tr<Y> { fn foo(&self) -> Y; }
+        impl<Z> Tr<Z> for Alias<Z> { fn foo(&self) -> Z { unimplemented!() } }
+        fn bar<A, B: Tr<A>>(b: B) -> A { b.foo() }
+        fn main() {
+            let a = bar(S(1));
+            a;
+        } //^ i32
+    """)
+
     fun `test infer complex generic argument from trait bound`() = testExpr("""
         struct S<A>(A);
         trait Tr<B> { fn foo(&self) -> B; }
@@ -1051,6 +1063,32 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let a = bar(t.foo());
             a;
         } //^ D
+    """)
+
+    fun `test nested projections`() = testExpr("""
+        trait Trait1 {
+            type Item1;
+            fn foo(&self) -> Self::Item1 { unimplemented!() }
+        }
+        trait Trait2 { type Item2; }
+
+        struct X<T>(T);
+        struct Y;
+        struct Z;
+
+        impl<T> Trait1 for X<T>
+            where T: Trait2,
+                  T::Item2: Trait1
+        {
+            type Item1 = <<T as Trait2>::Item2 as Trait1>::Item1;
+        }
+        impl Trait2 for Y { type Item2 = Z; }
+        impl Trait1 for Z { type Item1 = i32; }
+
+        fn main() {
+            let a = X(Y).foo();
+            a;
+        } //^ i32
     """)
 
     fun `test simple unification`() = testExpr("""
@@ -1777,5 +1815,40 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let a = foo(b);
             a;
         } //^ X
+    """)
+
+    fun `test assoc type bound in path selection`() = testExpr("""
+        struct X;
+        trait Foo<T> {}
+        fn foo<A: Foo<B>, B>(_: A) -> B { unimplemented!() }
+        trait Bar { type Item; }
+        fn bar<T: Bar<Item: Foo<X>>>(_: T, b: T::Item) {
+            let a = foo(b);
+            a;
+        } //^ X
+    """)
+
+    fun `test assoc type bound in nested path selection`() = testExpr("""
+        struct X;
+        trait Foo<T> {}
+        fn foo<A: Foo<B>, B>(_: A) -> B { unimplemented!() }
+        trait Bar { type Item; }
+        fn bar<T: Bar<Item: Bar<Item: Foo<X>>>>(_: T, b: <T::Item as Bar>::Item) {
+            let a = foo(b);
+            a;
+        } //^ X
+    """)
+
+    fun `test infer type parameter from associated type binding`() = testExpr("""
+        trait Foo { type Item; }
+        fn foo<A, B>(a: A) -> B where A: Foo<Item = B> { unimplemented!() }
+
+        struct S;
+        impl Foo for S { type Item = i32; }
+
+        fn main() {
+            let a = foo(S);
+            a;
+        } //^ i32
     """)
 }

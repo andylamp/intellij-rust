@@ -100,7 +100,8 @@
 
     extraRoot(".*CodeFragmentElement")=true
 
-    extends("Pat(Wild|Ref|Tup|Slice|Macro|Struct|TupleStruct|Ident|Range|Box|Const|Rest)") = Pat
+    extends("(Pat(Wild|Ref|Tup|Slice|Macro|Struct|TupleStruct|Ident|Range|Box|Const|Rest))|(OrPat)") = Pat
+    extends("(Array|RefLike|Tuple|Paren|FnPointer|Base|Macro|ForIn|Trait)Type") = TypeReference
 
     generateTokenAccessors=true
 
@@ -125,7 +126,7 @@ StatementCodeFragmentElement ::= Stmt?
 TypeReferenceCodeFragmentElement ::= TypeReference?
 ValuePathCodeFragmentElement ::= ValuePathGenericArgs?
 TypePathCodeFragmentElement ::= TypePathGenericArgs?
-ReplCodeFragmentElement ::= (Item | Stmt)* Expr?
+ReplCodeFragmentElement ::= ReplBlockElement*
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Attributes
@@ -220,8 +221,7 @@ private AnyTypeArgument ::= AssocTypeBinding | TypeReference | Lifetime | ConstA
 private ConstArgument ::= (BlockExpr | LitExpr | &('-' LitExpr) UnaryExpr)
 
 AssocTypeBinding ::= identifier (AssocTypeBindingType | AssocTypeBindingBound) {
-  implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
-                 "org.rust.lang.core.psi.ext.RsMandatoryReferenceElement" ]
+  implements = [ "org.rust.lang.core.psi.ext.RsMandatoryReferenceElement" ]
   mixin = "org.rust.lang.core.psi.ext.RsAssocTypeBindingMixin"
   stubClass = "org.rust.lang.core.stubs.RsAssocTypeBindingStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -278,14 +278,10 @@ TraitRef ::= TypePathGenericArgsNoTypeQual {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Items
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-Vis ::= crate | pub VisRestriction? {
+Vis ::= crate !'::' | pub VisRestriction? {
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
   stubClass = "org.rust.lang.core.stubs.RsVisStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
-}
-TupleFieldVis ::= crate !'::' | pub VisRestriction? {
-  elementType = Vis
-  name = "vis"
 }
 VisRestriction ::= '(' in? PathWithoutTypeArgs ')' {
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
@@ -366,7 +362,7 @@ private FnParameter_with_recover ::= !')' FnParameter (',' | &')') {
 }
 private FnParameter_recover ::= !(Pat_first | OuterAttr_first | ')' | '...')
 
-LambdaParameter ::= OuterAttr* Pat TypeAscription?
+LambdaParameter ::= OuterAttr* SimplePat TypeAscription?
 AnonParameter ::= OuterAttr* [ RestrictedPat ':' ] TypeReference
 PathParameter ::= OuterAttr* TypeReference !'='
 
@@ -508,26 +504,32 @@ upper Function ::= async? const? unsafe? ExternAbi?
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-Pat ::= PatWild
-      | PatRest
-      | PatRef
-      | PatTup
-      | PatSlice
-      | PatIdent
-      | PatMacro
-      | PatStruct
-      | PatTupleStruct
-      | (PatConst !('..' | '...' | '..='))
-      | PatRange
-      | PatBox {
+private TopPat ::= &'|' OrPat | Pat { name = "pattern" }
+
+Pat ::= SimplePat OrPatLeft? {
   implements = "org.rust.lang.core.macros.RsExpandedElement"
   name = "pattern"
 }
 
+private SimplePat ::= PatWild
+                    | PatRest
+                    | PatRef
+                    | PatTup
+                    | PatSlice
+                    | PatIdent
+                    | PatMacro
+                    | PatStruct
+                    | PatTupleStruct
+                    | (PatConst !('..' | '...' | '..='))
+                    | PatRange
+                    | PatBox
+
+OrPat ::= '|'? SimplePat ('|' SimplePat)*
+left OrPatLeft ::= ('|' SimplePat)+ { elementType = OrPat }
+
 private Pat_first ::= '_' | '..' | '&' | '(' | '[' | Path_first | AnyLitToken | box | '-' | ref | mut
 
-
-PatBox ::= box Pat
+PatBox ::= box SimplePat
 
 // XXX(matklad): it is impossible to distinguish between nullary enum variants
 // and identifiers during parsing.
@@ -536,13 +538,13 @@ PatBox ::= box Pat
 //       None => { } // match enum variant
 //       Name => { } // bind Name to x
 //   }
-PatIdent ::= PatBinding [ '@' Pat ]
+PatIdent ::= PatBinding [ '@' SimplePat ]
 
 PatStruct ::= ValuePathGenericArgsNoTypeQual '{' PatField_with_recover* PatRest? '}'
 PatTupleStruct   ::= ValuePathGenericArgsNoTypeQual '(' SeqPat ')'
 
 // TODO: actual recover
-private Pat_with_recover ::= Pat (',' | &(')' | ']'))
+private Pat_with_recover ::= TopPat (',' | &(')' | ']'))
 private PatField_with_recover ::= PatField (',' | & '}')
 
 PatConst ::= PathExpr | LitExpr | &('-' LitExpr) UnaryExpr
@@ -553,7 +555,7 @@ PatSlice ::= '[' SeqPat ']'
 // NB: there are `[x, .. , y]`
 private SeqPat ::= Pat_with_recover*
 
-PatRef ::= '&' mut? Pat
+PatRef ::= '&' mut? SimplePat
 
 PatWild ::= '_'
 PatRest ::= '..'
@@ -576,8 +578,6 @@ PatFieldFull ::= (identifier | INTEGER_LITERAL ) ':' Pat {
 PatField ::= PatFieldFull | box? PatBinding
 
 BindingMode ::= ref mut? | mut
-
-OrPats ::= '|'? Pat ('|' Pat)*
 
 upper Constant ::= (static mut? | const) (identifier | '_') TypeAscription [ '=' AnyExpr ] ';' {
   pin = 2
@@ -766,7 +766,7 @@ NamedFieldDecl ::= AttrsAndVis identifier TypeAscription {
 }
 private Field_recover ::= !('}' | ',')
 
-TupleFieldDecl ::= OuterAttr* TupleFieldVis? TypeReference {
+TupleFieldDecl ::= AttrsAndVis TypeReference {
   implements = [ "org.rust.lang.core.psi.ext.RsFieldDecl" ]
   mixin = "org.rust.lang.core.psi.ext.RsTupleFieldDeclImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
@@ -795,7 +795,7 @@ upper TraitItem ::= unsafe? auto? trait identifier TypeParameterList? TypeParamB
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-upper ImplItem ::= unsafe? impl TypeParameterList? ( TraitImpl | InherentImpl ) WhereClause? Members {
+upper ImplItem ::= unsafe? impl TypeParameterList? const? ( TraitImpl | InherentImpl ) WhereClause? Members {
   pin = "impl"
   name = ""
   implements = [ "org.rust.lang.core.psi.ext.RsTraitOrImpl"
@@ -841,59 +841,48 @@ upper TraitAlias ::= trait identifier TypeParameterList? '=' TraitAliasBounds? W
 
 private TypeAscription ::= ':' TypeReference { pin = 1 }
 
-private TypeReferenceInner ::= ArrayType
-                               | RefLikeType
-                               | FnPointerType
-                               // External rule to find the difference between `(T)` and `(T,)`
-                               | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
-                               | ExplicitTraitType
-                               | TrivialBaseType
-                               // External rule to find the difference between `T` and `T+T`
-                               | <<baseOrTraitType TypePathGenericArgs ImplicitTraitType TraitType_upper>>
-                               | MacroType
-                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
-
-private TypeReferenceNoImplicitTraitTypeInner ::= ArrayType
-                               | RefLikeTypeNoImplicitTrait
-                               | FnPointerType
-                               // External rule to find the difference between `(T)` and `(T,)`
-                               | <<tupleOrParenType TypeReferenceInner TupleType_upper>>
-                               | ExplicitTraitType
-                               | BaseType !'!'
-                               | MacroType
-                               | ForInType // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
-
-private ScalarTypeReferenceInner ::= ArrayType
-                                   | RefLikeType
-                                   | FnPointerType
-                                   | <<tupleOrParenType ScalarTypeReferenceInner TupleType_upper>>
-                                   | MacroType
-                                   | BaseType
-                                   | ForInType
-
-TypeReference ::= TypeReferenceInner {
+TypeReference ::= ArrayType
+                | RefLikeType
+                | FnPointerType
+                | TupleOrParenType
+                | ExplicitTraitType
+                | TrivialBaseType
+                // External rule to find the difference between `T` and `T+T`
+                | <<baseOrTraitType TypePathGenericArgs ImplicitTraitType TraitType_upper>>
+                | MacroType
+                | ForInType { // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
   implements = "org.rust.lang.core.macros.RsExpandedElement"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
+  stubClass = "com.intellij.psi.stubs.StubBase"
   mixin = "org.rust.lang.core.psi.ext.RsTypeReferenceImplMixin"
-  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
   name = "type"
 }
 
-TypeReferenceNoImplicitTraitType ::= TypeReferenceNoImplicitTraitTypeInner {
+TypeReferenceNoImplicitTraitType ::= ArrayType
+                                   | RefLikeTypeNoImplicitTrait
+                                   | FnPointerType
+                                   | TupleOrParenType
+                                   | ExplicitTraitType
+                                   | BaseType !'!'
+                                   | MacroType
+                                   | ForInType { // FIXME O(2^n) for types like `for<'a> A<for<'b> B<for<'c> C<...>>>`
   elementType = TypeReference
   name = "type"
 }
 
-ScalarTypeReference ::= ScalarTypeReferenceInner {
+ScalarTypeReference ::= ArrayType
+                      | RefLikeType
+                      | FnPointerType
+                      | TupleOrParenType
+                      | MacroType
+                      | BaseType
+                      | ForInType {
   elementType = TypeReference
   name = "type"
 }
 
 ArrayType ::= '[' TypeReference [';' AnyExpr] ']' {
   pin = 1
-  implements = [ "org.rust.lang.core.psi.ext.RsTypeElement" "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsArrayTypeStub"
+  implements = [ "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -901,33 +890,32 @@ private RefLikeStart ::= ( '&' Lifetime? mut? | '*' [ const | mut ] )
 RefLikeTypeNoImplicitTrait ::= RefLikeStart TypeReferenceNoImplicitTraitType { elementType = RefLikeType }
 RefLikeType ::= RefLikeStart TypeReference {
   pin = 1
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsRefLikeTypeStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 FnPointerType ::= [ unsafe? ExternAbi? ] fn FnTypeParameters RetType? {
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 MacroType ::= ExprLikeMacroCall {
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
-TupleType ::= '(' [ <<comma_separated_list TypeReference>> ] ')' {
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
+fake TupleType ::= '(' [ <<comma_separated_list TypeReference>> ] ')' {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
-private TupleType_upper ::= (',' TypeReference)* ','? ')'
+
+fake ParenType ::= '(' TypeReference ')' {
+  pin = 1
+  elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
+}
+
+TupleOrParenType ::= '(' !')' TypeReference (TupleType_upper | ')') {
+  pin = 2
+  elementType = ParenType
+}
+
+upper TupleType_upper ::= ',' [ TypeReference (',' TypeReference)* ','? ] ')' { pin = 1 elementType = TupleType }
 
 Bound ::= Lifetime | TraitRef {
   extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
@@ -937,17 +925,11 @@ Bound ::= Lifetime | TraitRef {
 
 ForInType ::= ForLifetimes (FnPointerType | TraitRef) {
   pin = 1
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsPlaceholderStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
 BaseType ::= TrivialBaseTypeInner | TypePathGenericArgs {
-  implements = [ "org.rust.lang.core.psi.ext.RsTypeElement"
-                 "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsBaseTypeStub"
+  implements = [ "org.rust.lang.core.psi.ext.RsInferenceContextOwner" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -956,9 +938,6 @@ private TrivialBaseTypeInner ::= '(' ')' | '_' | '!'
 
 // `impl Trait` or `dyn Trait` or `Trait+'a`
 fake TraitType ::= ExplicitTraitTypeInner | ImplicitTraitTypeInner {
-  implements = "org.rust.lang.core.psi.ext.RsTypeElement"
-  extends = "org.rust.lang.core.psi.ext.RsStubbedElementImpl<?>"
-  stubClass = "org.rust.lang.core.stubs.RsTraitTypeStub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1171,7 +1150,7 @@ WhileExpr ::= OuterAttr* LabelDecl? while Condition SimpleBlock {
                  "org.rust.lang.core.psi.ext.RsLooplikeExpr" ]
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
-Condition ::= [ let OrPats '=' ] NoStructLitExpr
+Condition ::= [ let TopPat '=' ] NoStructLitExpr
 
 LoopExpr ::= OuterAttr* LabelDecl? loop SimpleBlock {
   pin = 'loop'
@@ -1218,7 +1197,7 @@ MatchExpr ::= OuterAttr* match NoStructLitExpr MatchBody {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 MatchBody ::= '{' MatchArm* '}' { pin = 1 }
-MatchArm ::= OuterAttr* OrPats MatchArmGuard? '=>' StmtModeExpr (',' | (&'}' | <<isBlock>>)) {
+MatchArm ::= OuterAttr* TopPat MatchArmGuard? '=>' StmtModeExpr (',' | (&'}' | <<isBlock>>)) {
   pin = 2
   implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   recoverWhile = MatchArm_recover
@@ -1248,7 +1227,7 @@ fake TupleExpr ::= '(' AnyExpr+ ')' {
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 fake ParenExpr ::= '(' AnyExpr ')' {
-  pin = 2
+  pin = 1
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
 }
 
@@ -1331,6 +1310,7 @@ upper Macro ::= "macro_rules" '!' identifier ShallowMacroBody <<macroSemicolon>>
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsOuterAttributeOwner"
                  "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
+                 "org.rust.lang.core.psi.ext.RsMacroDefinitionBase"
                  "org.rust.lang.core.macros.RsExpandedElement"
                  "org.rust.lang.core.psi.ext.RsModificationTrackerOwner" ]
   extends = "org.rust.lang.core.psi.ext.RsMacroImplMixin"
@@ -1366,8 +1346,9 @@ MacroBindingGroupSeparator ::= <<macroBindingGroupSeparatorToken>>
 
 MacroExpansion ::= <<any_braces MacroExpansionContents>>
 
-MacroExpansionContents ::=
-  (MacroExpansion | MacroReference | MacroExpansionReferenceGroup | <<unpairedToken>>)*
+MacroExpansionContents ::= (MacroExpansion | MacroReference | MacroExpansionReferenceGroup | <<unpairedToken>>)* {
+  hooks = [ leftBinder = "ADJACENT_LINE_COMMENTS" ]
+}
 
 MacroReference ::= '$' MetaVarIdentifier {
   implements = [ "org.rust.lang.core.psi.ext.RsMandatoryReferenceElement" ]
@@ -1381,7 +1362,8 @@ upper Macro2 ::= MACRO_KW identifier ( Macro2FunctionLikeBody | Macro2MatchLikeB
   name = ""
   implements = [ "org.rust.lang.core.psi.ext.RsNameIdentifierOwner"
                  "org.rust.lang.core.psi.ext.RsItemElement"
-                 "org.rust.lang.core.psi.ext.RsQualifiedNamedElement" ]
+                 "org.rust.lang.core.psi.ext.RsQualifiedNamedElement"
+                 "org.rust.lang.core.psi.ext.RsMacroDefinitionBase" ]
   extends = "org.rust.lang.core.psi.ext.RsMacro2ImplMixin"
   stubClass = "org.rust.lang.core.stubs.RsMacro2Stub"
   elementTypeFactory = "org.rust.lang.core.stubs.StubImplementationsKt.factory"
@@ -1536,7 +1518,7 @@ upper ExprStmtUpper ::= () (';' | <<isBlock>>) { pin = 1 elementType = ExprStmt 
 
 fake ExprStmt ::= AnyExpr ';'? { extends = Stmt }
 
-LetDecl ::= OuterAttr* let Pat TypeAscription? [ '=' AnyExpr ] ';' {
+LetDecl ::= OuterAttr* let TopPat TypeAscription? [ '=' AnyExpr ] ';' {
   extends = Stmt
   implements = [ "org.rust.lang.core.psi.ext.RsOuterAttributeOwner" ]
   pin = "let"
@@ -1544,6 +1526,20 @@ LetDecl ::= OuterAttr* let Pat TypeAscription? [ '=' AnyExpr ] ';' {
 
 EmptyStmt ::= ';' { extends = Stmt }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// REPL
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// copy of BlockElement without '}'
+private ReplBlockElement ::= (BlockElementMacro | BlockElementMacroCall | ReplExprStmtOrLastExpr | Stmt | Item) {
+  pin = 1
+  recoverWhile = ReplBlockElement_recover
+}
+private ReplBlockElement_recover ::= !(Item_first | Expr_first | let | ';')
+
+ReplExprStmtOrLastExpr ::= StmtModeExpr (&<<eof>> | ExprStmtUpper) {
+  elementType = Expr
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Utils

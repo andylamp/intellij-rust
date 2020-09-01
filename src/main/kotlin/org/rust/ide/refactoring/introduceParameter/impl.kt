@@ -13,7 +13,7 @@ import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.refactoring.RefactoringBundle
 import com.intellij.refactoring.util.CommonRefactoringUtil
-import org.rust.ide.presentation.insertionSafeText
+import org.rust.ide.presentation.renderInsertionSafe
 import org.rust.ide.refactoring.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -27,7 +27,7 @@ import org.rust.openapiext.runWriteCommandAction
  */
 fun checkTypeIsExtractable(expr: RsExpr): Boolean {
     val psiFactory = RsPsiFactory(expr.project)
-    val typeRef = psiFactory.tryCreateType(expr.type.insertionSafeText) ?: return false
+    val typeRef = psiFactory.tryCreateType(expr.type.renderInsertionSafe()) ?: return false
     return typeRef.type !is TyUnit && typeRef.type !is TyNever
 }
 
@@ -82,7 +82,7 @@ private class ParamIntroducer(
     fun replaceExpressions(function: RsFunction, exprs: List<RsExpr>, replaceForTrait: Boolean = true) {
         if (exprs.isEmpty()) return
         val expr = exprs.first()
-        val typeRef = psiFactory.tryCreateType(expr.type.insertionSafeText) ?: return
+        val typeRef = psiFactory.tryCreateType(expr.type.renderInsertionSafe()) ?: return
 
         val suggestedNames = expr.suggestedNames()
 
@@ -92,7 +92,7 @@ private class ParamIntroducer(
         } else {
             findFunctionUsages(function)
         }
-        val newParameter = project.runWriteCommandAction {
+        project.runWriteCommandAction {
             appendNewArgument(functionUsages, expr)
             if (replaceForTrait) {
                 getTraitAndImpls(traitFunction)
@@ -102,16 +102,13 @@ private class ParamIntroducer(
             val newParam = introduceParam(function, suggestedNames.default, typeRef)
             val name = psiFactory.createExpression(suggestedNames.default)
             exprs.forEach { it.replace(name) }
-            moveEditorToNameElement(editor, newParam)
-        }
+            val newParameter = moveEditorToNameElement(editor, newParam)
 
-        val documentManager = PsiDocumentManager.getInstance(project)
-        documentManager.commitDocument(editor.document)
-        documentManager.doPostponedOperationsAndUnblockDocument(editor.document)
-
-        if (newParameter != null) {
-            RsInPlaceVariableIntroducer(newParameter, editor, project, "choose a parameter", emptyArray())
-                .performInplaceRefactoring(suggestedNames.all)
+            if (newParameter != null) {
+                PsiDocumentManager.getInstance(project).doPostponedOperationsAndUnblockDocument(editor.document)
+                RsInPlaceVariableIntroducer(newParameter, editor, project, "choose a parameter")
+                    .performInplaceRefactoring(suggestedNames.all)
+            }
         }
     }
 

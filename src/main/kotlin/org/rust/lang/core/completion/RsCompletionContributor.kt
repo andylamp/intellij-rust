@@ -15,6 +15,7 @@ class RsCompletionContributor : CompletionContributor() {
 
     init {
         extend(CompletionType.BASIC, RsPrimitiveTypeCompletionProvider)
+        extend(CompletionType.BASIC, RsBoolCompletionProvider)
         extend(CompletionType.BASIC, RsFragmentSpecifierCompletionProvider)
         extend(CompletionType.BASIC, RsCommonCompletionProvider)
         extend(CompletionType.BASIC, RsTupleFieldCompletionProvider)
@@ -24,6 +25,8 @@ class RsCompletionContributor : CompletionContributor() {
         extend(CompletionType.BASIC, RsPartialMacroArgumentCompletionProvider)
         extend(CompletionType.BASIC, RsFullMacroArgumentCompletionProvider)
         extend(CompletionType.BASIC, RsCfgAttributeCompletionProvider)
+        extend(CompletionType.BASIC, RsAwaitCompletionProvider)
+        extend(CompletionType.BASIC, RsStructPatRestCompletionProvider)
     }
 
     fun extend(type: CompletionType?, provider: RsCompletionProvider) {

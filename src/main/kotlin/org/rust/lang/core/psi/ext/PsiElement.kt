@@ -19,6 +19,7 @@ import com.intellij.util.SmartList
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.RsReplCodeFragment
 import org.rust.lang.core.stubs.RsFileStub
+import org.rust.openapiext.document
 import org.rust.openapiext.findDescendantsWithMacrosOfAnyType
 
 val PsiFileSystemItem.sourceRoot: VirtualFile?
@@ -27,6 +28,11 @@ val PsiFileSystemItem.sourceRoot: VirtualFile?
 val PsiElement.ancestors: Sequence<PsiElement>
     get() = generateSequence(this) {
         if (it is PsiFile) null else it.parent
+    }
+
+val PsiElement.stubAncestors: Sequence<PsiElement>
+    get() = generateSequence(this) {
+        if (it is PsiFile) null else it.stubParent
     }
 
 val PsiElement.contexts: Sequence<PsiElement>
@@ -222,17 +228,21 @@ val PsiElement.contextualFile: PsiFile
         }
     }
 
-/**
- * Finds first sibling that is neither comment, nor whitespace before given element.
- */
+/** Finds first sibling that is neither comment, nor whitespace before given element */
 fun PsiElement?.getPrevNonCommentSibling(): PsiElement? =
-    PsiTreeUtil.skipSiblingsBackward(this, PsiWhiteSpace::class.java, PsiComment::class.java)
+    PsiTreeUtil.skipWhitespacesAndCommentsBackward(this)
 
-/**
- * Finds first sibling that is neither comment, nor whitespace after given element.
- */
+/** Finds first sibling that is neither comment, nor whitespace after given element */
 fun PsiElement?.getNextNonCommentSibling(): PsiElement? =
-    PsiTreeUtil.skipSiblingsForward(this, PsiWhiteSpace::class.java, PsiComment::class.java)
+    PsiTreeUtil.skipWhitespacesAndCommentsForward(this)
+
+/** Finds first sibling that is not whitespace before given element */
+fun PsiElement?.getPrevNonWhitespaceSibling(): PsiElement? =
+    PsiTreeUtil.skipWhitespacesBackward(this)
+
+/** Finds first sibling that is not whitespace after given element */
+fun PsiElement?.getNextNonWhitespaceSibling(): PsiElement? =
+    PsiTreeUtil.skipWhitespacesForward(this)
 
 fun PsiElement.isAncestorOf(child: PsiElement): Boolean =
     child.ancestors.contains(this)
@@ -265,7 +275,7 @@ val PsiElement.rangeWithSurroundingLineBreaks: TextRange
     }
 
 private fun PsiElement.getLineCount(): Int {
-    val doc = containingFile?.let { file -> PsiDocumentManager.getInstance(project).getDocument(file) }
+    val doc = containingFile?.document
     if (doc != null) {
         val spaceRange = textRange ?: TextRange.EMPTY_RANGE
 

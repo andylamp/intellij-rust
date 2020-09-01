@@ -3,11 +3,15 @@
  * found in the LICENSE file.
  */
 
+// BACKCOMPAT: 2019.3
+@file:Suppress("DEPRECATION")
+
 package org.rust.lang.core.psi
 
 import com.intellij.ProjectTopics
 import com.intellij.injected.editor.VirtualFileWindow
-import com.intellij.openapi.components.ProjectComponent
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.components.service
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootEvent
@@ -18,24 +22,27 @@ import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.*
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.messages.Topic
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionMode
 import org.rust.lang.core.macros.isTopLevelExpansion
-import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.lang.core.macros.macroExpansionManagerIfCreated
 import org.rust.lang.core.psi.RsPsiManager.Companion.isIgnorePsiEvents
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.findModificationTrackerOwner
 
-val RUST_STRUCTURE_CHANGE_TOPIC: Topic<RustStructureChangeListener> = Topic.create(
+/** Don't subscribe directly or via plugin.xml lazy listeners. Use [RsPsiManager.subscribeRustStructureChange] */
+private val RUST_STRUCTURE_CHANGE_TOPIC: Topic<RustStructureChangeListener> = Topic.create(
     "RUST_STRUCTURE_CHANGE_TOPIC",
     RustStructureChangeListener::class.java,
     Topic.BroadcastDirection.TO_PARENT
 )
 
-val RUST_PSI_CHANGE_TOPIC: Topic<RustPsiChangeListener> = Topic.create(
+/** Don't subscribe directly or via plugin.xml lazy listeners. Use [RsPsiManager.subscribeRustPsiChange] */
+private val RUST_PSI_CHANGE_TOPIC: Topic<RustPsiChangeListener> = Topic.create(
     "RUST_PSI_CHANGE_TOPIC",
     RustPsiChangeListener::class.java,
     Topic.BroadcastDirection.TO_PARENT
@@ -50,6 +57,16 @@ interface RsPsiManager {
     val rustStructureModificationTracker: ModificationTracker
 
     fun incRustStructureModificationCount()
+
+    /** This is an instance method because [RsPsiManager] should be created prior to event subscription */
+    fun subscribeRustStructureChange(connection: MessageBusConnection, listener: RustStructureChangeListener) {
+        connection.subscribe(RUST_STRUCTURE_CHANGE_TOPIC, listener)
+    }
+
+    /** This is an instance method because [RsPsiManager] should be created prior to event subscription */
+    fun subscribeRustPsiChange(connection: MessageBusConnection, listener: RustPsiChangeListener) {
+        connection.subscribe(RUST_PSI_CHANGE_TOPIC, listener)
+    }
 
     companion object {
         private val IGNORE_PSI_EVENTS: Key<Boolean> = Key.create("IGNORE_PSI_EVENTS")
@@ -83,18 +100,20 @@ interface RustPsiChangeListener {
     fun rustPsiChanged(file: PsiFile, element: PsiElement, isStructureModification: Boolean)
 }
 
-class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
+class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
 
     override val rustStructureModificationTracker = SimpleModificationTracker()
 
-    override fun projectOpened() {
-        PsiManager.getInstance(project).addPsiTreeChangeListener(CacheInvalidator())
+    init {
+        PsiManager.getInstance(project).addPsiTreeChangeListener(CacheInvalidator(), this)
         project.messageBus.connect().subscribe(ProjectTopics.PROJECT_ROOTS, object : ModuleRootListener {
             override fun rootsChanged(event: ModuleRootEvent) {
                 incRustStructureModificationCount()
             }
         })
     }
+
+    override fun dispose() {}
 
     inner class CacheInvalidator : RsPsiTreeChangeAdapter() {
         override fun handleEvent(event: RsPsiTreeChangeEvent) {
@@ -131,8 +150,7 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
                 if (isIgnorePsiEvents(file)) return
 
                 val isWhitespaceOrComment = element is PsiComment || element is PsiWhiteSpace
-                if (isWhitespaceOrComment &&
-                    project.macroExpansionManager.macroExpansionMode !is MacroExpansionMode.New) {
+                if (isWhitespaceOrComment && !isMacroExpansionModeNew) {
                     // Whitespace/comment changes are meaningful if new macro expansion engine is used
                     return
                 }
@@ -176,7 +194,7 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
         val isStructureModification = owner == null || !owner.incModificationCount(psi)
 
         if (!isStructureModification && owner is RsMacroCall &&
-            (project.macroExpansionManager.macroExpansionMode !is MacroExpansionMode.New || !owner.isTopLevelExpansion)) {
+            (!isMacroExpansionModeNew || !owner.isTopLevelExpansion)) {
             return updateModificationCount(file, owner, isChildrenChange = false, isWhitespaceOrComment = false)
         }
 
@@ -185,6 +203,9 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
         }
         project.messageBus.syncPublisher(RUST_PSI_CHANGE_TOPIC).rustPsiChanged(file, psi, isStructureModification)
     }
+
+    private val isMacroExpansionModeNew
+        get() = project.macroExpansionManagerIfCreated?.macroExpansionMode is MacroExpansionMode.New
 
     override fun incRustStructureModificationCount() =
         incRustStructureModificationCount(null, null)
@@ -196,7 +217,7 @@ class RsPsiManagerImpl(val project: Project) : ProjectComponent, RsPsiManager {
 }
 
 val Project.rustPsiManager: RsPsiManager
-    get() = getComponent(RsPsiManager::class.java)
+    get() = service<RsPsiManager>()
 
 /** @see RsPsiManager.rustStructureModificationTracker */
 val Project.rustStructureModificationTracker: ModificationTracker

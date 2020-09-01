@@ -22,6 +22,7 @@ import org.rust.cargo.toolchain.RustcVersion
 import org.rust.ide.icons.RsIcons
 import org.rust.openapiext.checkReadAccessAllowed
 import org.rust.stdext.buildList
+import org.rust.stdext.exhaustive
 import javax.swing.Icon
 
 /**
@@ -74,10 +75,9 @@ private val CargoProject.ideaLibraries: Collection<CargoLibrary>
         for (pkg in workspace.packages) {
             when (pkg.origin) {
                 STDLIB -> stdlibPackages += pkg
-                DEPENDENCY,
-                TRANSITIVE_DEPENDENCY -> dependencyPackages += pkg
-                else -> Unit
-            }
+                DEPENDENCY -> dependencyPackages += pkg
+                WORKSPACE -> Unit
+            }.exhaustive
         }
 
         return buildList {
@@ -95,6 +95,10 @@ private fun makeStdlibLibrary(packages: List<CargoWorkspace.Package>, rustcVersi
     for (pkg in packages) {
         val root = pkg.contentRoot ?: continue
         sourceRoots += root
+        sourceRoots += pkg.additionalRoots()
+    }
+
+    for (root in sourceRoots) {
         excludedRoots += listOfNotNull(root.findChild("tests"), root.findChild("benches"))
     }
 
@@ -115,7 +119,7 @@ private fun CargoWorkspace.Package.toCargoLibrary(): CargoLibrary? {
     val excludedRoots = mutableSetOf<VirtualFile>()
     for (target in targets) {
         val crateRoot = target.crateRoot ?: continue
-        if (target.isLib) {
+        if (target.kind.isLib) {
             val crateRootDir = crateRoot.parent
             val commonAncestor = VfsUtilCore.getCommonAncestor(root, crateRootDir)
             when (commonAncestor) {

@@ -42,6 +42,35 @@ class RsHighlightExitPointsHandlerFactoryTest : RsTestBase() {
         }
     """, "panic!(\"test\")", "unimplemented!()", "return 0")
 
+    fun `test highlight diverging expressions as return`() = doTest("""
+        fn diverge() -> ! { unimplemented!() }
+
+        fn main() {
+            if true {
+                diverge();
+            }
+            /*caret*/return 0;
+        }
+    """, "diverge()", "return 0")
+
+    fun `test highlight diverging expressions as return 2`() = doTest("""
+        struct S;
+
+        impl S {
+           fn diverge(&self) -> ! { panic!() }
+        }
+
+        fn main() {
+           let s = S;
+
+           if true {
+              /*caret*/return;
+           }
+
+           s.diverge();
+        }
+    """, "return", "s.diverge()")
+
     fun `test highlight ? operator as return`() = doTest("""
         fn main() {
             if true {
@@ -93,6 +122,18 @@ class RsHighlightExitPointsHandlerFactoryTest : RsTestBase() {
             test()
         }
     """, "return 1", "test()")
+
+    fun `test highlight last macro call as return`() = doTest("""
+        macro_rules! test {
+            () => { () }
+        }
+        fn main() {
+            if true {
+                /*caret*/return;
+            }
+            test!()
+        }
+    """, "return", "test!()")
 
     fun `test highlight should not highlight inner function`() = doTest("""
         fn main() {
@@ -269,6 +310,37 @@ class RsHighlightExitPointsHandlerFactoryTest : RsTestBase() {
     fun `test return in macro`() = doTest("""
         macro_rules! foo {
             () => { /*caret*/return }
+        }
+    """)
+
+    fun `test loop as return on exit break`() = doTest("""
+        fn main() -> i32 {
+            let a = loop { break 0; };
+            return 1;
+            'outer: loop {
+                break/*caret*/ 2;
+                return 3;
+                loop {
+                    break 5;
+                    break 'outer 4;
+                }
+                6
+            }
+        }
+    """, "return 1", "break 2", "return 3", "break 'outer 4")
+
+    fun `test loop as return on not exit break`() = doTest("""
+        fn main() -> i32 {
+            return 1;
+            'outer: loop {
+                break 2;
+                return 3;
+                loop {
+                    break/*caret*/ 5;
+                    break 'outer 4;
+                }
+                6
+            }
         }
     """)
 

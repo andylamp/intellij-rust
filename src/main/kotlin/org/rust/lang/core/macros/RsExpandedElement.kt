@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.macros
 
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
@@ -26,10 +27,11 @@ interface RsExpandedElement : RsElement {
 
     companion object {
         fun getContextImpl(psi: RsExpandedElement, isIndexAccessForbidden: Boolean = false): PsiElement? {
-            psi.expandedFrom?.let { return it.context }
-            psi.getUserData(RS_EXPANSION_CONTEXT)?.let { return it }
+            val project = psi.project
             val parent = psi.stubParent
-            if (parent is RsFile && !isIndexAccessForbidden) {
+            project.macroExpansionManager.getContextOfMacroCallExpandedFrom(psi, parent)?.let { return it }
+            psi.getUserData(RS_EXPANSION_CONTEXT)?.let { return it }
+            if (parent is RsFile && !isIndexAccessForbidden && !DumbService.isDumb(project)) {
                 RsIncludeMacroIndex.getIncludingMod(parent)?.let { return it }
             }
             return parent
@@ -67,7 +69,7 @@ fun PsiElement.findMacroCallExpandedFrom(): RsMacroCall? {
 }
 
 fun PsiElement.findMacroCallExpandedFromNonRecursive(): RsMacroCall? {
-    return ancestors
+    return stubAncestors
         .filterIsInstance<RsExpandedElement>()
         .mapNotNull { it.expandedFrom }
         .firstOrNull()
@@ -75,6 +77,12 @@ fun PsiElement.findMacroCallExpandedFromNonRecursive(): RsMacroCall? {
 
 val PsiElement.isExpandedFromMacro: Boolean
     get() = findMacroCallExpandedFromNonRecursive() != null
+
+val PsiElement.isExpandedFromIncludeMacro: Boolean
+    get() {
+        val parent = stubParent
+        return parent is RsFile && RsIncludeMacroIndex.getIncludingMod(parent) != null
+    }
 
 private data class MacroCallAndOffset(val call: RsMacroCall, val absoluteOffset: Int)
 
@@ -269,7 +277,7 @@ private fun RsMacroCall.mapRangeFromExpansionToCallBody(range: TextRange): List<
     return mapRangeFromExpansionToCallBody(expansion, this, range)
 }
 
-private fun mapRangeFromExpansionToCallBody(
+fun mapRangeFromExpansionToCallBody(
     expansion: MacroExpansion,
     call: RsMacroCall,
     range: TextRange

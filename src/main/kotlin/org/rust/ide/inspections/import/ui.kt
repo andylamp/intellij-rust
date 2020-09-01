@@ -20,6 +20,8 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.cargo.icons.CargoIcons
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.ide.icons.RsIcons
+import org.rust.ide.utils.import.ImportCandidate
+import org.rust.ide.utils.import.ImportInfo
 import java.awt.BorderLayout
 import java.awt.Component
 import javax.swing.*
@@ -148,10 +150,10 @@ private class RsElementCellRenderer : DefaultPsiElementCellRenderer() {
         }
 
         private fun textWithIcon(): Pair<String, Icon>? {
-            val pkg = importCandidate?.qualifiedNamedItem?.containingCargoTarget?.pkg ?: return null
-            return when (pkg.origin) {
-                PackageOrigin.STDLIB -> pkg.normName to RsIcons.RUST
-                PackageOrigin.DEPENDENCY, PackageOrigin.TRANSITIVE_DEPENDENCY -> pkg.normName to CargoIcons.ICON
+            val crate = importCandidate?.qualifiedNamedItem?.containingCrate ?: return null
+            return when (crate.origin) {
+                PackageOrigin.STDLIB -> crate.normName to RsIcons.RUST
+                PackageOrigin.DEPENDENCY -> crate.normName to CargoIcons.ICON
                 else -> null
             }
         }

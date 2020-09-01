@@ -8,7 +8,10 @@ package org.rust.lang.core
 import com.intellij.patterns.*
 import com.intellij.patterns.PlatformPatterns.psiElement
 import com.intellij.patterns.StandardPatterns.or
-import com.intellij.psi.*
+import com.intellij.psi.PsiComment
+import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiErrorElement
+import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.tree.TokenSet
 import com.intellij.util.ProcessingContext
 import org.rust.lang.core.psi.*
@@ -22,64 +25,67 @@ object RsPsiPattern {
     private val STATEMENT_BOUNDARIES = TokenSet.create(SEMICOLON, LBRACE, RBRACE)
 
     /**
-     * Source of attributes: [https://doc.rust-lang.org/1.30.0/reference/attributes.html]
+     * Source of attributes: [https://doc.rust-lang.org/1.41.1/reference/attributes.html#built-in-attributes-index]
      */
-    private val STD_ATTRIBUTES: Set<String> = setOf(
-        "crate_name",
-        "crate_type",
-        "no_builtins",
-        "no_main",
-        "no_start",
-        "no_std",
-        "recursion_limit",
-        "windows_subsystem",
+    val STD_ATTRIBUTES: Set<String> = setOf(
+        "cfg",
+        "cfg_attr",
 
-        "no_implicit_prelude",
-        "path",
+        "test",
+        "ignore",
+        "should_panic",
 
-        "link_args",
-        "link",
-        "linked_from",
+        "derive",
 
-        "link_name",
-        "linkage",
-
-        "macro_use",
-        "macro_use",
-        "macro_reexport",
         "macro_export",
-        "no_link",
-
+        "macro_use",
         "proc_macro",
         "proc_macro_derive",
         "proc_macro_attribute",
 
-        "export_name",
-        "global_allocator",
-        "link_section",
-        "no_mangle",
+        "allow",
+        "warn",
+        "deny",
+        "forbid",
 
         "deprecated",
+        "must_use",
+
+        "link",
+        "link_name",
+        "no_link",
+        "repr",
+        "crate_type",
+        "no_main",
+        "export_name",
+        "link_section",
+        "no_mangle",
+        "used",
+        "crate_name",
+
+        "inline",
+        "cold",
+        "no_builtins",
+        "target_feature",
 
         "doc",
 
-        "test",
-        "should_panic",
+        "no_std",
+        "no_implicit_prelude",
 
-        "cfg",
-        "cfg_attr",
+        "path",
 
-        "allow",
-        "deny",
-        "forbid",
-        "warn",
+        "recursion_limit",
+        "type_length_limit",
 
-        "must_use",
+        "panic_handler",
+        "global_allocator",
+        "windows_subsystem",
 
-        "cold",
-        "inline",
+        "non_exhaustive",
 
-        "derive"
+        // unstable attr
+        "start"
     )
 
     const val META_ITEM_IDENTIFIER_DEPTH = 4
@@ -127,11 +133,12 @@ object RsPsiPattern {
 
     val onTrait: PsiElementPattern.Capture<PsiElement> = onItem<RsTraitItem>()
 
-    val onDropFn: PsiElementPattern.Capture<PsiElement> get() {
-        val dropTraitRef = psiElement<RsTraitRef>().withText("Drop")
-        val implBlock = psiElement<RsImplItem>().withChild(dropTraitRef)
-        return psiElement().withSuperParent(6, implBlock)
-    }
+    val onDropFn: PsiElementPattern.Capture<PsiElement>
+        get() {
+            val dropTraitRef = psiElement<RsTraitRef>().withText("Drop")
+            val implBlock = psiElement<RsImplItem>().withChild(dropTraitRef)
+            return psiElement().withSuperParent(6, implBlock)
+        }
 
     val onTestFn: PsiElementPattern.Capture<PsiElement> = onItem(psiElement<RsFunction>()
         .withChild(psiElement<RsOuterAttr>().withText("#[test]")))
@@ -178,6 +185,20 @@ object RsPsiPattern {
 
     val error: PsiElementPattern.Capture<PsiErrorElement> = psiElement<PsiErrorElement>()
 
+    val simplePathPattern: ElementPattern<PsiElement>
+        get() {
+            val simplePath = psiElement<RsPath>()
+                .with(object : PatternCondition<RsPath>("SimplePath") {
+                    override fun accepts(path: RsPath, context: ProcessingContext?): Boolean =
+                        path.kind == PathKind.IDENTIFIER &&
+                            path.path == null &&
+                            path.typeQual == null &&
+                            !path.hasColonColon &&
+                            path.ancestorStrict<RsUseSpeck>() == null
+                })
+            return psiElement().withParent(simplePath)
+        }
+
     private inline fun <reified I : RsDocAndAttributeOwner> onItem(): PsiElementPattern.Capture<PsiElement> {
         return psiElement().withSuperParent<I>(META_ITEM_IDENTIFIER_DEPTH)
     }
@@ -213,7 +234,7 @@ inline fun <reified I : PsiElement> PsiElementPattern.Capture<PsiElement>.withSu
     return this.withSuperParent(level, I::class.java)
 }
 
-inline infix fun <reified I : PsiElement> ElementPattern<I>.or(pattern: ElementPattern<I>): PsiElementPattern.Capture<PsiElement> {
+inline infix fun <reified I : PsiElement> ElementPattern<I>.or(pattern: ElementPattern<out I>): PsiElementPattern.Capture<PsiElement> {
     return psiElement().andOr(this, pattern)
 }
 

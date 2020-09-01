@@ -10,17 +10,14 @@ import com.intellij.psi.ResolveResult
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.*
-import org.rust.lang.core.types.BoundElement
-import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.*
 import org.rust.lang.core.types.consts.CtConstParameter
 import org.rust.lang.core.types.consts.CtUnknown
 import org.rust.lang.core.types.infer.foldTyInferWith
 import org.rust.lang.core.types.infer.resolve
 import org.rust.lang.core.types.infer.substitute
-import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.regions.ReEarlyBound
 import org.rust.lang.core.types.ty.*
-import org.rust.lang.core.types.type
 import org.rust.lang.utils.evaluation.PathExprResolver
 import org.rust.lang.utils.evaluation.evaluate
 import org.rust.stdext.buildMap
@@ -94,6 +91,39 @@ class RsPathReferenceImpl(
             // We can store a fresh `TyInfer.TyVar` to the cache for `_` path parameter (like `Vec<_>`), but
             // TyVar is mutable type, so we must copy it after retrieving from the cache
             .map { it.foldTyInferWith { if (it is TyInfer.TyVar) TyInfer.TyVar(it.origin) else it } }
+    }
+
+    override fun bindToElement(target: PsiElement): PsiElement {
+        if (target is RsMod) {
+            bindToMod(target)?.let { return it }
+        }
+
+        return super.bindToElement(target)
+    }
+
+    private fun bindToMod(target: RsMod): PsiElement? {
+        if (!element.isEdition2018) return null
+        var targetPath = target.qualifiedNameRelativeTo(element.containingMod) ?: return null
+
+        // consider old target (`element.reference.resolve()`) was `bar1::bar2::bar3::bar4::foo`
+        // and old path (`element`) was `bar1::bar3::bar4::foo` (`bar1` reexports everything from `bar2`)
+        // and new target is `bar1::bar2::bar3::baz::foo`
+        // then we want to reuse `bar1::bar3` part of old path
+        // so that new path will be `bar1::bar3::baz::foo` and not `bar1::bar2::bar3::baz::foo`
+        for (pathPrefix in generateSequence(element) { it.path }) {
+            val mod = pathPrefix.reference?.resolve() as? RsMod
+            if (mod != null && target.superMods.contains(mod)) {
+                val modFullPath = mod.qualifiedNameRelativeTo(element.containingMod)
+                val modShortPath = pathPrefix.text
+                if (modFullPath != null && targetPath.startsWith(modFullPath)) {
+                    targetPath = targetPath.replaceFirst(modFullPath, modShortPath)
+                }
+                break
+            }
+        }
+
+        val elementNew = RsPsiFactory(element.project).tryCreatePath(targetPath) ?: return null
+        return element.replace(elementNew)
     }
 
     private object Resolver : (RsPath) -> List<BoundElement<RsElement>> {
@@ -184,7 +214,20 @@ fun <T : RsElement> instantiatePathGenerics(
         } else {
             // Args aren't optional, and some args/turbofish aren't present OR not optional and turbofis is present.
             // Use either default argument from a definition `struct S<T=u8>(T);` or falling back to `TyUnknown`
-            param.typeReference?.type ?: TyUnknown
+            val defaultTy = param.typeReference?.type ?: TyUnknown
+
+            if (parent is RsTraitRef && parent.parent is RsBound) {
+                val pred = parent.ancestorStrict<RsWherePred>()
+                val selfTy = if (pred != null) {
+                    pred.typeReference?.type
+                } else {
+                    parent.ancestorStrict<RsTypeParameter>()?.declaredType
+                } ?: TyUnknown
+
+                defaultTy.substitute(mapOf(TyTypeParameter.self() to selfTy).toTypeSubst())
+            } else {
+                defaultTy
+            }
         }
         paramTy to value
     }
@@ -221,7 +264,7 @@ fun RsPathReference.advancedDeepResolve(): BoundElement<RsElement>? {
     val boundElement = advancedResolve()?.let { resolved ->
         // Resolve potential `Self` inside `impl`
         if (resolved.element is RsImplItem && element.hasCself) {
-            (resolved.element.typeReference?.typeElement as? RsBaseType)?.path?.reference?.advancedResolve() ?: resolved
+            (resolved.element.typeReference?.skipParens() as? RsBaseType)?.path?.reference?.advancedResolve() ?: resolved
         } else {
             resolved
         }
@@ -239,7 +282,7 @@ private fun resolveThroughTypeAliases(boundElement: BoundElement<RsElement>): Bo
     var base: BoundElement<RsElement> = boundElement
     val visited = mutableSetOf(boundElement.element)
     while (base.element is RsTypeAlias) {
-        val resolved = ((base.element as RsTypeAlias).typeReference?.typeElement as? RsBaseType)
+        val resolved = ((base.element as RsTypeAlias).typeReference?.skipParens() as? RsBaseType)
             ?.path?.reference?.advancedResolve()
             ?: break
         if (!visited.add(resolved.element)) return null

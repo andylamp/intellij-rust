@@ -18,7 +18,9 @@ import com.intellij.openapi.roots.ModifiableRootModel
 import com.intellij.openapi.util.Disposer
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.ide.newProject.ConfigurationData
-import org.rust.ide.newProject.RsPackageNameValidator
+import org.rust.ide.newProject.makeDefaultRunConfiguration
+import org.rust.ide.newProject.makeProject
+import org.rust.ide.newProject.openFiles
 
 /**
  * Builder which is used when a new project or module is created and not imported from source.
@@ -43,12 +45,25 @@ class RsModuleBuilder : ModuleBuilder() {
         // Just work if user "creates new project" over an existing one.
         if (toolchain != null && root.findChild(RustToolchain.CARGO_TOML) == null) {
             try {
-                toolchain.rawCargo().init(
-                    modifiableRootModel.project,
+                // TODO: rewrite this somehow to fix `Synchronous execution on EDT` exception
+                // The problem is that `setupRootModel` is called on EDT under write action
+                // so `$ cargo init` invocation blocks UI thread
+
+                val template = configurationData?.template ?: return
+                val cargo = toolchain.rawCargo()
+                val project = modifiableRootModel.project
+                val name = project.name.replace(' ', '_')
+
+                val generatedFiles = cargo.makeProject(
+                    project,
                     modifiableRootModel.module,
                     root,
-                    configurationData?.createBinary ?: true
-                )
+                    name,
+                    template
+                ) ?: return
+
+                project.makeDefaultRunConfiguration(template)
+                project.openFiles(generatedFiles)
             } catch (e: ExecutionException) {
                 LOG.error(e)
                 throw ConfigurationException(e.message)
@@ -58,8 +73,7 @@ class RsModuleBuilder : ModuleBuilder() {
 
     @Throws(ConfigurationException::class)
     override fun validateModuleName(moduleName: String): Boolean {
-        val isBinary = configurationData?.createBinary == true
-        val errorMessage = RsPackageNameValidator.validate(moduleName, isBinary) ?: return true
+        val errorMessage = configurationData?.template?.validateProjectName(moduleName) ?: return true
         throw ConfigurationException(errorMessage)
     }
 

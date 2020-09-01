@@ -6,14 +6,12 @@
 package org.rust.lang.core.psi
 
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFileFactory
-import com.intellij.psi.PsiParserFacade
+import com.intellij.psi.*
 import com.intellij.util.LocalTimeCounter
 import org.rust.ide.inspections.checkMatch.Pattern
-import org.rust.ide.presentation.insertionSafeTextWithAliasesAndLifetimes
-import org.rust.ide.presentation.insertionSafeTextWithLifetimes
+import org.rust.ide.presentation.renderInsertionSafe
 import org.rust.lang.RsFileType
+import org.rust.lang.RsLanguage
 import org.rust.lang.core.macros.MacroExpansionContext
 import org.rust.lang.core.macros.prepareExpandedTextForParsing
 import org.rust.lang.core.parser.RustParserUtil.PathParsingMode
@@ -33,7 +31,13 @@ class RsPsiFactory(
     private val markGenerated: Boolean = true,
     private val eventSystemEnabled: Boolean = false
 ) {
-    fun createFile(text: CharSequence): RsFile =
+    fun createFile(text: CharSequence): RsFile = createPsiFile(text) as RsFile
+
+    /**
+     * Returns [PsiPlainTextFile] if [text] is too large.
+     * Otherwise returns [RsFile].
+     */
+    fun createPsiFile(text: CharSequence): PsiFile =
         PsiFileFactory.getInstance(project)
             .createFileFromText(
                 "DUMMY.rs",
@@ -42,7 +46,7 @@ class RsPsiFactory(
                 /*modificationStamp =*/ LocalTimeCounter.currentTime(), // default value
                 /*eventSystemEnabled =*/ eventSystemEnabled, // `false` by default
                 /*markAsCopy =*/ markGenerated // `true` by default
-            ) as RsFile
+            )
 
     fun createMacroBody(text: String): RsMacroBody? = createFromText(
         "macro_rules! m $text"
@@ -87,6 +91,9 @@ class RsPsiFactory(
 
     fun tryCreateExpression(text: CharSequence): RsExpr? =
         createFromText("fn main() { let _ = $text; }")
+
+    fun tryCreateExprStmt(text: CharSequence): RsExprStmt? =
+        createFromText("fn main() { $text; }")
 
     fun createTryExpression(expr: RsExpr): RsTryExpr {
         val newElement = createExpressionOfType<RsTryExpr>("a?")
@@ -135,6 +142,9 @@ class RsPsiFactory(
     fun createStructLiteral(name: String): RsStructLiteral =
         createExpressionOfType("$name { }")
 
+    fun createStructLiteral(name: String, fields: String): RsStructLiteral =
+        createExpressionOfType("$name $fields")
+
     fun createStructLiteralField(name: String, value: String): RsStructLiteralField {
         return createExpressionOfType<RsStructLiteral>("S { $name: $value }")
             .structLiteralBody
@@ -149,14 +159,24 @@ class RsPsiFactory(
         return structLiteralField
     }
 
-    data class BlockField(val pub: Boolean, val name: String, val type: Ty)
+    data class BlockField(val name: String, val type: Ty, val addPub: Boolean)
+
+    data class TupleField(val type: Ty, val addPub: Boolean)
 
     fun createBlockFields(fields: List<BlockField>): RsBlockFields {
         val fieldsText = fields.joinToString(separator = ",\n") {
-            "${"pub".iff(it.pub)}${it.name}: ${it.type.insertionSafeTextWithLifetimes}"
+            val typeText = it.type.renderInsertionSafe(includeLifetimeArguments = true)
+            "${"pub".iff(it.addPub)}${it.name}: $typeText"
         }
-        return createStruct("struct S { $fieldsText }")
-            .blockFields!!
+        return createFromText("struct S { $fieldsText }") ?: error("Failed to create block fields")
+    }
+
+    fun createTupleFields(fields: List<TupleField>): RsTupleFields {
+        val fieldsText = fields.joinToString(separator = ", ") {
+            val typeText = it.type.renderInsertionSafe(includeLifetimeArguments = true)
+            "${"pub".iff(it.addPub)}$typeText"
+        }
+        return createFromText("struct S($fieldsText)") ?: error("Failed to create tuple fields")
     }
 
     fun createEnum(text: String): RsEnumItem =
@@ -171,9 +191,8 @@ class RsPsiFactory(
         createFromText("fn main() { $text 92; }")
             ?: error("Failed to create statement from text: `$text`")
 
-    fun createLetDeclaration(name: String, expr: RsExpr, mutable: Boolean = false, type: RsTypeReference? = null): RsLetDecl =
-        createStatement("let ${"mut".iff(mutable)}$name${if (type != null) ": ${type.text}" else ""} = ${expr.text};") as RsLetDecl
-
+    fun createLetDeclaration(name: String, expr: RsExpr?, mutable: Boolean = false, type: RsTypeReference? = null): RsLetDecl =
+        createStatement("let ${"mut".iff(mutable)}$name${if (type != null) ": ${type.text}" else ""} ${if (expr != null) "= ${expr.text}" else ""};") as RsLetDecl
 
     fun createType(text: CharSequence): RsTypeReference =
         tryCreateType(text)
@@ -189,11 +208,13 @@ class RsPsiFactory(
     }
 
     fun createReferenceType(innerTypeText: String, mutable: Boolean): RsRefLikeType =
-        createType("&${if (mutable) "mut " else ""}$innerTypeText").typeElement as RsRefLikeType
+        createType("&${if (mutable) "mut " else ""}$innerTypeText").skipParens() as RsRefLikeType
 
     fun createModDeclItem(modName: String): RsModDeclItem =
+        tryCreateModDeclItem(modName) ?: error("Failed to create mod decl with name: `$modName`")
+
+    fun tryCreateModDeclItem(modName: String): RsModDeclItem? =
         createFromText("mod $modName;")
-            ?: error("Failed to create mod decl with name: `$modName`")
 
     fun createUseItem(text: String, visibility: String = ""): RsUseItem =
         createFromText("$visibility use $text;")
@@ -316,6 +337,10 @@ class RsPsiFactory(
             ?: error("Failed to create match body from patterns: `$arms`")
     }
 
+    fun createConstant(name: String, expr: RsExpr): RsConstant =
+        createFromText("const $name: ${expr.type.renderInsertionSafe(useAliasNames = true, includeLifetimeArguments = true)} = ${expr.text};")
+            ?: error("Failed to create constant $name from ${expr.text} ")
+
     private inline fun <reified T : RsElement> createFromText(code: CharSequence): T? =
         createFile(code).descendantOfTypeStrict()
 
@@ -326,6 +351,12 @@ class RsPsiFactory(
     fun createPubCrateRestricted(): RsVis =
         createFromText("pub(crate) fn f() {}")
             ?: error("Failed to create `pub(crate)` element")
+
+    fun createBlockComment(text: String): PsiComment =
+        PsiParserFacade.SERVICE.getInstance(project).createBlockCommentFromText(RsLanguage, text)
+
+    fun createLineComment(text: String): PsiComment =
+        PsiParserFacade.SERVICE.getInstance(project).createLineCommentFromText(RsFileType, text)
 
     fun createComma(): PsiElement =
         createFromText<RsValueParameter>("fn f(_ : (), )")!!.nextSibling
@@ -353,8 +384,9 @@ class RsPsiFactory(
             ?: error("Failed to create unsafe element")
 
     fun createFunction(text: String): RsFunction =
-        createFromText(text)
-            ?: error("Failed to create function element: $text")
+        tryCreateFunction(text) ?: error("Failed to create function element: $text")
+
+    fun tryCreateFunction(text: String): RsFunction? = createFromText(text)
 
     fun createRetType(ty: String): RsRetType =
         createFromText("fn foo() -> $ty {}")
@@ -393,6 +425,14 @@ class RsPsiFactory(
             }
         """) ?: error("Failed to create pat field")
 
+    fun createPatStruct(name: String, pats: List<RsPatField>, patRest: RsPatRest?): RsPatStruct {
+        val pad = if (pats.isEmpty()) "" else " "
+        val items = pats.map { it.text } + listOfNotNull(patRest?.text)
+        val body = items
+            .joinToString(separator = ", ", prefix = " {$pad", postfix = "$pad}")
+        return createFromText("fn f($name$body: $name) {}") ?: error("Failed to create pat struct")
+    }
+
     fun createPatStruct(struct: RsStructItem, name: String? = null): RsPatStruct {
         val structName = name ?: struct.name ?: error("Failed to create pat struct")
         val pad = if (struct.namedFields.isEmpty()) "" else " "
@@ -408,6 +448,11 @@ class RsPsiFactory(
         return createFromText("fn f($structName$body: $structName) {}") ?: error("Failed to create pat tuple struct")
     }
 
+    fun createPatTupleStruct(name: String, pats: List<RsPat>): RsPatTupleStruct {
+        val patsText = pats.joinToString(", ", prefix = "(", postfix = ")") { it.text }
+        return createFromText("fn f($name${patsText}: $name) {}") ?: error("Failed to create pat tuple struct")
+    }
+
     fun createPatTuple(fieldNum: Int): RsPatTup {
         val tuple = (0 until fieldNum).joinToString(separator = ", ", prefix = "(", postfix = ")") { "_$it" }
         return createFromText("fn f() { let $tuple = x; }") ?: error("Failed to create pat tuple")
@@ -421,6 +466,9 @@ class RsPsiFactory(
     fun createFunctionCall(functionName: String, arguments: Iterable<RsExpr>): RsCallExpr =
         createExpressionOfType("$functionName(${arguments.joinToString { it.text }})")
 
+    fun createFunctionCall(functionName: String, arguments: String): RsCallExpr =
+        createExpressionOfType("$functionName(${arguments})")
+
     fun createAssocFunctionCall(typeText: String, methodNameText: String, arguments: Iterable<RsExpr>): RsCallExpr {
         val isCorrectTypePath = tryCreatePath(typeText) != null
         val typePath = if (isCorrectTypePath) typeText else "<$typeText>"
@@ -431,6 +479,9 @@ class RsPsiFactory(
         is RsBinaryExpr, is RsUnaryExpr, is RsCastExpr -> createExpressionOfType("(${expr.text}).$methodNameText()")
         else -> createExpressionOfType("${expr.text}.$methodNameText()")
     }
+
+    fun tryCreateMethodCall(receiver: RsExpr, methodNameText: String, arguments: List<RsExpr>): RsDotExpr? =
+        tryCreateExpressionOfType("${receiver.text}.$methodNameText(${arguments.joinToString(", ") { it.text }})")
 
     fun createDerefExpr(expr: RsExpr, nOfDerefs: Int = 1): RsExpr =
         if (nOfDerefs > 0)
@@ -448,23 +499,33 @@ class RsPsiFactory(
             }
         else expr
 
-    fun createVisRestriction(pathText: String): RsVisRestriction =
-        createFromText<RsFunction>("pub(in $pathText) fn foo() {}")?.vis?.visRestriction
+    fun createVisRestriction(pathText: String): RsVisRestriction {
+        val inPrefix = when (pathText) {
+            "crate", "super", "self" -> ""
+            else -> "in "
+        }
+        return createFromText<RsFunction>("pub($inPrefix$pathText) fn foo() {}")?.vis?.visRestriction
             ?: error("Failed to create vis restriction element")
+    }
+
+    fun createVis(text: String): RsVis =
+        createFromText("$text fn foo() {}") ?: error("Failed to create vis")
 
     private inline fun <reified E : RsExpr> createExpressionOfType(text: String): E =
         createExpression(text) as? E
             ?: error("Failed to create ${E::class.simpleName} from `$text`")
+
+    private inline fun <reified E : RsExpr> tryCreateExpressionOfType(text: String): E? = createExpression(text) as? E
 
     fun createDynTraitType(pathText: String): RsTraitType =
         createFromText("type T = &dyn $pathText;}")
             ?: error("Failed to create trait type")
 }
 
-private fun String.iff(cond: Boolean) = if (cond) this + " " else " "
+private fun String.iff(cond: Boolean) = if (cond) "$this " else " "
 
 fun RsTypeReference.substAndGetText(subst: Substitution): String =
-    type.substitute(subst).insertionSafeTextWithAliasesAndLifetimes
+    type.substitute(subst).renderInsertionSafe(includeLifetimeArguments = true, useAliasNames = true)
 
 private fun mutsToRefs(mutability: List<Mutability>): String =
     mutability.joinToString("", "", "") {

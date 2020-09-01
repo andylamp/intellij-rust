@@ -151,6 +151,40 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
     """)
 
+    fun `test don't import type alias inner type`() = doTest("""
+        use a::T;
+        mod a {
+            pub struct A;
+            pub struct B;
+            pub struct R<T1, T2>(T1, T2);
+            pub type U<P> = R<P, B>;
+            pub trait T<P> {
+                fn f() -> U<P>;
+            }
+        }
+        struct S;
+        impl T<i32> for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("f() -> U<P>", true, true)
+    ), """
+        use a::{T, U};
+        mod a {
+            pub struct A;
+            pub struct B;
+            pub struct R<T1, T2>(T1, T2);
+            pub type U<P> = R<P, B>;
+            pub trait T<P> {
+                fn f() -> U<P>;
+            }
+        }
+        struct S;
+        impl T<i32> for S {
+            fn f() -> U<i32> {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
     fun `test support type aliases`() = doTest("""
         pub struct R;
         pub type U = R;
@@ -170,6 +204,86 @@ class ImplementMembersHandlerTest : RsTestBase() {
         struct S;
         impl T for S {
             fn f() -> (R, U) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test support extern keyword`() = doTest("""
+        trait T {
+            fn call(handler: extern fn(flag: bool));
+        }
+        struct S;
+        impl T for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("call(handler: extern fn(flag: bool))", true, true)
+    ), """
+        trait T {
+            fn call(handler: extern fn(flag: bool));
+        }
+        struct S;
+        impl T for S {
+            fn call(handler: extern fn(bool)) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test support extern keyword 2`() = doTest("""
+        trait T<X, Y, Z> {
+            fn call(z: Z, x: X, y: Y);
+        }
+        struct S;
+        impl T<fn(), extern fn(), fn(bool)> for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("call(z: Z, x: X, y: Y)", true, true)
+    ), """
+        trait T<X, Y, Z> {
+            fn call(z: Z, x: X, y: Y);
+        }
+        struct S;
+        impl T<fn(), extern fn(), fn(bool)> for S {
+            fn call(z: fn(bool), x: fn(), y: extern fn()) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test support extern keyword 3`() = doTest("""
+        trait T<P = extern fn()> {
+            fn call(handler: P);
+        }
+        struct S;
+        impl T for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("call(handler: P)", true, true)
+    ), """
+        trait T<P = extern fn()> {
+            fn call(handler: P);
+        }
+        struct S;
+        impl T for S {
+            fn call(handler: extern fn()) {
+                <selection>unimplemented!()</selection>
+            }
+        }
+    """)
+
+    fun `test support extern keyword 4`() = doTest("""
+        trait T<P = extern fn()> {
+            fn call(handler: P);
+        }
+        struct S;
+        impl T<extern fn(bool)> for S {/*caret*/}
+    """, listOf(
+        ImplementMemberSelection("call(handler: P)", true, true)
+    ), """
+        trait T<P = extern fn()> {
+            fn call(handler: P);
+        }
+        struct S;
+        impl T<extern fn(bool)> for S {
+            fn call(handler: extern fn(bool)) {
                 <selection>unimplemented!()</selection>
             }
         }
@@ -502,11 +616,11 @@ class ImplementMembersHandlerTest : RsTestBase() {
 
         const C2: &'b S<'b> = &S { x: "" };
 
-        fn f3(_: &'b A<'a>) -> &'b A<'a> {
+        fn f3(_: &'b A<'b>) -> &'b A<'b> {
             unimplemented!()
         }
 
-        const C3: &'b A<'a> = &S { x: "" };
+        const C3: &'b A<'b> = &S { x: "" };
 
         fn f4(_: &'b B) -> &'b B {
             unimplemented!()
@@ -951,26 +1065,52 @@ class ImplementMembersHandlerTest : RsTestBase() {
         }
     """)
 
+    fun `test trait object type`() = doTest("""
+        struct Foo;
+        trait A {}
+        trait B {}
+        trait Bar {
+            fn bar(&self) -> &dyn A + B;
+        }
+
+        impl Bar for Foo {
+            /*caret*/
+        }
+    """, listOf(ImplementMemberSelection("bar(&self) -> &dyn A + B", true, isSelected = true)), """
+        struct Foo;
+        trait A {}
+        trait B {}
+        trait Bar {
+            fn bar(&self) -> &dyn A + B;
+        }
+
+        impl Bar for Foo {
+            fn bar(&self) -> &dyn A + B {
+                unimplemented!()
+            }
+        }
+    """)
+
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test Fn type`() = doTest("""
         struct Foo;
         struct Bar;
         trait Baz {
-            fn baz(&self) -> Box<Fn(i32, i32) -> i32>;
+            fn baz(&self) -> Box<dyn Fn(i32, i32) -> i32>;
         }
 
         impl Baz for Foo {
             /*caret*/
         }
-    """, listOf(ImplementMemberSelection("baz(&self) -> Box<Fn(i32, i32) -> i32>", true, isSelected = true)), """
+    """, listOf(ImplementMemberSelection("baz(&self) -> Box<dyn Fn(i32, i32) -> i32>", true, isSelected = true)), """
         struct Foo;
         struct Bar;
         trait Baz {
-            fn baz(&self) -> Box<Fn(i32, i32) -> i32>;
+            fn baz(&self) -> Box<dyn Fn(i32, i32) -> i32>;
         }
 
         impl Baz for Foo {
-            fn baz(&self) -> Box<Fn(i32, i32) -> i32> {
+            fn baz(&self) -> Box<dyn Fn(i32, i32) -> i32> {
                 unimplemented!()
             }
         }

@@ -11,6 +11,7 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.isUnitTestMode
+import com.intellij.util.io.exists
 import com.intellij.util.text.SemVer
 import org.rust.openapiext.*
 import java.io.File
@@ -47,7 +48,7 @@ data class RustToolchain(val location: Path) {
     fun getStdlibFromSysroot(projectDirectory: Path): VirtualFile? {
         val sysroot = getSysroot(projectDirectory) ?: return null
         val fs = LocalFileSystem.getInstance()
-        return fs.refreshAndFindFileByPath(FileUtil.join(sysroot, "lib/rustlib/src/rust/src"))
+        return fs.refreshAndFindFileByPath(FileUtil.join(sysroot, "lib/rustlib/src/rust"))
     }
 
     fun getCfgOptions(projectDirectory: Path): List<String>? {
@@ -60,12 +61,12 @@ data class RustToolchain(val location: Path) {
         return if (output?.isSuccess == true) output.stdoutLines else null
     }
 
-    fun rawCargo(): Cargo = Cargo(pathToExecutable(CARGO))
+    fun rawCargo(): Cargo = Cargo(pathToExecutable(CARGO), pathToExecutable(RUSTC))
 
     fun cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
         val hasXargoToml = cargoProjectDirectory?.resolve(XARGO_TOML)?.let { Files.isRegularFile(it) } == true
         val cargoWrapper = if (hasXargoToml && hasExecutable(XARGO)) XARGO else CARGO
-        return Cargo(pathToExecutable(cargoWrapper))
+        return Cargo(pathToExecutable(cargoWrapper), pathToExecutable(RUSTC))
     }
 
     fun rustup(cargoProjectDirectory: Path): Rustup? =
@@ -76,21 +77,40 @@ data class RustToolchain(val location: Path) {
 
     fun rustfmt(): Rustfmt = Rustfmt(pathToExecutable(RUSTFMT))
 
-    fun grcov(): Grcov? = if (hasExecutable(GRCOV)) Grcov(pathToExecutable(GRCOV)) else null
+    fun grcov(): Grcov? = if (hasCargoExecutable(GRCOV)) Grcov(pathToCargoExecutable(GRCOV)) else null
 
-    fun evcxr(): Evcxr? = if (hasExecutable(EVCXR)) Evcxr(pathToExecutable(EVCXR)) else null
+    fun evcxr(): Evcxr? = if (hasCargoExecutable(EVCXR)) Evcxr(pathToCargoExecutable(EVCXR)) else null
+
+    fun wasmPack(): WasmPack? = if (hasCargoExecutable(WASM_PACK)) WasmPack(pathToCargoExecutable(WASM_PACK)) else null
 
     val isRustupAvailable: Boolean get() = hasExecutable(RUSTUP)
 
     val presentableLocation: String = pathToExecutable(CARGO).toString()
 
+    // for executables from toolchain
     private fun pathToExecutable(toolName: String): Path {
         val exeName = if (SystemInfo.isWindows) "$toolName.exe" else toolName
         return location.resolve(exeName).toAbsolutePath()
     }
 
+    // for executables installed using `cargo install`
+    private fun pathToCargoExecutable(toolName: String): Path {
+        // Binaries installed by `cargo install` (e.g. Grcov, Evcxr) are placed in ~/.cargo/bin by default:
+        // https://doc.rust-lang.org/cargo/commands/cargo-install.html
+        // But toolchain root may be different (e.g. on Arch Linux it is usually /usr/bin)
+        val path = pathToExecutable(toolName)
+        if (path.exists()) return path
+
+        val exeName = if (SystemInfo.isWindows) "$toolName.exe" else toolName
+        val cargoBinPath = File(FileUtil.expandUserHome("~/.cargo/bin")).toPath()
+        return cargoBinPath.resolve(exeName).toAbsolutePath()
+    }
+
     private fun hasExecutable(exec: String): Boolean =
         Files.isExecutable(pathToExecutable(exec))
+
+    private fun hasCargoExecutable(exec: String): Boolean =
+        Files.isExecutable(pathToCargoExecutable(exec))
 
     data class VersionInfo(
         val rustc: RustcVersion?
@@ -104,10 +124,13 @@ data class RustToolchain(val location: Path) {
         private const val XARGO = "xargo"
         private const val GRCOV = "grcov"
         private const val EVCXR = "evcxr"
+        private const val WASM_PACK = "wasm-pack"
 
         const val CARGO_TOML = "Cargo.toml"
         const val CARGO_LOCK = "Cargo.lock"
         const val XARGO_TOML = "Xargo.toml"
+
+        val MIN_SUPPORTED_TOOLCHAIN = SemVer.parseFromText("1.32.0")!!
 
         fun suggest(): RustToolchain? = Suggestions.all().mapNotNull {
             val candidate = RustToolchain(it.toPath().toAbsolutePath())

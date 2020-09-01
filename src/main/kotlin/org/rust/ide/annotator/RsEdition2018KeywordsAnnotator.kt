@@ -7,8 +7,10 @@ package org.rust.ide.annotator
 
 import com.intellij.ide.annotator.AnnotatorBase
 import com.intellij.lang.annotation.AnnotationHolder
+import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.markup.TextAttributes
+import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.PsiElement
 import org.rust.ide.colors.RsColor
 import org.rust.ide.utils.isEnabledByCfg
@@ -23,26 +25,32 @@ class RsEdition2018KeywordsAnnotator : AnnotatorBase() {
         val isEdition2018 = element.isEdition2018
         val isIdentifier = element.elementType == IDENTIFIER
         val isEnabledByCfg = element.isEnabledByCfg
-        // BACKCOMPAT: 2019.3
-        @Suppress("DEPRECATION")
         when {
             isEdition2018 && isIdentifier && isNameIdentifier(element) ->
-                holder.createErrorAnnotation(element, "`${element.text}` is reserved keyword in Edition 2018")
+                holder.newAnnotation(HighlightSeverity.ERROR, "`${element.text}` is reserved keyword in Edition 2018").create()
 
-            isEdition2018 && !isIdentifier && isEnabledByCfg ->
-                holder.createInfoAnnotation(element, null).textAttributes = RsColor.KEYWORD.textAttributesKey
+            isEdition2018 && !isIdentifier && isEnabledByCfg -> {
+                if (!holder.isBatchMode) {
+                    val severity = if (isUnitTestMode) RsColor.KEYWORD.testSeverity else HighlightSeverity.INFORMATION
+                    holder.newSilentAnnotation(severity)
+                        .textAttributes(RsColor.KEYWORD.textAttributesKey).create()
+                }
+            }
 
             isEdition2018 && !isIdentifier && !isEnabledByCfg -> {
-                val colorScheme = EditorColorsManager.getInstance().globalScheme
-                val keywordTextAttributes = colorScheme.getAttributes(RsColor.KEYWORD.textAttributesKey)
-                val cfgDisabledCodeTextAttributes = colorScheme.getAttributes(RsColor.CFG_DISABLED_CODE.textAttributesKey)
-                val cfgDisabledKeywordTextAttributes = TextAttributes.merge(keywordTextAttributes, cfgDisabledCodeTextAttributes)
+                if (!holder.isBatchMode) {
+                    val colorScheme = EditorColorsManager.getInstance().globalScheme
+                    val keywordTextAttributes = colorScheme.getAttributes(RsColor.KEYWORD.textAttributesKey)
+                    val cfgDisabledCodeTextAttributes = colorScheme.getAttributes(RsColor.CFG_DISABLED_CODE.textAttributesKey)
+                    val cfgDisabledKeywordTextAttributes = TextAttributes.merge(keywordTextAttributes, cfgDisabledCodeTextAttributes)
 
-                holder.createInfoAnnotation(element, null).enforcedTextAttributes = cfgDisabledKeywordTextAttributes
+                    holder.newSilentAnnotation(HighlightSeverity.INFORMATION)
+                        .enforcedTextAttributes(cfgDisabledKeywordTextAttributes).create()
+                }
             }
 
             !isEdition2018 && !isIdentifier ->
-                holder.createErrorAnnotation(element, "This feature is only available in Edition 2018")
+                holder.newAnnotation(HighlightSeverity.ERROR, "This feature is only available in Edition 2018").create()
         }
     }
 
