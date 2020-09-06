@@ -816,6 +816,10 @@
             <className>org.rust.ide.intentions.SubstituteAssociatedTypeIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.CreateFunctionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -1089,6 +1093,12 @@
         <action class="org.rust.ide.refactoring.generate.getter.GenerateGetterAction"
                 id="Rust.GenerateGetter"
                 text="Getter">
+            <add-to-group group-id="GenerateGroup"/>
+        </action>
+
+        <action class="org.rust.ide.refactoring.generate.setter.GenerateSetterAction"
+                id="Rust.GenerateSetter"
+                text="Setter">
             <add-to-group group-id="GenerateGroup"/>
         </action>
 

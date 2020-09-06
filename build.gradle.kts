@@ -38,7 +38,7 @@ val psiViewerPlugin = "PsiViewer:${prop("psiViewerPluginVersion")}"
 
 plugins {
     idea
-    kotlin("jvm") version "1.3.72"
+    kotlin("jvm") version "1.4.0"
     id("org.jetbrains.intellij") version "0.4.21"
     id("org.jetbrains.grammarkit") version "2020.2.1"
     id("net.saliman.properties") version "1.4.6"
@@ -84,7 +84,7 @@ allprojects {
         withType<KotlinCompile> {
             kotlinOptions {
                 jvmTarget = "1.8"
-                languageVersion = "1.3"
+                languageVersion = "1.4"
                 apiVersion = "1.3"
                 freeCompilerArgs = listOf("-Xjvm-default=enable")
             }
@@ -490,9 +490,9 @@ task("updateCompilerFeatures") {
                 import org.rust.lang.core.FeatureState.ACTIVE
 
             """.trimIndent())
-            it.writeFeatures("active", "https://raw.githubusercontent.com/rust-lang/rust/master/src/librustc_feature/active.rs")
+            it.writeFeatures("active", "https://raw.githubusercontent.com/rust-lang/rust/master/compiler/rustc_feature/src/active.rs")
             it.writeln()
-            it.writeFeatures("accepted", "https://raw.githubusercontent.com/rust-lang/rust/master/src/librustc_feature/accepted.rs")
+            it.writeFeatures("accepted", "https://raw.githubusercontent.com/rust-lang/rust/master/compiler/rustc_feature/src/accepted.rs")
         }
     }
 }
