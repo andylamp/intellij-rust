@@ -289,10 +289,10 @@
         <lang.inspectionSuppressor language="Rust"
                                    implementationClass="org.rust.ide.inspections.RsInspectionSuppressor"/>
 
-        <localInspection language="Rust" groupName="Rust"
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Implicit trait objects are deprecated"
                          enabledByDefault="true" level="WARNING"
-                         implementationClass="org.rust.ide.inspections.RsImplicitTraitObjectInspection"/>
+                         implementationClass="org.rust.ide.inspections.lints.RsBareTraitObjectsInspection"/>
 
         <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Deprecated element"
@@ -824,6 +824,14 @@
             <className>org.rust.ide.intentions.CreateFunctionIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddRemainingArmsIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.AddWildcardArmIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -1006,6 +1014,8 @@
     <applicationListeners>
         <listener class="org.rust.ide.navigation.goto.RsGoToDeclarationRunningService$Listener"
                   topic="com.intellij.openapi.actionSystem.ex.AnActionListener" />
+        <listener class="org.rust.ide.dynamic.RsDynamicPluginListener"
+                  topic="com.intellij.ide.plugins.DynamicPluginListener" />
     </applicationListeners>
 
     <projectListeners>

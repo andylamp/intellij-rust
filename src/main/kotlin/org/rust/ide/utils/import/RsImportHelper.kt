@@ -11,6 +11,7 @@ import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.RsMod
 import org.rust.lang.core.psi.ext.RsQualifiedNamedElement
 import org.rust.lang.core.resolve.TYPES
+import org.rust.lang.core.resolve.createProcessor
 import org.rust.lang.core.resolve.processNestedScopesUpwards
 import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.emptySubstitution
@@ -31,7 +32,7 @@ object RsImportHelper {
     }
 
     fun importTypeReferencesFromTy(context: RsElement, ty: Ty, useAliases: Boolean = false) {
-        val (toImport, _) = getTypeReferencesInfoFromTy(context, ty, useAliases)
+        val (toImport, _) = getTypeReferencesInfoFromTys(context, ty, useAliases = useAliases)
         importElements(context, toImport)
     }
 
@@ -74,11 +75,11 @@ object RsImportHelper {
     /**
      * Traverse types in `elemTy` and collects all items that unresolved in current context.
      */
-    private fun getTypeReferencesInfoFromTy(
+    fun getTypeReferencesInfoFromTys(
         context: RsElement,
-        elemTy: Ty,
-        useAliases: Boolean
-    ): TypeReferencesInfo = getTypeReferencesInfo(context, listOf(elemTy)) { ty, result ->
+        vararg elemTys: Ty,
+        useAliases: Boolean = false
+    ): TypeReferencesInfo = getTypeReferencesInfo(context, elemTys.toList()) { ty, result ->
         collectImportSubjectsFromTy(ty, emptySubstitution, result, useAliases)
     }
 
@@ -152,22 +153,23 @@ object RsImportHelper {
         }
 
         val toQualifiedName = hashSetOf<RsQualifiedNamedElement>()
-        processNestedScopesUpwards(context, TYPES) { entry ->
-            val group = importSubjects.remove(entry.name) ?: return@processNestedScopesUpwards false
+        val processor = createProcessor { entry ->
+            val group = importSubjects.remove(entry.name) ?: return@createProcessor false
             group.remove(entry.element)
             toQualifiedName.addAll(group)
             importSubjects.isEmpty()
         }
+        processNestedScopesUpwards(context, TYPES, processor)
 
         return TypeReferencesInfo(importSubjects.flatMap { it.value }.toSet(), toQualifiedName)
     }
-
-    /**
-     * @param toImport  Set of unresolved items that should be imported
-     * @param toQualify Set of unresolved items that can't be imported
-     */
-    private data class TypeReferencesInfo(
-        val toImport: Set<RsQualifiedNamedElement>,
-        val toQualify: Set<RsQualifiedNamedElement>
-    )
 }
+
+/**
+ * @param toImport  Set of unresolved items that should be imported
+ * @param toQualify Set of unresolved items that can't be imported
+ */
+data class TypeReferencesInfo(
+    val toImport: Set<RsQualifiedNamedElement>,
+    val toQualify: Set<RsQualifiedNamedElement>
+)
