@@ -10,6 +10,7 @@ import com.intellij.lang.PsiBuilder
 import com.intellij.lang.PsiBuilderUtil
 import com.intellij.lang.WhitespacesAndCommentsBinder
 import com.intellij.lang.parser.GeneratedParserUtilBase
+import com.intellij.lang.parser.rawLookupText
 import com.intellij.lexer.Lexer
 import com.intellij.openapi.util.Key
 import com.intellij.psi.TokenType
@@ -226,6 +227,55 @@ object RustParserUtil : GeneratedParserUtilBase() {
     fun isPathMode(b: PsiBuilder, level: Int, mode: PathParsingMode): Boolean =
         mode == getPathMod(b.flags)
 
+    /**
+     * `FLOAT_LITERAL` is never produced during lexing. We construct it during parsing from one or
+     * several `INTEGER_LITERAL` tokens. We need this in order to support nested tuple fields
+     * access syntax (see https://github.com/intellij-rust/intellij-rust/issues/6029)
+     *
+     * Here we collapse these sequences of tokes:
+     * 1. `INTEGER_LITERAL`, `DOT`, `INTEGER_LITERAL`. Like `0.0`
+     * 2. `INTEGER_LITERAL`, `DOT` (but **not** `INTEGER_LITERAL`, `DOT`, `IDENTIFIER`). Like `0.`
+     * 3. Single `INTEGER_LITERAL`, if it has float suffix (`f32`/`f64`) or scientific suffix (`1e3`, `3e-4`)
+     */
+    @JvmStatic
+    fun parseFloatLiteral(b: PsiBuilder, level: Int): Boolean {
+        return when (b.tokenType) {
+            INTEGER_LITERAL -> when (b.rawLookup(1)) {
+                // Works with `0.0`, `0.`, but not `0.foo` (identifies is not accepted after `.`)
+                DOT -> {
+                    val (collapse, size) = when (b.rawLookup(2)) {
+                        INTEGER_LITERAL, FLOAT_LITERAL -> true to 3
+                        IDENTIFIER -> false to 0
+                        else -> true to 2
+                    }
+                    if (collapse) {
+                        val marker = b.mark()
+                        PsiBuilderUtil.advance(b, size)
+                        marker.collapse(FLOAT_LITERAL)
+                    }
+                    collapse
+                }
+                // Works with floats without `.` like `1f32`, `1e3`, `3e-4`
+                else -> {
+                    val text = b.tokenText
+                    val isFloat = text != null &&
+                        (text.contains("f") || text.contains("e", ignoreCase = true) && !text.endsWith("e"))
+                    if (isFloat) {
+                        b.remapCurrentToken(FLOAT_LITERAL)
+                        b.advanceLexer()
+                    }
+                    isFloat
+                }
+            }
+            // Can be already remapped
+            FLOAT_LITERAL -> {
+                b.advanceLexer()
+                true
+            }
+            else -> false
+        }
+    }
+
     // !("union" identifier | "async" fn) identifier | self | super | 'Self' | crate
     @JvmStatic
     fun parsePathIdent(b: PsiBuilder, level: Int): Boolean {
@@ -399,12 +449,12 @@ object RustParserUtil : GeneratedParserUtilBase() {
     fun parseMacroCall(b: PsiBuilder, level: Int, mode: MacroCallParsingMode): Boolean {
         if (mode.attrsAndVis && !RustParser.AttrsAndVis(b, level + 1)) return false
 
-        val macroName = lookupSimpleMacroName(b)
-        if (mode.forbidExprSpecialMacros && macroName in SPECIAL_EXPR_MACROS) return false
-
         if (!RustParser.PathWithoutTypeArgs(b, level + 1) || !consumeToken(b, EXCL)) {
             return false
         }
+
+        val macroName = getMacroName(b, -2)
+        if (mode.forbidExprSpecialMacros && macroName in SPECIAL_EXPR_MACROS) return false
 
         // foo! bar {}
         //      ^ this ident
@@ -434,15 +484,28 @@ object RustParserUtil : GeneratedParserUtilBase() {
         return true
     }
 
-    // foo ! ();
-    // ^ this name
-    private fun lookupSimpleMacroName(b: PsiBuilder): String? {
-        return if (b.tokenType == IDENTIFIER) {
-            val nextTokenIsExcl = b.probe {
-                b.advanceLexer()
-                b.tokenType == EXCL
+    // qualifier::foo ! ();
+    //            ^ this name
+    @Suppress("SameParameterValue")
+    private fun getMacroName(b: PsiBuilder, nameTokenIndex: Int): String? {
+        require(nameTokenIndex < 0) {
+            "`getMacroName` assumes that path with macro name is already parsed and the name token is behind of current position"
+        }
+
+        var steps = 0
+        var meaningfulSteps = 0
+
+        while (meaningfulSteps > nameTokenIndex) {
+            steps--
+            val elementType = b.rawLookup(steps) ?: return null
+
+            if (!isWhitespaceOrComment(b, elementType)) {
+                meaningfulSteps--
             }
-            if (nextTokenIsExcl) b.tokenText else null
+        }
+
+        return if (b.rawLookup(steps) == IDENTIFIER) {
+            b.rawLookupText(steps).toString()
         } else {
             null
         }
