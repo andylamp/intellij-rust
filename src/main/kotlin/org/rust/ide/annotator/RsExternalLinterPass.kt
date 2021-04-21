@@ -15,6 +15,7 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.module.ModuleUtil
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -31,14 +32,16 @@ import com.intellij.util.ui.update.Update
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.toolchain.tools.CargoCheckArgs
 import org.rust.lang.core.psi.RsFile
-import org.rust.lang.core.psi.ext.containingCargoPackage
+import org.rust.lang.core.psi.ext.containingCargoTarget
 
 class RsExternalLinterPass(
     private val factory: RsExternalLinterPassFactory,
     private val file: PsiFile,
     private val editor: Editor
 ) : TextEditorHighlightingPass(file.project, editor.document), DumbAware {
+    @Suppress("UnstableApiUsage")
     private val annotationHolder: AnnotationHolderImpl = AnnotationHolderImpl(AnnotationSession(file))
     @Volatile
     private var annotationInfo: Lazy<RsExternalLinterResult?>? = null
@@ -50,10 +53,12 @@ class RsExternalLinterPass(
         annotationHolder.clear()
         if (file !is RsFile || !isAnnotationPassEnabled) return
 
-        val cargoPackage = file.containingCargoPackage
-        if (cargoPackage?.origin != PackageOrigin.WORKSPACE) return
+        val cargoTarget = file.containingCargoTarget ?: return
+        if (cargoTarget.pkg.origin != PackageOrigin.WORKSPACE) return
 
         val project = file.project
+        val args = CargoCheckArgs.forTarget(project, cargoTarget)
+
         val moduleOrProject: Disposable = ModuleUtil.findModuleForFile(file) ?: project
         disposable = project.messageBus.createDisposableOnAnyPsiChange()
             .also { Disposer.register(moduleOrProject, it) }
@@ -62,8 +67,8 @@ class RsExternalLinterPass(
             project.toolchain ?: return,
             project,
             moduleOrProject,
-            cargoPackage.workspace.contentRoot,
-            cargoPackage.name
+            cargoTarget.pkg.workspace.contentRoot,
+            args
         )
     }
 
@@ -107,6 +112,7 @@ class RsExternalLinterPass(
     private fun doApply(annotationResult: RsExternalLinterResult) {
         if (file !is RsFile || !file.isValid) return
         try {
+            @Suppress("UnstableApiUsage")
             annotationHolder.runAnnotatorWithContext(file) { _, holder ->
                 holder.createAnnotationsForFile(file, annotationResult)
             }
@@ -117,9 +123,6 @@ class RsExternalLinterPass(
     }
 
     private fun doFinish(highlights: List<HighlightInfo>) {
-        // BACKCOMPAT: 2020.1
-        @Suppress("USELESS_ELVIS")
-        val document = document ?: return
         invokeLater(ModalityState.stateForComponent(editor.component)) {
             if (Disposer.isDisposed(disposable)) return@invokeLater
             UpdateHighlightersUtil.setHighlightersToEditor(
@@ -142,7 +145,7 @@ class RsExternalLinterPass(
         get() = file.project.rustSettings.runExternalLinterOnTheFly
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(RsExternalLinterPass::class.java)
+        private val LOG: Logger = logger<RsExternalLinterPass>()
     }
 }
 

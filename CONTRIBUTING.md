@@ -116,8 +116,6 @@ electronically at https://www.jetbrains.com/agreements/cla/ via DocuSign. The pr
 consists of a couple of emails and clicks: no need to scan or print or snail-mail anything :)
 `CONTRIBUTORS.txt` file stores GitHub usernames of people who already signed a CLA.
   
-The text of the agreement can be found [here](http://www.jetbrains.org/download/attachments/983565/JB_ContributorLicenseAgreement.pdf). 
-
 ## Code style
 
 Please use **reformat code** action to maintain consistent style. Pay attention
@@ -197,6 +195,8 @@ The current Rust plugin modules:
 * `:duplicates` - support `Duplicated code fragment` inspection
 * `:coverage` - integration with [coverage](https://github.com/JetBrains/intellij-community/tree/master/plugins/coverage-common) plugin
 * `:grazie` - integration with [grazie](https://plugins.jetbrains.com/plugin/12175-grazie) plugin 
+* `:js` - interop with JavaScript language
+* `:ml-completion` - integration with [Machine Learning Code Completion](https://github.com/JetBrains/intellij-community/tree/master/plugins/completion-ml-ranking) plugin
 
 If you want to implement integration with another plugin/IDE, you should create a new gradle module for that.
 

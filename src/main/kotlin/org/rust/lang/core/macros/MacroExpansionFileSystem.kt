@@ -7,6 +7,7 @@ package org.rust.lang.core.macros
 
 import com.intellij.openapi.util.io.BufferExposingByteArrayInputStream
 import com.intellij.openapi.util.io.FileAttributes
+import com.intellij.openapi.util.io.FileAttributes.CaseSensitivity
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -176,9 +177,17 @@ class MacroExpansionFileSystem : NewVirtualFileSystem() {
         val fsItem = convert(file) ?: throw FileNotFoundException(file.path + " (No such file or directory)")
         if (fsItem !is FSFile) throw FileNotFoundException(file.path + " (Is a directory)")
         return fsItem.fetchAndRemoveContent() ?: run {
-            val e = FileNotFoundException(file.path + " (Content is not provided)")
-            MACRO_LOG.warn("The file content has already been fetched", e)
-            throw e
+            val cachedExpansion = file.loadMixHash()?.let {
+                MacroExpansionSharedCache.getInstance().getExpansionIfCached(it)
+            }
+            if (cachedExpansion != null) {
+                cachedExpansion.text.toByteArray()
+            } else {
+                fsItem.delete()
+                val e = FileNotFoundException(file.path + " (Content is not provided)")
+                MACRO_LOG.warn("The file content has already been fetched", e)
+                throw e
+            }
         }
     }
 
@@ -188,10 +197,12 @@ class MacroExpansionFileSystem : NewVirtualFileSystem() {
     }
 
     @Throws(IOException::class)
-    override fun getOutputStream(file: VirtualFile,
-                                 requestor: Any?,
-                                 modStamp: Long,
-                                 timeStamp: Long): OutputStream {
+    override fun getOutputStream(
+        file: VirtualFile,
+        requestor: Any?,
+        modStamp: Long,
+        timeStamp: Long
+    ): OutputStream {
         throw UnsupportedOperationException()
     }
 
@@ -203,7 +214,9 @@ class MacroExpansionFileSystem : NewVirtualFileSystem() {
     override fun getAttributes(file: VirtualFile): FileAttributes? {
         val item = convert(file) ?: return null
         val length = ((item as? FSFile)?.length ?: 0).toLong()
-        return FileAttributes(item is FSDir, false, false, false, length, item.timestamp, true)
+        val isDir = item is FSDir
+        val caseSensitivity = if (isDir) CaseSensitivity.SENSITIVE else CaseSensitivity.UNKNOWN
+        return FileAttributes(isDir, false, false, false, length, item.timestamp, true, caseSensitivity)
     }
 
     sealed class FSItem {
@@ -315,12 +328,14 @@ class MacroExpansionFileSystem : NewVirtualFileSystem() {
 
             @Synchronized
             fun fetchAndRemoveContent(): ByteArray? {
-                val tmp = tempContent ?: run {
-                    parent.removeChild(name, bump = true)
-                    return null
-                }
+                val tmp = tempContent
                 tempContent = null
                 return tmp
+            }
+
+            @Synchronized
+            fun delete() {
+                parent.removeChild(name, bump = true)
             }
         }
     }
@@ -347,14 +362,6 @@ class MacroExpansionFileSystem : NewVirtualFileSystem() {
         val item = convert(path) ?: throw FSItemNotFoundException(path)
         if (item !is FSFile) throw FSItemIsADirectoryException(path)
         item.setContent(content)
-    }
-
-    @Throws(FSException::class)
-    fun createDirectory(path: String) {
-        val (parentName, name) = splitFilenameAndParent(path)
-        val parent = convert(parentName) ?: throw FSItemNotFoundException(parentName)
-        if (parent !is FSDir) throw FSItemIsNotADirectoryException(path)
-        parent.addChildDir(name, bump = true)
     }
 
     @Throws(FSException::class)

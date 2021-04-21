@@ -5,8 +5,8 @@
     <vendor>JetBrains</vendor>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2020/09/21/changelog-131.html">
-                 https://intellij-rust.github.io/2020/09/21/changelog-131.html
+        <a href="https://intellij-rust.github.io/2021/04/12/changelog-145.html">
+                 https://intellij-rust.github.io/2021/04/12/changelog-145.html
     ]]>
     </change-notes>
 
@@ -27,11 +27,6 @@
     <depends optional="true" config-file="duplicates-only.xml">com.intellij.modules.duplicatesDetector</depends>
     <depends optional="true" config-file="coverage-only.xml">com.intellij.modules.coverage</depends>
     <depends optional="true" config-file="grazie-only.xml">tanvd.grazi</depends>
-
-    <extensions defaultExtensionNs="com.intellij">
-        <!-- although Rust module type is only created by IDEA, we need it in other IDEs as well
-             to be able to open a project created in IDEA without errors -->
-        <moduleType id="RUST_MODULE" implementationClass="org.rust.ide.idea.RsModuleType"/>
-    </extensions>
-
+    <depends optional="true" config-file="js-only.xml">JavaScript</depends>
+    <depends optional="true" config-file="ml-completion-only.xml">com.intellij.completion.ml.ranking</depends>
 </idea-plugin>

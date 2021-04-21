@@ -5,8 +5,10 @@
 
 package org.rust.lang.core.completion
 
-import org.rust.ProjectDescriptor
-import org.rust.WithStdlibRustProjectDescriptor
+import com.intellij.openapi.util.SystemInfo
+import org.rust.*
+import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.lang.core.macros.MacroExpansionScope
 
 @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsStdlibCompletionTest : RsCompletionTestBase() {
@@ -81,5 +83,32 @@ class RsStdlibCompletionTest : RsCompletionTestBase() {
     """, """
         fn main() { std::stringify!(/*caret*/) }
     """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2015)
+    fun `test complete all in std in 'use' in crate root`() = checkContainsCompletion("vec", """
+        use std::/*caret*/;
+    """)
+
+    @ExpandMacros(MacroExpansionScope.ALL, "std")
+    @ProjectDescriptor(WithActualStdlibRustProjectDescriptor::class)
+    fun `test complete items from 'os' module unix`() {
+        if (!SystemInfo.isUnix) return
+        doSingleCompletion("""
+            use std::os::uni/*caret*/
+        """, """
+            use std::os::unix/*caret*/
+        """)
+    }
+
+    @ExpandMacros(MacroExpansionScope.ALL, "std")
+    @ProjectDescriptor(WithActualStdlibRustProjectDescriptor::class)
+    fun `test complete items from 'os' module windows`() {
+        if (!SystemInfo.isWindows) return
+        doSingleCompletion("""
+            use std::os::win/*caret*/
+        """, """
+            use std::os::windows/*caret*/
+        """)
+    }
 }
 

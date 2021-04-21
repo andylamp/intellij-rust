@@ -15,7 +15,6 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorSettings
-import com.intellij.openapi.editor.LineExtensionInfo
 import com.intellij.openapi.editor.colors.EditorColorsScheme
 import com.intellij.openapi.editor.ex.*
 import com.intellij.openapi.editor.ex.util.LexerEditorHighlighter
@@ -34,6 +33,7 @@ import org.rust.lang.core.macros.findExpansionElements
 import org.rust.lang.core.macros.findMacroCallExpandedFromNonRecursive
 import org.rust.lang.core.macros.mapRangeFromExpansionToCallBodyStrict
 import org.rust.lang.core.psi.RsMacroArgument
+import org.rust.lang.core.psi.RsMacroCall
 import org.rust.lang.core.psi.ext.ancestorStrict
 import org.rust.lang.core.psi.ext.expansion
 import org.rust.lang.core.psi.ext.startOffset
@@ -42,7 +42,6 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.event.KeyEvent
 import java.beans.PropertyChangeListener
-import java.util.function.IntFunction
 import javax.swing.JComponent
 import javax.swing.JScrollPane
 
@@ -52,7 +51,7 @@ class RsMacroCallSelectionHandler : ExtendWordSelectionHandlerBase() {
     override fun select(e: PsiElement, editorText: CharSequence, cursorOffset: Int, editor: Editor): List<TextRange>? {
         val elementInExpansion = e.findExpansionElements()?.firstOrNull() ?: return null
         val offsetInExpansion = elementInExpansion.startOffset + (cursorOffset - e.startOffset)
-        val macroCall = elementInExpansion.findMacroCallExpandedFromNonRecursive() ?: return null // impossible?
+        val macroCall = elementInExpansion.findMacroCallExpandedFromNonRecursive() as? RsMacroCall ?: return null
         val expansion = macroCall.expansion ?: return null // impossible?
         val expansionText = expansion.file.text
 
@@ -138,7 +137,7 @@ private class FakeEditorEx(
     override fun setPrefixTextAndAttributes(prefixText: String?, attributes: TextAttributes?) { throw notImplemented() }
     override fun isPurePaintingMode(): Boolean { throw notImplemented() }
     override fun setPurePaintingMode(enabled: Boolean) { throw notImplemented() }
-    override fun registerLineExtensionPainter(lineExtensionPainter: IntFunction<MutableCollection<LineExtensionInfo>>?) { throw notImplemented() }
+    override fun registerLineExtensionPainter(lineExtensionPainter: LineExtensionPainter) { throw notImplemented() }
     override fun registerScrollBarRepaintCallback(callback: ButtonlessScrollBarUI.ScrollbarRepaintCallback?) { throw notImplemented() }
     override fun getExpectedCaretOffset(): Int { throw notImplemented() }
     override fun setContextMenuGroupId(groupId: String?) { throw notImplemented() }

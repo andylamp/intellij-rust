@@ -5,12 +5,16 @@
 
 package org.rust.ide.docs
 
-import com.intellij.codeInsight.documentation.DocumentationManager
 import com.intellij.psi.PsiElement
 import org.intellij.lang.annotations.Language
 import org.rust.ExpandMacros
+import org.rust.MockEdition
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.lang.core.psi.RsBaseType
+import org.rust.lang.core.psi.RsConstant
+import org.rust.lang.core.psi.ext.RsElement
 
 class RsQuickDocumentationTest : RsDocumentationProviderTest() {
     fun `test fn`() = doTest("""
@@ -120,6 +124,14 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
         fn <b>foo</b>&lt;T&gt;(t: T)<br>where<br>&nbsp;&nbsp;&nbsp;&nbsp;T: <a href="psi_element://Into">Into</a>&lt;<a href="psi_element://String">String</a>&gt;,</pre></div>
     """)
 
+    fun `test generic fn with const generic`() = doTest("""
+        fn foo<'a, const N: usize, T>(x: &'a [T; N]) {}
+          //^
+    """, """
+        <div class='definition'><pre>test_package
+        fn <b>foo</b>&lt;&#39;a, const N: usize, T&gt;(x: &amp;&#39;a [T; N])</pre></div>
+    """)
+
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test complex fn`() = doTest("""
         /// Docs
@@ -191,6 +203,14 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
     """, """
         <div class='definition'><pre>test_package<br>impl&lt;T, F&gt; <a href="psi_element://Foo">Foo</a>&lt;T, F&gt;<br>where<br>&nbsp;&nbsp;&nbsp;&nbsp;T: <a href="psi_element://Ord">Ord</a>,<br>&nbsp;&nbsp;&nbsp;&nbsp;F: <a href="psi_element://Into">Into</a>&lt;<a href="psi_element://String">String</a>&gt;,
         pub fn <b>foo</b>(&amp;self)</pre></div>
+    """)
+
+    fun `test generic struct with const generic`() = doTest("""
+        struct Foo<'a, T, const N: usize>(&'a [T; N]);
+              //^
+    """, """
+        <div class='definition'><pre>test_package
+        struct <b>Foo</b>&lt;&#39;a, T, const N: usize&gt;</pre></div>
     """)
 
     fun `test different comments`() = doTest("""
@@ -1068,23 +1088,105 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
     """)
 
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
-    fun `test primitive type doc`() {
-        InlineFile("""
-            fn foo() -> i32 {}
-                       //^
-        """)
+    fun `test primitive type doc`() = doTestRegex("""
+        fn foo() -> i32 {}
+                   //^
+    """, """
+        <div class='definition'><pre>std
+        primitive type <b>i32</b></pre></div><div class='content'><p>.+</p></div>
+    """)
 
-        val (originalElement, _, offset) = findElementWithDataAndOffsetInEditor<PsiElement>()
-        val element = DocumentationManager.getInstance(project)
-            .findTargetElement(myFixture.editor, offset, myFixture.file, originalElement)!!
-        val actual = RsDocumentationProvider().generateDoc(element, originalElement)?.trim()
-            ?: error("Expected not null result")
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test primitive type doc in stdlib`() = doTestRegex("""
+        const C: u32 = std::f64::DIGITS;
+                                //^
+    """, """
+        <div class='definition'><pre>std
+        primitive type <b>u32</b></pre></div><div class='content'><p>.+</p></div>
+    """) {
+        val element = findElementWithDataAndOffsetInEditor<RsElement>().first
+        val const = element.reference?.resolve() as? RsConstant ?: error("Failed to resolve `${element.text}`")
+        val originalElement = (const.typeReference as RsBaseType).path!!
 
-        val regex = Regex("""
-            <div class='definition'><pre>std
-            primitive type <b>i32</b></pre></div><div class='content'><p>.+</p></div>
-        """.trimIndent(), RegexOption.MULTILINE)
-        assertTrue(actual.matches(regex))
+        myFixture.openFileInEditor(const.containingFile.virtualFile)
+        originalElement to originalElement.textOffset
+    }
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test keyword doc`() = doTestRegex("""
+        enum Foo { V1 }
+        //^
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>enum</b></pre></div><div class='content'><p>.+</p></div>
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test async keyword doc`() = doTestRegex("""
+        async fn foo() {}
+        //^
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>async</b></pre></div><div class='content'><p>.+</p></div>
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test dyn keyword doc`() = doTestRegex("""
+        trait Foo {}
+        fn foo(x: &dyn Foo) {}
+                 //^
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>dyn</b></pre></div><div class='content'><p>.+</p></div>
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test boolean value doc`() = doTestRegex("""
+        fn main() {
+            let a = false;
+                    //^
+        }
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>false</b></pre></div><div class='content'><p>.+</p></div>
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2015)
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test await doc 1`() = doTest("""
+        fn main() {
+            foo().await;
+                  //^
+        }
+    """, null)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test await doc 2`() = doTestRegex("""
+        fn main() {
+            foo().await;
+                  //^
+        }
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>await</b></pre></div><div class='content'><p>.+</p></div>
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test keyword doc in stdlib`() = doTestRegex("""
+        const C: u32 = std::f64::DIGITS;
+                                //^
+    """, """
+        <div class='definition'><pre>std
+        keyword <b>const</b></pre></div><div class='content'><p>.+</p></div>
+    """) {
+        val element = findElementWithDataAndOffsetInEditor<RsElement>().first
+        val const = element.reference?.resolve() as? RsConstant ?: error("Failed to resolve `${element.text}`")
+        val originalElement = const.const!!
+
+        myFixture.openFileInEditor(const.containingFile.virtualFile)
+        originalElement to originalElement.textOffset
     }
 
     @ExpandMacros
@@ -1159,7 +1261,12 @@ class RsQuickDocumentationTest : RsDocumentationProviderTest() {
         <div class='content'><p>Some docs</p></div>
     """)
 
+    private fun doTest(@Language("Rust") code: String, @Language("Html") expected: String?)
+        = doTest(code, expected, block = RsDocumentationProvider::generateDoc)
 
-    private fun doTest(@Language("Rust") code: String, @Language("Html") expected: String)
-        = doTest(code, expected, RsDocumentationProvider::generateDoc)
+    private fun doTestRegex(
+        @Language("Rust") code: String,
+        @Language("Html") expected: String,
+        findElement: () -> Pair<PsiElement, Int> = { findElementAndOffsetInEditor() }
+    ) = doTest(code, Regex(expected.trimIndent(), setOf(RegexOption.MULTILINE, RegexOption.DOT_MATCHES_ALL)), findElement, RsDocumentationProvider::generateDoc)
 }

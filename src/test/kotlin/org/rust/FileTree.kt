@@ -8,6 +8,7 @@ package org.rust
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil.convertLineSeparators
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
@@ -17,15 +18,15 @@ import com.intellij.psi.PsiManager
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture
 import org.intellij.lang.annotations.Language
 import org.junit.Assert
+import org.rust.lang.core.psi.ext.RsNamedElement
 import org.rust.lang.core.psi.ext.RsReferenceElement
-import org.rust.lang.core.psi.ext.ancestorStrict
+import org.rust.lang.core.psi.ext.RsReferenceElementBase
 import org.rust.lang.core.psi.ext.containingCargoPackage
 import org.rust.lang.core.resolve.ResolveResult
 import org.rust.lang.core.resolve.checkResolvedFile
-import org.rust.openapiext.document
-import org.rust.openapiext.fullyRefreshDirectory
-import org.rust.openapiext.saveAllDocuments
-import org.rust.openapiext.toPsiFile
+import org.rust.openapiext.*
+import org.rust.stdext.exhaustive
+import java.nio.file.Files
 import kotlin.text.Charsets.UTF_8
 
 fun fileTree(builder: FileTreeBuilder.() -> Unit): FileTree =
@@ -66,6 +67,7 @@ interface FileTreeBuilder {
     fun dir(name: String, builder: FileTreeBuilder.() -> Unit)
     fun dir(name: String, tree: FileTree)
     fun file(name: String, code: String)
+    fun symlink(name: String, targetPath: String)
 
     fun rust(name: String, @Language("Rust") code: String) = file(name, code)
     fun toml(name: String, @Language("TOML") code: String) = file(name, code)
@@ -89,11 +91,19 @@ class FileTree(val rootDirectory: Entry.Directory) {
                         if (hasSelectionMarker(entry.text)) {
                             filesWithSelection += components.joinToString(separator = "/")
                         }
+                        Unit
                     }
                     is Entry.Directory -> {
                         go(entry, root.createChildDirectory(root, name), components)
                     }
-                }
+                    is Entry.Symlink -> {
+                        check(root.fileSystem == LocalFileSystem.getInstance()) {
+                            "Symlinks are available only in LocalFileSystem"
+                        }
+                        Files.createSymbolicLink(root.pathAsPath.resolve(name), root.pathAsPath.resolve(entry.targetPath))
+                        Unit
+                    }
+                }.exhaustive
             }
         }
 
@@ -123,7 +133,8 @@ class FileTree(val rootDirectory: Entry.Directory) {
                         Assert.assertEquals(entry.text.trimEnd(), actualText.trimEnd())
                     }
                     is Entry.Directory -> go(entry, a)
-                }
+                    is Entry.Symlink -> error("Symlink comparison is not supported!")
+                }.exhaustive
             }
         }
 
@@ -138,7 +149,8 @@ class FileTree(val rootDirectory: Entry.Directory) {
                 when (entry) {
                     is Entry.File -> fixture.checkResult(path, entry.text, true)
                     is Entry.Directory -> go(entry, path)
-                }
+                    is Entry.Symlink -> error("Symlink comparison is not supported!")
+                }.exhaustive
             }
         }
 
@@ -162,13 +174,17 @@ class TestProject(
     private val filesWithSelection: List<String>
 ) {
 
-    val fileWithCaret: String get() = filesWithCaret.single()
+    val fileWithCaret: String
+        get() = when (filesWithCaret.size) {
+            1 -> filesWithCaret.single()
+            0 -> error("Please, add `/*caret*/` or `<caret>` marker to some file")
+            else -> error("More than one file with carets found: $filesWithCaret")
+        }
+
     val fileWithCaretOrSelection: String get() = filesWithCaret.singleOrNull() ?: filesWithSelection.single()
 
     inline fun <reified T : PsiElement> findElementInFile(path: String): T {
-        val element = doFindElementInFile(path)
-        return element.ancestorStrict()
-            ?: error("No parent of type ${T::class.java} for ${element.text}")
+        return doFindElementInFile(path, T::class.java)
     }
 
     inline fun <reified T : RsReferenceElement> checkReferenceIsResolved(
@@ -204,18 +220,73 @@ class TestProject(
         }
     }
 
-    fun doFindElementInFile(path: String): PsiElement {
-        val vFile = root.findFileByRelativePath(path)
-            ?: error("No `$path` file in test project")
-        val file = vFile.toPsiFile(project)!!
-        return findElementInFile(file, "^")
+    fun checkResolveInAllFiles() {
+        for (path in filesWithCaret) {
+            val file = file(path).toPsiFile(project)!!
+
+            val (refElement, data, offset) = findElementWithDataAndOffsetInFile(file, RsReferenceElementBase::class.java, "^")
+
+            if (data == "unresolved") {
+                val resolved = refElement.reference?.resolve()
+                check(resolved == null) {
+                    "$path: $refElement `${refElement.text}`should be unresolved, was resolved to\n$resolved `${resolved?.text}`"
+                }
+                return
+            }
+
+            val resolved = refElement.checkedResolve(offset, errorMessagePrefix = "$path: ")
+            val target = findElementInFile(file, RsNamedElement::class.java, "X")
+
+            check(resolved == target) {
+                "$path: $refElement `${refElement.text}` should resolve to $target (${target.text}), was $resolved (${resolved.text}) instead"
+            }
+        }
+    }
+
+    fun <T : PsiElement> doFindElementInFile(path: String, psiClass: Class<T>): T {
+        val file = file(path).toPsiFile(project)!!
+        return findElementInFile(file, psiClass, "^")
+    }
+
+    private fun <T : PsiElement> findElementInFile(file: PsiFile, psiClass: Class<T>, marker: String): T {
+        val (element, data, _) = findElementWithDataAndOffsetInFile(file, psiClass, marker)
+        check(data.isEmpty()) { "Did not expect marker data" }
+        return element
+    }
+
+    private fun <T : PsiElement> findElementWithDataAndOffsetInFile(
+        file: PsiFile,
+        psiClass: Class<T>,
+        marker: String
+    ): Triple<T, String, Int> {
+        val elementsWithDataAndOffset = findElementsWithDataAndOffsetInFile(file, psiClass, marker)
+        check(elementsWithDataAndOffset.isNotEmpty()) { "No `$marker` marker:\n${file.text}" }
+        check(elementsWithDataAndOffset.size <= 1) { "More than one `$marker` marker:\n${file.text}" }
+        return elementsWithDataAndOffset.first()
+    }
+
+    private fun <T : PsiElement> findElementsWithDataAndOffsetInFile(
+        file: PsiFile,
+        psiClass: Class<T>,
+        marker: String
+    ): List<Triple<T, String, Int>> {
+        return findElementsWithDataAndOffsetInEditor(
+            file,
+            file.document!!,
+            followMacroExpansions = true,
+            psiClass,
+            marker
+        )
     }
 
     fun psiFile(path: String): PsiFileSystemItem {
-        val vFile = root.findFileByRelativePath(path)
-            ?: error("Can't find `$path`")
+        val vFile = file(path)
         val psiManager = PsiManager.getInstance(project)
         return if (vFile.isDirectory) psiManager.findDirectory(vFile)!! else psiManager.findFile(vFile)!!
+    }
+
+    fun file(path: String): VirtualFile {
+        return root.findFileByRelativePath(path) ?: error("Can't find `$path`")
     }
 }
 
@@ -232,8 +303,12 @@ private class FileTreeBuilderImpl(val directory: MutableMap<String, Entry> = mut
     }
 
     override fun file(name: String, code: String) {
-        check('/' !in name && '.' in name) { "Bad file name `$name`" }
+        check('/' !in name) { "Bad file name `$name`" }
         directory[name] = Entry.File(code.trimIndent())
+    }
+
+    override fun symlink(name: String, targetPath: String) {
+        directory[name] = Entry.Symlink(targetPath)
     }
 
     fun intoDirectory() = Entry.Directory(directory)
@@ -242,19 +317,7 @@ private class FileTreeBuilderImpl(val directory: MutableMap<String, Entry> = mut
 sealed class Entry {
     class File(val text: String) : Entry()
     class Directory(val children: MutableMap<String, Entry>) : Entry()
-}
-
-private fun findElementInFile(file: PsiFile, marker: String): PsiElement {
-    val markerOffset = file.text.indexOf(marker)
-    check(markerOffset != -1) { "No `$marker` in \n${file.text}" }
-
-    val doc = file.document!!
-    val markerLine = doc.getLineNumber(markerOffset)
-    val makerColumn = markerOffset - doc.getLineStartOffset(markerLine)
-    val elementOffset = doc.getLineStartOffset(markerLine - 1) + makerColumn
-
-    return file.findElementAt(elementOffset) ?:
-        error { "No element found, offset = $elementOffset" }
+    class Symlink(val targetPath: String) : Entry()
 }
 
 fun replaceCaretMarker(text: String): String = text.replace("/*caret*/", "<caret>")

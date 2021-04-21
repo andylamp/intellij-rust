@@ -5,7 +5,6 @@
 
 package org.rust.clion.debugger.runconfig
 
-import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -15,7 +14,6 @@ import com.jetbrains.cidr.toolchains.OSType
 import org.rust.cargo.runconfig.BuildResult.ToolchainError
 import org.rust.cargo.runconfig.BuildResult.ToolchainError.*
 import org.rust.debugger.runconfig.RsDebugRunnerUtils.ERROR_MESSAGE_TITLE
-import org.rust.openapiext.BUILD_202
 
 object RsCLionDebugRunnerUtils {
 
@@ -25,9 +23,6 @@ object RsCLionDebugRunnerUtils {
             val isMSVCRustToolchain = "msvc" in host
             val isGNURustToolchain = "gnu" in host
 
-            if (ApplicationInfo.getInstance().build < BUILD_202 && isMSVCRustToolchain) {
-                return UnsupportedMSVC
-            }
             if (isGNURustToolchain && toolSet.isMSVC) {
                 return MSVCWithRustGNU
             }

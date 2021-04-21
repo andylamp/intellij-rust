@@ -12,6 +12,7 @@ import com.intellij.psi.search.LocalSearchScope
 import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.util.siblings
 import org.rust.ide.presentation.renderInsertionSafe
+import org.rust.ide.refactoring.RsFunctionSignatureConfig
 import org.rust.ide.utils.findStatementsOrExprInRange
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -53,8 +54,10 @@ class Parameter private constructor(
         get() = if (isMutable && (!isReference || requiresMut)) "mut " else ""
     private val referenceText: String
         get() = if (isReference) {
-            if (isMutable) { "&mut " } else { "&" }
-        } else { "" }
+            if (isMutable) "&mut " else "&"
+        } else {
+            ""
+        }
     private val typeText: String = type?.renderInsertionSafe(skipUnchangedDefaultTypeArguments = true).orEmpty()
 
     val originalParameterText: String
@@ -94,7 +97,7 @@ class Parameter private constructor(
             references: List<PsiReference>,
             isUsedAfterEnd: Boolean,
             implLookup: ImplLookup
-        ): Parameter? {
+        ): Parameter {
             val hasRefOperator = references.any {
                 val operatorType = (it.element.ancestorStrict<RsUnaryExpr>())?.operatorType
                 operatorType == UnaryOperator.REF || operatorType == UnaryOperator.REF_MUT
@@ -114,7 +117,7 @@ class Parameter private constructor(
 }
 
 class RsExtractFunctionConfig private constructor(
-    val containingFunction: RsFunction,
+    function: RsFunction,
     val elements: List<PsiElement>,
     val returnValue: ReturnValue? = null,
     var name: String = "",
@@ -122,7 +125,7 @@ class RsExtractFunctionConfig private constructor(
     val isAsync: Boolean = false,
     val isUnsafe: Boolean = false,
     var parameters: List<Parameter>
-) {
+) : RsFunctionSignatureConfig(function) {
     val valueParameters: List<Parameter>
         get() = parameters.filter { !it.isSelf }
 
@@ -137,6 +140,32 @@ class RsExtractFunctionConfig private constructor(
 
     val signature: String
         get() = signature(false)
+
+    private val parameterTypes: List<Ty>
+        get() = parameters.mapNotNull { it.type }
+
+    private val returnType: Ty
+        get() = returnValue?.type ?: TyUnit
+
+    private fun typeParameterBounds(): Map<Ty, Set<Ty>> =
+        function.typeParameters.associate { typeParameter ->
+            val type = typeParameter.declaredType
+            val bounds = mutableSetOf<Ty>()
+            typeParameter.bounds.flatMapTo(bounds) { polybound ->
+                polybound.bound.traitRef?.path?.typeArguments?.flatMap { it.type.types() }.orEmpty()
+            }
+            type to bounds
+        }
+
+    override fun typeParameters(): List<RsTypeParameter> {
+        val bounds = typeParameterBounds()
+        val paramAndReturnTypes = mutableSetOf<Ty>()
+        (parameterTypes + returnType).forEach {
+            paramAndReturnTypes.addAll(it.types())
+            paramAndReturnTypes.addAll(it.dependTypes(bounds))
+        }
+        return function.typeParameters.filter { it.declaredType in paramAndReturnTypes }
+    }
 
     /**
      * - Original signature is used when the extracted function is inserting to the source code
@@ -154,7 +183,7 @@ class RsExtractFunctionConfig private constructor(
         }
         append("fn $name$typeParametersText(${if (isOriginal) originalParametersText else parametersText})")
         if (returnValue != null && returnValue.type !is TyUnit) {
-            append(" -> ${returnValue.type.renderInsertionSafe()}")
+            append(" -> ${returnValue.type.renderInsertionSafe(skipUnchangedDefaultTypeArguments = true)}")
         }
         append(whereClausesText)
     }
@@ -189,44 +218,6 @@ class RsExtractFunctionConfig private constructor(
                 bodyContent.joinToString(separator = "\n", prefix = "{\n", postfix = "\n}")
             }
             append(body)
-        }
-
-    private val typeParametersText: String
-        get() {
-            val typeParams = typeParameters()
-            if (typeParams.isEmpty()) return ""
-            return typeParams.joinToString(separator = ",", prefix = "<", postfix = ">") { it.text }
-        }
-
-    private val whereClausesText: String
-        get() {
-            val wherePredList = containingFunction.whereClause?.wherePredList ?: return ""
-            if (wherePredList.isEmpty()) return ""
-            val typeParams = typeParameters().map { it.declaredType }
-            if (typeParams.isEmpty()) return ""
-            val filtered = wherePredList.filter { it.typeReference?.type in typeParams }
-            if (filtered.isEmpty()) return ""
-            return filtered.joinToString(separator = ",", prefix = " where ") { it.text }
-        }
-
-    private fun typeParameters(): List<RsTypeParameter> {
-        val bounds = typeParameterBounds()
-        val paramAndReturnTypes = mutableSetOf<Ty>()
-        (parameters.mapNotNull { it.type } + listOfNotNull(returnValue?.type)).forEach {
-            paramAndReturnTypes.addAll(it.types())
-            paramAndReturnTypes.addAll(it.dependTypes(bounds))
-        }
-        return containingFunction.typeParameters.filter { it.declaredType in paramAndReturnTypes }
-    }
-
-    private fun typeParameterBounds(): Map<Ty, Set<Ty>> =
-        containingFunction.typeParameters.associate { typeParameter ->
-            val type = typeParameter.declaredType
-            val bounds = mutableSetOf<Ty>()
-            typeParameter.bounds.flatMapTo(bounds) {
-                it.bound.traitRef?.path?.typeArguments?.flatMap { it.type.types() }.orEmpty()
-            }
-            type to bounds
         }
 
     companion object {
@@ -287,12 +278,14 @@ class RsExtractFunctionConfig private constructor(
                             isAsync = true
                         }
                     }
+
                     // stop recursive propagation, we want to ignore awaits in async blocks and async closures
                     override fun visitBlockExpr(o: RsBlockExpr) {
                         if (!o.isAsync) {
                             super.visitBlockExpr(o)
                         }
                     }
+
                     override fun visitLambdaExpr(o: RsLambdaExpr) {
                         if (!o.isAsync) {
                             super.visitLambdaExpr(o)
@@ -316,7 +309,7 @@ class RsExtractFunctionConfig private constructor(
     }
 }
 
-private fun Ty.types(): Set<Ty> {
+fun Ty.types(): Set<Ty> {
     val types = mutableSetOf<Ty>()
 
     fun collect(type: Ty) {
@@ -329,7 +322,7 @@ private fun Ty.types(): Set<Ty> {
     return types
 }
 
-private fun Ty.dependTypes(boundMap: Map<Ty, Set<Ty>>): Set<Ty> {
+fun Ty.dependTypes(boundMap: Map<Ty, Set<Ty>>): Set<Ty> {
     val types = mutableSetOf<Ty>()
 
     fun collect(type: Ty) {

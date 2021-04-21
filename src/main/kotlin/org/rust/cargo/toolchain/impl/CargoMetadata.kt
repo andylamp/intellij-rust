@@ -5,25 +5,29 @@
 
 package org.rust.cargo.toolchain.impl
 
-import com.google.gson.Gson
-import com.google.gson.JsonObject
+import com.google.gson.annotations.SerializedName
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.PathUtil
+import com.intellij.util.io.exists
+import com.intellij.util.text.SemVer
 import org.rust.cargo.CfgOptions
-import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.*
 import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.CargoWorkspace.LibKind
-import org.rust.cargo.project.workspace.CargoWorkspaceData
-import org.rust.cargo.project.workspace.PackageId
-import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.cargo.toolchain.BuildScriptMessage
+import org.rust.openapiext.RsPathManager
 import org.rust.openapiext.findFileByMaybeRelativePath
+import org.rust.stdext.HashCode
 import org.rust.stdext.mapToSet
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.*
 
-private val LOG = Logger.getInstance(CargoMetadata::class.java)
+private val LOG: Logger = logger<CargoMetadata>()
 
 /**
  * Classes mirroring JSON output of `cargo metadata`.
@@ -51,7 +55,7 @@ object CargoMetadata {
         /**
          * Ids of packages that are members of the cargo workspace
          */
-        val workspace_members: List<String>?,
+        val workspace_members: List<String>,
 
         /**
          * Path to workspace root folder. Can be null for old cargo version
@@ -67,6 +71,16 @@ object CargoMetadata {
          * SemVer version
          */
         val version: String,
+
+        val authors: List<String>,
+
+        val description: String?,
+
+        val repository: String?,
+
+        val license: String?,
+
+        val license_file: String?,
 
         /**
          * Where did this package comes from? Local file system, crates.io, github repository.
@@ -102,10 +116,27 @@ object CargoMetadata {
         val edition: String?,
 
         /**
-         * Features available in this package.
+         * Features available in this package (excluding optional dependencies).
          * The entry named "default" defines which features are enabled by default.
          */
-        val features: Map<String, List<String>>
+        val features: Map<FeatureName, List<FeatureDep>>,
+
+        /**
+         * Dependencies as they listed in the package `Cargo.toml`, without package resolution or
+         * any additional data.
+         */
+        val dependencies: List<RawDependency>
+    )
+
+    data class RawDependency(
+        /** A `package` name (non-normalized) of the dependency */
+        val name: String,
+        val rename: String?,
+        val kind: String?,
+        val target: String?,
+        val optional: Boolean,
+        val uses_default_features: Boolean,
+        val features: List<String>
     )
 
 
@@ -143,7 +174,25 @@ object CargoMetadata {
          */
         val edition: String?,
 
-        val doctest: Boolean?
+        /**
+         * Indicates whether or not
+         * [documentation examples](https://doc.rust-lang.org/rustdoc/documentation-tests.html)
+         * are tested by default by `cargo test`. This is only relevant for libraries, it has
+         * no effect on other targets. The default is `true` for the library.
+         *
+         * See [docs](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#the-doctest-field)
+         */
+        val doctest: Boolean?,
+
+        /**
+         * Specifies which package features the target needs in order to be built. This is only relevant
+         * for the `[[bin]]`, `[[bench]]`, `[[test]]`, and `[[example]]` sections, it has no effect on `[lib]`.
+         *
+         * See [docs](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#the-required-features-field)
+         */
+        @Suppress("KDocUnresolvedReference")
+        @SerializedName("required-features")
+        val required_features: List<String>?
     ) {
         val cleanKind: TargetKind
             get() = when (kind.singleOrNull()) {
@@ -230,10 +279,11 @@ object CargoMetadata {
         val name: String?,
 
         /**
-         * Used to distinguish `[dependencies]`, [dev-dependencies]` and `[build-dependencies]`.
+         * Used to distinguish `[dependencies]`, `[dev-dependencies]` and `[build-dependencies]`.
          * It's a list because a dependency can be used in both `[dependencies]` and `[build-dependencies]`.
          * `null` on old cargo only.
          */
+        @Suppress("KDocUnresolvedReference")
         val dep_kinds: List<DepKindInfo>?
     )
 
@@ -251,89 +301,37 @@ object CargoMetadata {
         )
     }
 
-    // The next two things do not belong here,
-    // see `machine_message` in Cargo.
-    data class Artifact(
-        val target: Target,
-        val profile: Profile,
-        val filenames: List<String>,
-        val executable: String?
-    ) {
-
-        val executables: List<String>
-            get() {
-                return if (executable != null) {
-                    listOf(executable)
-                } else {
-                    /**
-                     * `.dSYM` and `.pdb` files are binaries, but they should not be used when starting debug session.
-                     * Without this filtering, CLion shows error message about several binaries
-                     * in case of disabled build tool window
-                     */
-                    // BACKCOMPAT: Cargo 0.34.0
-                    filenames.filter { !it.endsWith(".dSYM") && !it.endsWith(".pdb") }
-                }
-            }
-
-        companion object {
-            fun fromJson(json: JsonObject): Artifact? {
-                if (json.getAsJsonPrimitive("reason").asString != "compiler-artifact") {
-                    return null
-                }
-                return Gson().fromJson(json, Artifact::class.java)
-            }
-        }
-    }
-
-    data class Profile(
-        val test: Boolean
-    )
-
     fun clean(
         project: Project,
-        buildScriptsInfo: BuildScriptsInfo?,
-        buildPlan: CargoBuildPlan?
+        buildMessages: BuildMessages? = null
     ): CargoWorkspaceData {
         val fs = LocalFileSystem.getInstance()
         val members = project.workspace_members
-            ?: error(
-                "No `workspace_members` key in the `cargo metadata` output.\n" +
-                    "Your version of Cargo is no longer supported, please upgrade Cargo."
-            )
-        val variables = PackageVariables.from(buildPlan)
         val packageIdToNode = project.resolve.nodes.associateBy { it.id }
-
         return CargoWorkspaceData(
-            project.packages.mapNotNull { pkg ->
+            project.packages.map { pkg ->
                 // resolve contains all enabled features for each package
                 val resolveNode = packageIdToNode[pkg.id]
                 if (resolveNode == null) {
                     LOG.error("Could not find package with `id` '${pkg.id}' in `resolve` section of the `cargo metadata` output.")
                 }
-
-                val enabledFeatures = resolveNode?.features?.toSet().orEmpty()
-                val features = pkg.features.keys.map { feature ->
-                    val state = when {
-                        enabledFeatures.contains(feature) -> CargoWorkspace.FeatureState.Enabled
-                        else -> CargoWorkspace.FeatureState.Disabled
-                    }
-                    CargoWorkspace.Feature(feature, state)
-                }
-                val buildScriptMessage = buildScriptsInfo?.get(pkg.id)
-                pkg.clean(fs, pkg.id in members, variables, features, buildScriptMessage)
+                val enabledFeatures = resolveNode?.features.orEmpty().toSet() // features enabled by Cargo
+                val pkgBuildMessages = buildMessages?.get(pkg.id).orEmpty()
+                pkg.clean(fs, pkg.id in members, enabledFeatures, pkgBuildMessages)
             },
-            project.resolve.nodes.associate { (id, dependencies, deps) ->
-                val dependencySet = if (deps != null) {
-                    deps.mapToSet { (pkgId, name, depKinds) ->
+            project.resolve.nodes.associate { node ->
+                val dependencySet = if (node.deps != null) {
+                    node.deps.mapToSet { (pkgId, name, depKinds) ->
                         val depKindsLowered = depKinds?.map { it.clean() }
                             ?: listOf(CargoWorkspace.DepKindInfo(CargoWorkspace.DepKind.Unclassified))
                         CargoWorkspaceData.Dependency(pkgId, name, depKindsLowered)
                     }
                 } else {
-                    dependencies.mapToSet { CargoWorkspaceData.Dependency(it) }
+                    node.dependencies.mapToSet { CargoWorkspaceData.Dependency(it) }
                 }
-                id to dependencySet
+                node.id to dependencySet
             },
+            project.packages.associate { it.id to it.dependencies },
             project.workspace_root
         )
     }
@@ -341,41 +339,131 @@ object CargoMetadata {
     private fun Package.clean(
         fs: LocalFileSystem,
         isWorkspaceMember: Boolean,
-        variables: PackageVariables,
-        features: List<CargoWorkspace.Feature>,
-        buildScriptMessage: BuildScriptMessage?
-    ): CargoWorkspaceData.Package? {
-        val root = checkNotNull(fs.refreshAndFindFileByPath(PathUtil.getParentPath(manifest_path))?.canonicalFile) {
-            "`cargo metadata` reported a package which does not exist at `$manifest_path`"
+        enabledFeatures: Set<String>,
+        buildMessages: List<CompilerMessage>
+    ): CargoWorkspaceData.Package {
+        val rootPath = PathUtil.getParentPath(manifest_path)
+        val root = fs.refreshAndFindFileByPath(rootPath)
+            ?.let { if (isWorkspaceMember) it else it.canonicalFile }
+        checkNotNull(root) { "`cargo metadata` reported a package which does not exist at `$manifest_path`" }
+
+        val features = features.toMutableMap()
+
+        // Optional dependencies are features implicitly
+        for (dependency in dependencies) {
+            val featureName = dependency.rename ?: dependency.name
+            if (dependency.optional && featureName !in features) {
+                features[featureName] = emptyList()
+            }
         }
 
-        val cfgOptions = CfgOptions.parse(buildScriptMessage?.cfgs.orEmpty())
+        val buildScriptMessage = buildMessages.find { it is BuildScriptMessage } as? BuildScriptMessage
+        val procMacroArtifact = getProcMacroArtifact(buildMessages)
 
-        val env = buildScriptMessage?.env.orEmpty()
+        val cfgOptions = buildScriptMessage?.cfgs?.let { CfgOptions.parse(it) }
+
+        val envFromBuildscript = buildScriptMessage?.env.orEmpty()
             .filter { it.size == 2 }
             .associate { (key, value) -> key to value }
 
-        val outDirPath = buildScriptMessage?.out_dir ?: variables.getOutDirPath(this)
-        val outDir = outDirPath?.let { root.fileSystem.refreshAndFindFileByPath(it)?.canonicalFile }
+        val semver = SemVer.parseFromText(version)
+
+        // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
+        val env: Map<String, String> = envFromBuildscript + mapOf(
+            "CARGO_MANIFEST_DIR" to rootPath,
+            "CARGO" to "cargo", // TODO get from toolchain
+            "CARGO_PKG_VERSION" to version,
+            "CARGO_PKG_VERSION_MAJOR" to semver?.major?.toString().orEmpty(),
+            "CARGO_PKG_VERSION_MINOR" to semver?.minor?.toString().orEmpty(),
+            "CARGO_PKG_VERSION_PATCH" to semver?.patch?.toString().orEmpty(),
+            "CARGO_PKG_VERSION_PRE" to semver?.preRelease.orEmpty(),
+            "CARGO_PKG_AUTHORS" to authors.joinToString(separator = ";"),
+            "CARGO_PKG_NAME" to name,
+            "CARGO_PKG_DESCRIPTION" to description.orEmpty(),
+            "CARGO_PKG_REPOSITORY" to repository.orEmpty(),
+            "CARGO_PKG_LICENSE" to license.orEmpty(),
+            "CARGO_PKG_LICENSE_FILE" to license_file.orEmpty(),
+            "CARGO_CRATE_NAME" to name.replace('-', '_'),
+        )
+
+        val outDir = buildScriptMessage?.out_dir
+            ?.let { root.fileSystem.refreshAndFindFileByPath(it) }
+            ?.let { if (isWorkspaceMember) it else it.canonicalFile }
 
         return CargoWorkspaceData.Package(
             id,
             root.url,
             name,
             version,
-            targets.mapNotNull { it.clean(root) },
+            targets.mapNotNull { it.clean(root, isWorkspaceMember) },
             source,
             origin = if (isWorkspaceMember) PackageOrigin.WORKSPACE else PackageOrigin.DEPENDENCY,
             edition = edition.cleanEdition(),
             features = features,
+            enabledFeatures = enabledFeatures,
             cfgOptions = cfgOptions,
             env = env,
-            outDirUrl = outDir?.url
+            outDirUrl = outDir?.url,
+            procMacroArtifact = procMacroArtifact
         )
     }
 
-    private fun Target.clean(root: VirtualFile): CargoWorkspaceData.Target? {
-        val mainFile = root.findFileByMaybeRelativePath(src_path)?.canonicalFile
+    private fun getProcMacroArtifact(buildMessages: List<CompilerMessage>): CargoWorkspaceData.ProcMacroArtifact? {
+        val procMacroArtifacts = buildMessages
+            .filterIsInstance<CompilerArtifactMessage>()
+            .filter {
+                it.target.kind.contains("proc-macro") && it.target.crate_types.contains("proc-macro")
+            }
+
+        val procMacroArtifactPath = procMacroArtifacts
+            .flatMap { it.filenames }
+            .find { file -> DYNAMIC_LIBRARY_EXTENSIONS.any { file.endsWith(it) } }
+
+        return procMacroArtifactPath?.let {
+            val originPath = Path.of(procMacroArtifactPath)
+
+            val hash = try {
+                HashCode.ofFile(originPath)
+            } catch (e: IOException) {
+                LOG.warn(e)
+                return@let null
+            }
+
+            val path = copyProcMacroArtifactToTempDir(originPath, hash)
+
+            CargoWorkspaceData.ProcMacroArtifact(path, hash)
+        }
+    }
+
+    /**
+     * Copy the artifact to a temporary directory in order to allow a user to overwrite or delete the artifact.
+     *
+     * It's `@Synchronized` because it can be called from different IDEA projects simultaneously,
+     * and different projects may want to write the same files
+     */
+    @Synchronized
+    private fun copyProcMacroArtifactToTempDir(originPath: Path, hash: HashCode): Path {
+        return try {
+            val temp = RsPathManager.tempPluginDirInSystem().resolve("proc_macros")
+            Files.createDirectories(temp) // throws IOException
+            val filename = originPath.fileName.toString()
+            val extension = PathUtil.getFileExtension(filename)
+            val targetPath = temp.resolve("$filename.$hash.$extension")
+            if (!targetPath.exists() || Files.size(originPath) != Files.size(targetPath)) {
+                Files.copy(originPath, targetPath, StandardCopyOption.REPLACE_EXISTING) // throws IOException
+            }
+            targetPath
+        } catch (e: IOException) {
+            LOG.warn(e)
+            originPath
+        }
+    }
+
+    private val DYNAMIC_LIBRARY_EXTENSIONS: List<String> = listOf(".dll", ".so", ".dylib")
+
+    private fun Target.clean(root: VirtualFile, isWorkspaceMember: Boolean): CargoWorkspaceData.Target? {
+        val mainFile = root.findFileByMaybeRelativePath(src_path)
+            ?.let { if (isWorkspaceMember) it else it.canonicalFile }
 
         return mainFile?.let {
             CargoWorkspaceData.Target(
@@ -383,7 +471,8 @@ object CargoMetadata {
                 name,
                 makeTargetKind(cleanKind, cleanCrateTypes),
                 edition.cleanEdition(),
-                doctest = doctest ?: true
+                doctest = doctest ?: true,
+                requiredFeatures = required_features.orEmpty()
             )
         }
     }
@@ -422,30 +511,22 @@ object CargoMetadata {
     private fun String?.cleanEdition(): Edition = when (this) {
         Edition.EDITION_2015.presentation -> Edition.EDITION_2015
         Edition.EDITION_2018.presentation -> Edition.EDITION_2018
+        Edition.EDITION_2021.presentation -> Edition.EDITION_2021
         else -> Edition.EDITION_2015
     }
-}
 
-private class PackageVariables(private val variables: Map<PackageInfo, Map<String, String>>) {
+    fun Project.replacePaths(replacer: (String) -> String): Project =
+        copy(
+            packages = packages.map { it.replacePaths(replacer) },
+            workspace_root = replacer(workspace_root)
+        )
 
-    fun getOutDirPath(pkg: CargoMetadata.Package): String? = getValue(pkg, "OUT_DIR")
+    private fun Package.replacePaths(replacer: (String) -> String): Package =
+        copy(
+            manifest_path = replacer(manifest_path),
+            targets = targets.map { it.replacePaths(replacer) }
+        )
 
-    fun getValue(pkg: CargoMetadata.Package, variableName: String): String? {
-        val key = PackageInfo(pkg.name, pkg.version)
-        return variables[key]?.get(variableName)
-    }
-
-    companion object {
-        fun from(buildPlan: CargoBuildPlan?): PackageVariables {
-            val result = mutableMapOf<PackageInfo, Map<String, String>>()
-            for ((packageName, packageVersion, compileMode, variables) in buildPlan?.invocations.orEmpty()) {
-                if (compileMode != "run-custom-build") continue
-                val targetInfo = PackageInfo(packageName, packageVersion)
-                result[targetInfo] = variables
-            }
-            return PackageVariables(result)
-        }
-    }
-
-    private data class PackageInfo(val name: String, val version: String)
+    private fun Target.replacePaths(replacer: (String) -> String): Target =
+        copy(src_path = replacer(src_path))
 }

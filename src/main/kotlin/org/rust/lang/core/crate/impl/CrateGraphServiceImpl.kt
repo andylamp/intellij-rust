@@ -6,6 +6,7 @@
 package org.rust.lang.core.crate.impl
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.openapi.vfs.VirtualFile
@@ -16,11 +17,11 @@ import com.intellij.psi.util.CachedValueProvider
 import com.intellij.util.containers.addIfNotNull
 import gnu.trove.TIntObjectHashMap
 import org.rust.cargo.project.model.CargoProject
-import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.model.CargoProjectsService.Companion.CARGO_PROJECTS_TOPIC
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.FeatureState
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.crate.CrateGraphService
@@ -37,10 +38,8 @@ class CrateGraphServiceImpl(val project: Project) : CrateGraphService {
     private val cargoProjectsModTracker = SimpleModificationTracker()
 
     init {
-        project.messageBus.connect().subscribe(CARGO_PROJECTS_TOPIC, object : CargoProjectsListener {
-            override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                cargoProjectsModTracker.incModificationCount()
-            }
+        project.messageBus.connect().subscribe(CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+            cargoProjectsModTracker.incModificationCount()
         })
     }
 
@@ -72,7 +71,7 @@ private data class CrateGraph(
     val idToCrate: TIntObjectHashMap<Crate>
 )
 
-private val LOG = Logger.getInstance(CrateGraphServiceImpl::class.java)
+private val LOG: Logger = logger<CrateGraphServiceImpl>()
 
 private fun buildCrateGraph(project: Project, cargoProjects: Collection<CargoProject>): CrateGraph {
     val builder = CrateGraphBuilder(project)
@@ -105,12 +104,17 @@ private class CrateGraphBuilder(val project: Project) {
                     // Duplicated package found. This can occur if a package is used in multiple CargoProjects.
                     // Merging them into a single crate
                     if (libCrate != null) {
-                        libCrate.features = mergeFeatures(pkg.pkg.features, libCrate.features)
+                        libCrate.features = mergeFeatures(pkg.pkg.featureState, libCrate.features)
                     }
 
                     // Prefer workspace target
                     if (pkg.pkg.origin == PackageOrigin.WORKSPACE) {
                         cratesToReplaceTargetLater += ReplaceProjectAndTarget(state, pkg)
+                    }
+
+                    // It's possible that there are two packages, but only one of them has a valid proc macro artifact
+                    if (pkg.pkg.procMacroArtifact != null) {
+                        state.libCrate?.let { it.procMacroArtifact = pkg.pkg.procMacroArtifact }
                     }
                 }
                 return libCrate
@@ -130,7 +134,13 @@ private class CrateGraphBuilder(val project: Project) {
 
         val flatNormalAndNonCyclicDevDeps = normalAndNonCyclicDevDeps.flattenTopSortedDeps()
         val libCrate = pkg.pkg.libTarget?.let { libTarget ->
-            CargoBasedCrate(pkg.project, libTarget, normalAndNonCyclicDevDeps, flatNormalAndNonCyclicDevDeps)
+            CargoBasedCrate(
+                pkg.project,
+                libTarget,
+                normalAndNonCyclicDevDeps,
+                flatNormalAndNonCyclicDevDeps,
+                pkg.pkg.procMacroArtifact
+            )
         }
 
         val newState = NodeState.Done(libCrate)
@@ -140,13 +150,15 @@ private class CrateGraphBuilder(val project: Project) {
         states[pkg.rootDirectory] = newState
         topSortedCrates.addIfNotNull(libCrate)
 
-        lowerNonLibraryCratesLater(NonLibraryCrates(
-            pkg,
-            newState,
-            normalAndNonCyclicDevDeps,
-            cyclicDevDependencies,
-            flatNormalAndNonCyclicDevDeps
-        ))
+        lowerNonLibraryCratesLater(
+            NonLibraryCrates(
+                pkg,
+                newState,
+                normalAndNonCyclicDevDeps,
+                cyclicDevDependencies,
+                flatNormalAndNonCyclicDevDeps
+            )
+        )
 
         return libCrate
     }
@@ -376,20 +388,20 @@ private fun Iterable<Crate>.assertTopSorted() {
 }
 
 private fun mergeFeatures(
-    features1: Collection<CargoWorkspace.Feature>,
-    features2: Collection<CargoWorkspace.Feature>
-): Collection<CargoWorkspace.Feature> {
-    val featureMap = features1.associateTo(hashMapOf()) { it.name to it.state }
+    features1: Map<String, FeatureState>,
+    features2: Map<String, FeatureState>
+): Map<String, FeatureState> {
+    val featureMap = features1.toMutableMap()
     for ((k, v) in features2) {
         featureMap.merge(k, v) { v1, v2 ->
             when {
-                v1 == CargoWorkspace.FeatureState.Enabled -> CargoWorkspace.FeatureState.Enabled
-                v2 == CargoWorkspace.FeatureState.Enabled -> CargoWorkspace.FeatureState.Enabled
-                else -> CargoWorkspace.FeatureState.Disabled
+                v1 == FeatureState.Enabled -> FeatureState.Enabled
+                v2 == FeatureState.Enabled -> FeatureState.Enabled
+                else -> FeatureState.Disabled
             }
         }
     }
-    return featureMap.entries.map { (k, v) -> CargoWorkspace.Feature(k, v) }
+    return featureMap
 }
 
 private data class ProjectPackage(
@@ -416,7 +428,7 @@ private class CyclicGraphException(crateName: String) : RuntimeException("Cyclic
         stack += crateName
     }
 
-    override val message: String?
+    override val message: String
         get() = super.message + stack.asReversed().joinToString(prefix = " (", separator = " -> ", postfix = ")")
 }
 

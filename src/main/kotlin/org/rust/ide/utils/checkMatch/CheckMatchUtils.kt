@@ -32,9 +32,10 @@ fun RsMatchExpr.checkExhaustive(): List<Pattern>? {
 }
 
 private fun doCheckExhaustive(match: RsMatchExpr): List<Pattern>? {
-    val exprType = match.expr?.type ?: return null
-    if (exprType.containsTyOfClass(TyUnknown::class.java)) return null
     val matchedExprType = match.expr?.type ?: return null
+    if (matchedExprType.containsTyOfClass(TyUnknown::class.java)) return null
+    // match on uninhabited type is exhaustive
+    if (!Constructor.isInhabited(matchedExprType)) return null
 
     val matrix = match.arms
         .filter { it.matchArmGuard == null }
@@ -71,7 +72,7 @@ fun Matrix.isWellTyped(): Boolean {
 /**
  * The type of the first column of the matrix
  *
- * @return [null] in case of empty matrix
+ * @return `null` in case of empty matrix
  * @throws [CheckMatchException] if the patterns in the first column have different types
  */
 val Matrix.firstColumnType: Ty?

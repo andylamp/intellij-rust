@@ -11,7 +11,6 @@ import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.util.AutoInjectedCrates
 import org.rust.ide.search.RsWithMacrosProjectScope
 import org.rust.lang.core.crate.Crate
-import org.rust.lang.core.crate.hasDirectDependency
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.TYPES_N_VALUES
@@ -61,6 +60,8 @@ object ImportCandidatesCollector {
             // check that result after import can be resolved and resolved element is suitable
             // if no, don't add it in candidate list
             .filter { canBeResolvedToSuitableItem(importingPathText, importContext, it.info) }
+            // make items from workspace appear first, std seconds.
+            .sorted()
     }
 
     private fun getReexportedItems(
@@ -129,6 +130,8 @@ object ImportCandidatesCollector {
             .flatMap { it.withModuleReexports(project).asSequence() }
             .mapNotNull { importItem -> importItem.toImportCandidate(superMods) }
             .filterImportCandidates(attributes)
+            // make items from workspace appear first, std seconds.
+            .sorted()
     }
 
     private fun QualifiedNamedItem.toImportCandidate(superMods: LinkedHashSet<RsMod>): ImportCandidate? =
@@ -153,8 +156,9 @@ object ImportCandidatesCollector {
         if (item !is RsVisible) return null
         val ourCrate = containingCrate ?: return null
         val targetCrate = superMods.last().containingCrate ?: return null
+        val ourCrateAsDependency = targetCrate.dependencies.find { it.crate == ourCrate }
         // filter out transitive dependencies
-        if (targetCrate != ourCrate && !targetCrate.hasDirectDependency(ourCrate)) return null
+        if (targetCrate != ourCrate && ourCrateAsDependency == null) return null
 
         val ourSuperMods = this.superMods ?: return null
         val parentMod = ourSuperMods.getOrNull(0) ?: return null
@@ -164,7 +168,7 @@ object ImportCandidatesCollector {
         val lca = ourSuperMods.find { it.modItem in superMods }
         val crateRelativePath = crateRelativePath ?: return null
 
-        val (shouldBePublicMods, importInfo) = if (lca == null) {
+        val (shouldBePublicMods, importInfo) = if (lca == null && ourCrateAsDependency != null) {
             if (!isPublic) return null
             val externCrateMod = ourSuperMods.last().modItem
 
@@ -176,7 +180,7 @@ object ImportCandidatesCollector {
             }.singleOrNull()
 
             val (externCrateName, needInsertExternCrateItem, depth) = if (externCrateWithDepth == null) {
-                Triple(ourCrate.normName, true, null)
+                Triple(ourCrateAsDependency.normName, true, null)
             } else {
                 val (externCrateItem, depth) = externCrateWithDepth
                 Triple(externCrateItem.nameWithAlias, false, depth)
@@ -187,7 +191,7 @@ object ImportCandidatesCollector {
             ourSuperMods to importInfo
         } else {
             val targetMod = superMods.first()
-            val relativePath = if (targetMod.isEdition2018) {
+            val relativePath = if (targetMod.isAtLeastEdition2018) {
                 "crate::$crateRelativePath"
             } else {
                 crateRelativePath
@@ -350,7 +354,22 @@ sealed class ImportInfo {
     }
 }
 
-data class ImportCandidate(val qualifiedNamedItem: QualifiedNamedItem, val info: ImportInfo)
+data class ImportCandidate(val qualifiedNamedItem: QualifiedNamedItem, val info: ImportInfo) : Comparable<ImportCandidate> {
+    override fun compareTo(other: ImportCandidate): Int {
+        val origin = qualifiedNamedItem.containingCrate?.origin
+        val otherOrigin = other.qualifiedNamedItem.containingCrate?.origin
+        val usePath = info.usePath
+        val otherUsePath = other.info.usePath
+        return when {
+            origin == otherOrigin -> usePath.compareTo(otherUsePath)
+            origin == PackageOrigin.WORKSPACE -> -1
+            otherOrigin == PackageOrigin.WORKSPACE -> 1
+            origin == PackageOrigin.STDLIB -> -1
+            otherOrigin == PackageOrigin.STDLIB -> 1
+            else -> usePath.compareTo(otherUsePath)
+        }
+    }
+}
 
 /**
  * If function or constant is defined in a trait

@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.completion
 
+import org.rust.MockAdditionalCfgOptions
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.lang.core.resolve.KnownDerivableTrait
@@ -127,5 +128,26 @@ class RsDeriveCompletionProviderTest : RsCompletionTestBase() {
     fun `test no completion in non primitive path`() = checkNoCompletion("""
         #[derive(std::marker::Clo/*caret*/)]
         struct S;
+    """)
+
+    fun `test complete in cfg_attr`() = doSingleCompletion("""
+        #[cfg_attr(windows, derive(Debu/*caret*/))]
+        struct Test {
+            foo: u8
+        }
+    """, """
+        #[cfg_attr(windows, derive(Debug/*caret*/))]
+        struct Test {
+            foo: u8
+        }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test no completion if already derived under cfg_attr`() = checkNoCompletion("""
+        #[cfg_attr(intellij_rust, derive(Debug))]
+        #[cfg_attr(intellij_rust, derive(Debu/*caret*/))]
+        struct Test {
+            foo: u8
+        }
     """)
 }

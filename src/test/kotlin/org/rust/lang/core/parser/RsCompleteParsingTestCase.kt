@@ -11,6 +11,7 @@ class RsCompleteParsingTestCase : RsParsingTestCaseBase("complete") {
 
     fun `test fn`() = doTest(true)
     fun `test turbo`() = doTest(true)
+    fun `test numbers`() = doTest(true)
     fun `test expr`() = doTest(true)
     fun `test mod`() = doTest(true)
     fun `test use item`() = doTest(true)
@@ -52,6 +53,7 @@ class RsCompleteParsingTestCase : RsParsingTestCaseBase("complete") {
     fun `test const generics`() = doTest(true)
     fun `test constants`() = doTest(true)
     fun `test raw operator`() = doTest(true)
+    fun `test enum vis`() = doTest(true)
 
     fun `test issue320`() = doTest(true)
     fun `test diesel macros`() = doTest(true)

@@ -6,8 +6,8 @@
 package org.rust.ide.refactoring.move.common
 
 import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.psi.PsiElement
-import com.intellij.refactoring.util.CommonRefactoringUtil
 import com.intellij.refactoring.util.RefactoringUIUtil
 import com.intellij.util.containers.MultiMap
 import org.rust.ide.refactoring.move.common.RsMoveUtil.addInner
@@ -37,7 +37,7 @@ class RsMoveConflictsDetector(
 
     private fun updateItemsToMakePublic(insideReferences: List<RsMoveReferenceInfo>) {
         for (reference in insideReferences) {
-            val pathOld = reference.pathOld
+            val pathOld = reference.pathOldOriginal
             val target = reference.target
             val usageMod = pathOld.containingMod
             val isSelfReference = pathOld.isInsideMovedElements(elementsToMove)
@@ -57,7 +57,7 @@ class RsMoveConflictsDetector(
         for (reference in references) {
             val pathNew = reference.pathNewAccessible
             if (pathNew == null || !pathNew.isTargetOfEachSubpathAccessible()) {
-                addVisibilityConflict(conflicts, reference.pathOld, reference.target)
+                addVisibilityConflict(conflicts, reference.pathOldOriginal, reference.target)
             }
         }
     }
@@ -91,7 +91,7 @@ class RsMoveConflictsDetector(
         // because if something in inner mod is private, then it was not accessible before move.
         if (elementsToMove.none { (it as? ItemToMove)?.item == item }) return
 
-        val tempMod = RsPsiFactory(sourceMod.project).createModItem("__tmp__", "")
+        val tempMod = RsPsiFactory(sourceMod.project).createModItem(TMP_MOD_NAME, "")
         tempMod.setContext(targetMod)
 
         target.putCopyableUserData(RS_ELEMENT_FOR_CHECK_INSIDE_REFERENCES_VISIBILITY, target)
@@ -164,6 +164,87 @@ class RsMoveConflictsDetector(
         }
     }
 
+    /**
+     * Rules for inherent impls:
+     * - An implementing type must be defined within the same crate as the original type definition
+     * - https://doc.rust-lang.org/reference/items/implementations.html#inherent-implementations
+     * - https://doc.rust-lang.org/error-index.html#E0116
+     * We should check:
+     * - When moving inherent impl: check that implementing type is also moved
+     * - When moving struct/enum: check that all inherent impls are also moved
+     * TODO: Check impls for trait objects: `impl dyn Trait { ... }`
+     *
+     * Rules for trait impls:
+     * - Orphan rules: https://doc.rust-lang.org/reference/items/implementations.html#orphan-rules
+     * - https://doc.rust-lang.org/error-index.html#E0117
+     * We should check (denote impls as `impl<P1..=Pn> Trait<T1..=Tn> for T0`):
+     * - When moving trait impl:
+     *     - either implemented trait is in target crate
+     *     - or at least one of the types `T0..=Tn` is a local type
+     * - When moving trait: for each impl of this trait which remains in source crate:
+     *     - at least one of the types `T0..=Tn` is a local type
+     * - Uncovering is not checking, because it is complicated
+     */
+    fun checkImpls() {
+        if (sourceMod.crateRoot == targetMod.crateRoot) return
+
+        val structsToMove = movedElementsDeepDescendantsOfType<RsStructOrEnumItemElement>(elementsToMove).toSet()
+        val implsToMove = movedElementsDeepDescendantsOfType<RsImplItem>(elementsToMove)
+        val (inherentImplsToMove, traitImplsToMove) = implsToMove
+            .partition { it.traitRef == null }
+            .run { first.toSet() to second.toSet() }
+
+        checkStructIsMovedTogetherWithInherentImpl(structsToMove, inherentImplsToMove)
+        checkInherentImplIsMovedTogetherWithStruct(structsToMove, inherentImplsToMove)
+
+        traitImplsToMove.forEach(::checkTraitImplIsCoherentAfterMove)
+    }
+
+    // https://doc.rust-lang.org/reference/items/implementations.html#trait-implementation-coherence
+    private fun checkTraitImplIsCoherentAfterMove(impl: RsImplItem) {
+        fun RsElement.isLocalAfterMove(): Boolean =
+            crateRoot == targetMod.crateRoot || isInsideMovedElements(elementsToMove)
+
+        if (!checkOrphanRules(impl, RsElement::isLocalAfterMove)) {
+            conflicts.putValue(impl, "Orphan rules check failed for trait implementation after move")
+        }
+    }
+
+    private fun checkStructIsMovedTogetherWithInherentImpl(
+        structsToMove: Set<RsStructOrEnumItemElement>,
+        inherentImplsToMove: Set<RsImplItem>
+    ) {
+        for (impl in inherentImplsToMove) {
+            val struct = impl.implementingType?.item ?: continue
+            if (struct !in structsToMove) {
+                val structDescription = RefactoringUIUtil.getDescription(struct, true)
+                val message = "Inherent implementation should be moved together with $structDescription"
+                conflicts.putValue(impl, message)
+            }
+        }
+    }
+
+    private fun checkInherentImplIsMovedTogetherWithStruct(
+        structsToMove: Set<RsStructOrEnumItemElement>,
+        inherentImplsToMove: Set<RsImplItem>
+    ) {
+        for ((file, structsToMoveInFile) in structsToMove.groupBy { it.containingFile }) {
+            // not working if there is inherent impl in other file
+            // but usually struct and its inherent impls belong to same file
+            val structInherentImpls = file.descendantsOfType<RsImplItem>()
+                .filter { it.traitRef == null }
+                .groupBy { it.implementingType?.item }
+            for (struct in structsToMoveInFile) {
+                val impls = structInherentImpls[struct] ?: continue
+                for (impl in impls.filter { it !in inherentImplsToMove }) {
+                    val structDescription = RefactoringUIUtil.getDescription(struct, true)
+                    val message = "Inherent implementation should be moved together with $structDescription"
+                    conflicts.putValue(impl, message)
+                }
+            }
+        }
+    }
+
     companion object {
         val RS_ELEMENT_FOR_CHECK_INSIDE_REFERENCES_VISIBILITY: Key<RsElement> =
             Key("RS_ELEMENT_FOR_CHECK_INSIDE_REFERENCES_VISIBILITY")
@@ -174,5 +255,5 @@ fun addVisibilityConflict(conflicts: MultiMap<PsiElement, String>, reference: Rs
     val referenceDescription = RefactoringUIUtil.getDescription(reference.containingMod, true)
     val targetDescription = RefactoringUIUtil.getDescription(target, true)
     val message = "$referenceDescription uses $targetDescription which will be inaccessible after move"
-    conflicts.putValue(reference, CommonRefactoringUtil.capitalize(message))
+    conflicts.putValue(reference, StringUtil.capitalize(message))
 }

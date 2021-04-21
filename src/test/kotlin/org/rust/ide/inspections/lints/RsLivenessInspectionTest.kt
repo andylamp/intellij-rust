@@ -5,6 +5,7 @@
 
 package org.rust.ide.inspections.lints
 
+import org.rust.MockAdditionalCfgOptions
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.ide.inspections.RsInspectionsTestBase
@@ -739,6 +740,23 @@ class RsLivenessInspectionTest : RsInspectionsTestBase(RsLivenessInspection::cla
         }
     """)
 
+    // https://github.com/intellij-rust/intellij-rust/issues/6513
+    fun `test remove function argument when function is used as an argument`() = checkFixByText("Remove parameter `x`", """
+        fn foo(<warning>x/*caret*/</warning>: i32) {}
+        fn id<T>(<warning>t</warning>: T) {}
+
+        fn main() {
+            id(foo);
+        }
+    """, """
+        fn foo() {}
+        fn id<T>(t: T) {}
+
+        fn main() {
+            id(foo);
+        }
+    """)
+
     fun `test remove method argument UFCS`() = checkFixByText("Remove parameter `a`", """
         struct S;
         impl S {
@@ -776,6 +794,42 @@ class RsLivenessInspectionTest : RsInspectionsTestBase(RsLivenessInspection::cla
         fn bar() {
             let s = S;
             s.foo(2);
+        }
+    """)
+
+    fun `test use after async block with infinite loop`() = checkByText("""
+        fn foo() {
+            let a = 1;
+            let _ = async { loop {} };
+            a;
+        }
+    """)
+
+    fun `test use after loop with break inside block expr`() = checkByText("""
+        fn main() {
+            let x = 1;
+            loop {
+                {
+                    break;
+                }
+            }
+            x;
+        }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test use in conditionally enabled code`() = checkByText("""
+        fn foo() {
+            let a = 1;
+            #[cfg(intellij_rust)] a;
+        }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test use in conditionally disabled code`() = checkByText("""
+        fn foo() {
+            let <warning>a/*caret*/</warning> = 1;
+            #[cfg(not(intellij_rust))] a;
         }
     """)
 }

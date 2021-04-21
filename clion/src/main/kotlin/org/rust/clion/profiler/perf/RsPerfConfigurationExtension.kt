@@ -11,12 +11,14 @@ import com.intellij.execution.configurations.RunnerSettings
 import com.intellij.execution.process.BaseProcessHandler
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.io.FileUtil
-import com.intellij.profiler.ProfilerToolWindowManager
+import com.intellij.profiler.*
 import com.intellij.profiler.clion.CPPProfilerSettings
-import com.intellij.profiler.keepTempProfilerFiles
+import com.intellij.profiler.clion.perf.PerfProfilerProcess
+import com.intellij.profiler.clion.profilerConfigurable
 import com.intellij.profiler.linux.HasInvalidVariables
 import com.intellij.profiler.linux.KernelVariable
 import com.intellij.profiler.linux.KernelVariablesChangeRequiredException
@@ -26,6 +28,7 @@ import org.rust.cargo.runconfig.ConfigurationExtensionContext
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.clion.profiler.RsProfilerRunner
 import org.rust.clion.profiler.legacy.RsProfilerRunnerLegacy
+import org.rust.lang.core.psi.RsFunction
 import java.io.File
 
 class RsPerfConfigurationExtension : CargoCommandConfigurationExtension() {
@@ -45,6 +48,7 @@ class RsPerfConfigurationExtension : CargoCommandConfigurationExtension() {
         val project = configuration.project
         val settings = CPPProfilerSettings.instance.state
         val perfPath = settings.executablePath.orEmpty()
+        validatePerfSettings(project)
         val validationResult = checkKernelVariables(REQUIRED_KERNEL_VARIABLES)
         if (validationResult is HasInvalidVariables) {
             throw KernelVariablesChangeRequiredException(validationResult, project)
@@ -67,13 +71,24 @@ class RsPerfConfigurationExtension : CargoCommandConfigurationExtension() {
             ?: throw ExecutionException("Can't get output perf data file")
 
         val project = configuration.project
-        val profilerProcess = createPerfProfilerProcess(
+        val profilerProcess = PerfProfilerProcess(
             handler,
             outputFile,
             configuration.name,
-            project
+            project,
+            System.currentTimeMillis(),
+            RsFunction::class.java
         )
         ProfilerToolWindowManager.getInstance(project).addProfilerProcessTab(profilerProcess)
+    }
+
+    @Throws(MisConfiguredException::class)
+    private fun validatePerfSettings(project: Project) {
+        val state = CPPProfilerSettings.instance.state
+        throw validateLocalPath(state.executablePath.orEmpty(), "Perf executable", project, profilerConfigurable::class.java)
+            ?: validateFrequency(state.samplingFrequency, project, profilerConfigurable::class.java)
+            ?: validateOutputDirectory(state.outputDirectory.orEmpty(), project, profilerConfigurable::class.java)
+            ?: return
     }
 
     companion object {

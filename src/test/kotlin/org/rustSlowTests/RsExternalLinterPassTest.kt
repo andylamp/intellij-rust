@@ -7,13 +7,18 @@ package org.rustSlowTests
 
 import com.intellij.lang.annotation.HighlightSeverity
 import org.intellij.lang.annotations.Language
-import org.rust.MinRustcVersion
 import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.rustSettings
+import org.rust.cargo.project.workspace.FeatureState
+import org.rust.cargo.project.workspace.PackageFeature
+import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.fileTree
 import org.rust.ide.annotator.RsExternalLinterUtils
+import org.rust.singleProject
+import org.rust.singleWorkspace
+import org.rust.workspaceOrFail
 
 class RsExternalLinterPassTest : RsWithToolchainTestBase() {
 
@@ -33,7 +38,6 @@ class RsExternalLinterPassTest : RsWithToolchainTestBase() {
         }
     """)
 
-    @MinRustcVersion("1.32.0")
     fun `test highlights errors from macro`() = doTest("""
         fn main() {
             let mut x = 42;
@@ -52,12 +56,25 @@ class RsExternalLinterPassTest : RsWithToolchainTestBase() {
         }
     """)
 
-    @MinRustcVersion("1.29.0")
     fun `test highlights clippy errors`() = doTest("""
         fn main() {
             <weak_warning descr="${RsExternalLinterUtils.TEST_MESSAGE}">if true { true } else { false }</weak_warning>;
         }
     """, externalLinter = ExternalLinter.CLIPPY)
+
+    fun `test workspace features`() = doTest("""
+        fn main() {}
+
+        #[cfg(feature = "enabled_feature")]
+        fn foo() {
+            let x: i32 = <error descr="${RsExternalLinterUtils.TEST_MESSAGE}">0.0</error>;
+        }
+
+        #[cfg(feature = "disabled_feature")]
+        fn foo() {
+            let x: i32 = 0.0;
+        }
+    """)
 
     fun `test highlights from other files do not interfer`() {
         fileTree {
@@ -85,12 +102,6 @@ class RsExternalLinterPassTest : RsWithToolchainTestBase() {
         }
     }
 
-    // https://github.com/intellij-rust/intellij-rust/issues/1497
-    //
-    // We don't want to run this test with rust below 1.30.0
-    // because the corresponding cargo can fail to run `metadata` command
-    // due to `edition` property in `Cargo.toml` in some dependency of `rand` crate
-    @MinRustcVersion("1.30.0")
     fun `test don't try to highlight non project files`() {
         fileTree {
             toml("Cargo.toml", """
@@ -115,8 +126,8 @@ class RsExternalLinterPassTest : RsWithToolchainTestBase() {
             }
         }.create()
 
-        val path = project.cargoProjects.allProjects.single().workspace
-            ?.findPackage("rand")
+        val path = project.cargoProjects.singleWorkspace()
+            .findPackageByName("rand")
             ?.contentRoot
             ?.findFileByRelativePath("src/lib.rs")
             ?: error("Can't find 'src/lib.rs' in 'rand' library")
@@ -166,12 +177,20 @@ class RsExternalLinterPassTest : RsWithToolchainTestBase() {
                 name = "hello"
                 version = "0.1.0"
                 authors = []
+
+                [features]
+                disabled_feature = []
+                enabled_feature = []
+                enabled2_feature = []
             """)
 
             dir("src") {
                 file("main.rs", mainRs)
             }
         }.create()
+        val cargoProject = project.cargoProjects.singleProject()
+        val pkg = cargoProject.workspaceOrFail().packages.single { it.origin == PackageOrigin.WORKSPACE }
+        project.cargoProjects.modifyFeatures(cargoProject, setOf(PackageFeature(pkg, "disabled_feature")), FeatureState.Disabled)
         myFixture.openFileInEditor(cargoProjectDirectory.findFileByRelativePath("src/main.rs")!!)
         myFixture.checkHighlighting()
     }

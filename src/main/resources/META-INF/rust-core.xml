@@ -1,4 +1,6 @@
 <idea-plugin xmlns:xi="http://www.w3.org/2001/XInclude" allow-bundled-update="true">
+    <resource-bundle>messages.RsBundle</resource-bundle>
+
     <depends>com.intellij.modules.lang</depends>
 
     <xi:include href="/META-INF/platform-core.xml" xpointer="xpointer(/idea-plugin/*)"/>
@@ -6,6 +8,12 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <!-- Rust -->
+
+        <!-- Modules -->
+        <!-- although Rust module type is only created by IDEA, we need it in other IDEs as well
+        to be able to open a project created in IDEA without errors -->
+        <moduleType id="RUST_MODULE" implementationClass="org.rust.ide.module.RsModuleType"/>
+        <moduleBuilder builderClass="org.rust.ide.module.RsModuleBuilder"/>
 
         <!-- Project Creation -->
         <projectOpenProcessor id="Cargo" implementation="org.rust.cargo.project.CargoProjectOpenProcessor"/>
@@ -73,6 +81,10 @@
 
         <lang.refactoringSupport language="Rust"
                                  implementationClass="org.rust.ide.refactoring.RsRefactoringSupportProvider"/>
+        <suggestedRefactoringSupport language="Rust" implementationClass="org.rust.ide.refactoring.suggested.RsSuggestedRefactoringSupport"/>
+
+        <refactoring.changeSignatureUsageProcessor implementation="org.rust.ide.refactoring.changeSignature.RsChangeSignatureUsageProcessor"
+                                                   id="Rust"/>
 
         <!-- Commenter -->
 
@@ -241,6 +253,8 @@
         <elementDescriptionProvider implementation="org.rust.ide.presentation.RsDescriptionProvider"/>
         <breadcrumbsInfoProvider implementation="org.rust.ide.miscExtensions.RsBreadcrumbsInfoProvider"/>
 
+        <navbar implementation="org.rust.ide.navigationToolbar.RsNavBarModelExtension" order="first"/>
+
         <!-- Spell-checker -->
 
         <spellchecker.support language="Rust" implementationClass="org.rust.ide.spelling.RsSpellcheckingStrategy"/>
@@ -253,6 +267,9 @@
 
         <enterHandlerDelegate implementation="org.rust.ide.typing.RsEnterInStringLiteralHandler"
                               id="RustEnterInStringLiterals"/>
+
+        <enterBetweenBracesDelegate language="Rust"
+                                    implementationClass="com.intellij.codeInsight.editorActions.enter.EnterBetweenBracesAndBracketsDelegate"/>
 
         <typedHandler implementation="org.rust.ide.typing.RsRawLiteralHashesInserter"
                       id="RsRawLiteralHashesInserter"/>
@@ -456,7 +473,7 @@
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Simplify boolean expression"
-                         enabledByDefault="false" level="WARNING"
+                         enabledByDefault="true" level="WARNING"
                          implementationClass="org.rust.ide.inspections.RsSimplifyBooleanExpressionInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
@@ -465,9 +482,9 @@
                          implementationClass="org.rust.ide.inspections.RsVariableMutableInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
-                         displayName="Wrong type arguments number"
+                         displayName="Wrong generic arguments number"
                          enabledByDefault="true" level="ERROR"
-                         implementationClass="org.rust.ide.inspections.RsWrongTypeArgumentsNumberInspection"/>
+                         implementationClass="org.rust.ide.inspections.RsWrongGenericArgumentsNumberInspection"/>
 
         <localInspection language="Rust" groupName="Rust"
                          displayName="Wrong lifetime parameters number"
@@ -524,6 +541,16 @@
                          enabledByDefault="true" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsTraitImplementationInspection"/>
 
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Cast to bool"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsCastToBoolInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Attribute without parentheses"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsAttrWithoutParenthesesInspection"/>
+
         <localInspection language="Rust" groupPath="Rust" groupName="Lints"
                          displayName="Unreachable patterns"
                          enabledByDefault="true" level="WARNING"
@@ -558,6 +585,16 @@
                          displayName="Detached file"
                          enabledByDefault="true" level="WARNING"
                          implementationClass="org.rust.ide.inspections.RsDetachedFileInspection"/>
+
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Duplicate trait method parameter name"
+                         enabledByDefault="true" level="WEAK WARNING"
+                         implementationClass="org.rust.ide.inspections.RsDuplicatedTraitMethodBindingInspection"/>
+
+        <localInspection language="Rust" groupPath="Rust" groupName="Lints"
+                         displayName="Unreachable code"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="org.rust.ide.inspections.lints.RsUnreachableCodeInspection"/>
 
         <!-- Surrounders -->
 
@@ -821,7 +858,7 @@
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
-            <className>org.rust.ide.intentions.CreateFunctionIntention</className>
+            <className>org.rust.ide.intentions.createFromUsage.CreateFunctionIntention</className>
             <category>Rust</category>
         </intentionAction>
         <intentionAction>
@@ -830,6 +867,30 @@
         </intentionAction>
         <intentionAction>
             <className>org.rust.ide.intentions.AddWildcardArmIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.visibility.MakePubIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.visibility.MakePubCrateIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.visibility.MakePrivateIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ShareInPlaygroundIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.ToggleFeatureIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.createFromUsage.CreateStructIntention</className>
             <category>Rust</category>
         </intentionAction>
 
@@ -849,6 +910,7 @@
              producer instead of registering it here. -->
 
         <stepsBeforeRunProvider implementation="org.rust.cargo.runconfig.buildtool.CargoBuildTaskProvider"/>
+        <stepsBeforeRunProvider implementation="org.rust.cargo.runconfig.wasmpack.WasmPackBuildTaskProvider"/>
 
         <projectTaskRunner implementation="org.rust.cargo.runconfig.buildtool.CargoBuildTaskRunner"/>
 
@@ -899,6 +961,7 @@
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsReexportIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsExternCrateReexportIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsFeatureIndex"/>
+        <stubIndex implementation="org.rust.lang.core.stubs.index.RsCfgNotTestIndex"/>
         <stubIndex implementation="org.rust.lang.core.stubs.index.RsIncludeMacroIndex"/>
 
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsImplIndex"/>
@@ -907,10 +970,13 @@
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsMacroIndex"/>
         <stubIndex implementation="org.rust.lang.core.resolve.indexes.RsMacroCallIndex"/>
 
-        <!-- Notification Providers -->
+        <!-- Notifications -->
 
         <editorNotificationProvider implementation="org.rust.ide.notifications.MissingToolchainNotificationProvider"/>
         <editorNotificationProvider implementation="org.rust.ide.notifications.NoCargoProjectNotificationProvider"/>
+
+        <notificationGroup id="Rust Plugin" displayType="BALLOON"/>
+        <notificationGroup id="Rust Build Log" displayType="NONE"/>
 
         <!-- Editor Tab Title Providers -->
 
@@ -963,6 +1029,8 @@
         <virtualFileSystem key="rust_macros" implementationClass="org.rust.lang.core.macros.MacroExpansionFileSystem"/>
         <fileTypeOverrider implementation="org.rust.lang.core.macros.RsFileTypeOverriderForMacroExpansionFileSystem"/>
         <globalIndexFilter implementation="org.rust.lang.core.macros.RsGlobalIndexFilterForMacroExpansionFileSystem"/>
+        <filetype.prebuiltStubsProvider filetype="Rust"
+                                        implementationClass="org.rust.lang.core.macros.MacroExpansionStubsProvider"/>
 
         <!-- REPL Console -->
 
@@ -981,11 +1049,23 @@
         <!-- Registry keys -->
 
         <registryKey key="org.rust.lang.type.alias.threshold" defaultValue="10" restartRequired="false"
-                     description="Maximum number of type aliases to take into account during `impl`s search"/>
+                     description="Maximum number of type aliases to take into account during `impl`s search (old resolve)"/>
+        <registryKey key="org.rust.lang.type.alias.threshold.new.resolve" defaultValue="2147483647" restartRequired="false"
+                     description="Maximum number of type aliases to take into account during `impl`s search (new resolve)"/>
         <registryKey key="org.rust.lang.cfg.attributes" defaultValue="true" restartRequired="false"
                      description="Enable Rust cfg attributes support"/>
         <registryKey key="org.rust.lang.highlight.macro.body" defaultValue="true" restartRequired="false"
                      description="Highlight Rust macro call bodies"/>
+        <registryKey key="org.rust.lang.macros.persistentCache" defaultValue="true" restartRequired="false"
+                     description="Use persistent cache for Rust macro expansions"/>
+        <registryKey key="org.rust.cargo.lock.update.delay.threshold" defaultValue="5000" restartRequired="false"
+                     description="Delay in ms between Cargo metadata call and changes in Cargo.lock
+                     when automatic project structure reload doesn't occur"/>
+        <registryKey key="org.rust.cargo.evaluate.build.scripts.wrapper" defaultValue="true" restartRequired="false"
+                     description="Use RUSTC_WRAPPER when fetching build script info (if experimental feature
+                     `org.rust.cargo.evaluate.build.scripts` is enabled)"/>
+        <registryKey key="org.rust.macros.proc.timeout" defaultValue="5000" restartRequired="false"
+                     description="The maximum time (in milliseconds) allotted to one procedural macro expansion"/>
 
         <!-- Move refactoring -->
 
@@ -1003,11 +1083,44 @@
 
         <console.folding implementation="org.rust.ide.console.RsConsoleFolding"/>
 
+        <!--  Experimental features -->
+        <experimentalFeature id="org.rust.cargo.features.settings.gutter" percentOfUsers="0">
+            <description>Show settings gutter icon near [features] section in `Cargo.toml` where you can enable or disable all features</description>
+        </experimentalFeature>
+
+    </extensions>
+
+    <extensions defaultExtensionNs="org.rust">
+
+        <!-- Toolchain flavors -->
+
+        <toolchainFlavor id="rust.rustupToolchainFlavor"
+                         implementation="org.rust.cargo.toolchain.flavors.RustupToolchainFlavor"
+                         order="first"/>
+
+        <toolchainFlavor id="rust.sysPathToolchainFlavor"
+                         implementation="org.rust.cargo.toolchain.flavors.RsSysPathToolchainFlavor"/>
+
+        <toolchainFlavor id="rust.unixToolchainFlavor"
+                         implementation="org.rust.cargo.toolchain.flavors.RsUnixToolchainFlavor"
+                         os="unix"/>
+
+        <toolchainFlavor id="rust.macToolchainFlavor"
+                         implementation="org.rust.cargo.toolchain.flavors.RsMacToolchainFlavor"
+                         os="mac"/>
+
+        <toolchainFlavor id="rust.winToolchainFlavor"
+                         implementation="org.rust.cargo.toolchain.flavors.RsWinToolchainFlavor"
+                         os="windows"/>
+
     </extensions>
 
     <extensionPoints>
         <extensionPoint qualifiedName="org.rust.runConfigurationExtension"
                         interface="org.rust.cargo.runconfig.CargoCommandConfigurationExtension"
+                        dynamic="true"/>
+        <extensionPoint qualifiedName="org.rust.toolchainFlavor"
+                        interface="org.rust.cargo.toolchain.flavors.RsToolchainFlavor"
                         dynamic="true"/>
     </extensionPoints>
 
@@ -1025,21 +1138,18 @@
 
     <actions>
         <action id="Rust.NewRustFile"
-                class="org.rust.ide.actions.RsCreateFileAction"
-                text="Rust File"
-                description="Create new Rust file">
+                class="org.rust.ide.actions.RsCreateFileAction">
             <add-to-group group-id="NewGroup" anchor="before" relative-to-action="NewFile"/>
         </action>
 
-        <action id="Rust.NewCargoCrate" class="org.rust.ide.actions.RsCreateCrateAction"
-                text="Cargo Crate" description="Create new Cargo crate">
+        <action id="Rust.NewCargoCrate"
+                class="org.rust.ide.actions.RsCreateCrateAction"
+                icon="/icons/cargo.svg">
             <add-to-group group-id="NewGroup" anchor="before" relative-to-action="NewFile"/>
         </action>
 
         <action id="Rust.Build"
                 class="org.rust.ide.actions.RsBuildAction"
-                text="Build"
-                description="Build project"
                 icon="AllIcons.Actions.Compile"
                 use-shortcut-of="CompileDirty">
             <add-to-group group-id="ToolbarRunGroup" relative-to-action="RunConfiguration" anchor="before"/>
@@ -1047,133 +1157,113 @@
         </action>
 
         <action id="Rust.RsPromoteModuleToDirectoryAction"
-                class="org.rust.ide.refactoring.RsPromoteModuleToDirectoryAction"
-                text="Promote Module to Directory"
-                description="Move this module to a dedicated directory">
+                class="org.rust.ide.refactoring.RsPromoteModuleToDirectoryAction">
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
         <action id="Rust.RsDowngradeModuleToFile"
-                class="org.rust.ide.refactoring.RsDowngradeModuleToFile"
-                text="Downgrade Module to File"
-                description="Move this module to a single file">
+                class="org.rust.ide.refactoring.RsDowngradeModuleToFile">
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
         <action id="Rust.RsConvertToNamedFields"
-                class="org.rust.ide.refactoring.convertStruct.RsConvertToNamedFieldsAction"
-                text="Convert to Named Fields"
-                description="Converts tuple struct to named fields">
+                class="org.rust.ide.refactoring.convertStruct.RsConvertToNamedFieldsAction">
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
         <action id="Rust.RsConvertToTuple"
-                class="org.rust.ide.refactoring.convertStruct.RsConvertToTupleAction"
-                text="Convert to Tuple"
-                description="Converts struct to tuple representation">
+                class="org.rust.ide.refactoring.convertStruct.RsConvertToTupleAction">
             <add-to-group group-id="RefactoringMenu"/>
         </action>
 
         <action id="Rust.RsExtractEnumVariant"
-                class="org.rust.ide.refactoring.extractEnumVariant.RsExtractEnumVariantAction"
-                text="Extract Enum Variant"
-                description="Extract a single enum variant into a separate struct">
+                class="org.rust.ide.refactoring.extractEnumVariant.RsExtractEnumVariantAction">
             <add-to-group group-id="IntroduceActionsGroup" anchor="after" relative-to-action="ExtractMethod"/>
         </action>
 
         <action id="Rust.ShowSingleStepMacroExpansionAction"
-                class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction"
-                text="Show Expanded Macro">
+                class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction">
         </action>
         <action id="Rust.ShowRecursiveMacroExpansionAction"
-                class="org.rust.ide.actions.macroExpansion.RsShowRecursiveMacroExpansionAction"
-                text="Show Recursively Expanded Macro">
+                class="org.rust.ide.actions.macroExpansion.RsShowRecursiveMacroExpansionAction">
         </action>
-        <group id="Rust.MacroExpansionActions"
-               text="Show Macro Expansion"
-               class="org.rust.ide.actions.macroExpansion.RsShowMacroExpansionGroup">
-            <add-to-group group-id="EditorPopupMenu"/>
-            <separator/>
-            <reference id="Rust.ShowRecursiveMacroExpansionAction"/>
-            <reference id="Rust.ShowSingleStepMacroExpansionAction"/>
-        </group>
 
         <action class="org.rust.ide.refactoring.generate.constructor.GenerateConstructorAction"
-                id="Rust.GenerateConstructor"
-                text="Constructor">
+                id="Rust.GenerateConstructor">
             <add-to-group group-id="GenerateGroup"/>
         </action>
 
         <action class="org.rust.ide.refactoring.generate.getter.GenerateGetterAction"
-                id="Rust.GenerateGetter"
-                text="Getter">
+                id="Rust.GenerateGetter">
             <add-to-group group-id="GenerateGroup"/>
         </action>
 
         <action class="org.rust.ide.refactoring.generate.setter.GenerateSetterAction"
-                id="Rust.GenerateSetter"
-                text="Setter">
+                id="Rust.GenerateSetter">
             <add-to-group group-id="GenerateGroup"/>
         </action>
 
         <action id="Rust.ReexpandMacrosAction"
-                class="org.rust.lang.core.macros.ReexpandMacrosAction"
-                text="Re-Expand All Rust Macros">
+                class="org.rust.lang.core.macros.ReexpandMacrosAction">
+        </action>
+
+        <action id="Rust.RebuildAllDefMaps"
+                class="org.rust.lang.core.resolve2.actions.RsRebuildAllDefMapsAction">
+        </action>
+
+        <action id="Rust.RebuildCurrentDefMap"
+                class="org.rust.lang.core.resolve2.actions.RsRebuildCurrentDefMapAction">
         </action>
 
         <action id="Rust.CreateNewGithubIssue"
-                class="org.rust.ide.actions.diagnostic.CreateNewGithubIssue">
+                class="org.rust.ide.actions.diagnostic.CreateNewGithubIssue"
+                icon="/icons/rust.svg">
             <add-to-group group-id="HelpMenu" anchor="after" relative-to-action="ReportProblem"/>
         </action>
+
+        <action id="Rust.ShareInPlayground"
+                class="org.rust.ide.actions.ShareInPlaygroundAction"/>
 
         <!-- Cargo-->
 
         <action id="Cargo.RustfmtFile"
                 class="org.rust.ide.actions.RustfmtFileAction"
-                text="Reformat File with Rustfmt"
-                description="Reformat current file with rustfmt"
                 icon="AllIcons.Actions.RealIntentionBulb">
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </action>
 
         <action id="Cargo.RustfmtCargoProject"
                 class="org.rust.ide.actions.RustfmtCargoProjectAction"
-                text="Reformat Cargo Project with Rustfmt"
-                description="Reformat cargo project with rustfmt"
                 icon="AllIcons.Actions.RealIntentionBulb">
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </action>
 
         <action id="Cargo.RefreshCargoProject"
-                class="org.rust.ide.actions.RefreshCargoProjectAction"
+                class="org.rust.ide.actions.RefreshCargoProjectsAction"
                 icon="AllIcons.Actions.Refresh"/>
 
         <action id="Cargo.AttachCargoProject"
                 class="org.rust.cargo.project.model.AttachCargoProjectAction"
-                text="Attach Cargo Project"
                 icon="AllIcons.General.Add"/>
 
         <action id="Cargo.DetachCargoProject"
                 class="org.rust.cargo.project.model.DetachCargoProjectAction"
-                text="Detach Cargo Project"
                 icon="AllIcons.General.Remove"
                 use-shortcut-of="$Delete"/>
 
         <action id="Cargo.RunCargoCommand"
                 class="org.rust.cargo.runconfig.command.RunCargoCommandAction"
-                text="Run Cargo Command"/>
+                icon="/icons/cargo.svg"/>
 
         <action id="Cargo.RunExternalLinter"
                 class="org.rust.ide.actions.RsRunExternalLinterAction"
-                text="Run External Linter"/>
+                icon="/icons/external-linter.svg"/>
 
         <action id="Cargo.ToggleExternalLinterOnTheFlyAction"
-                class="org.rust.ide.actions.ToggleExternalLinterOnTheFlyAction"
-                text="Run External Linter (Cargo Check / Clippy) on the Fly"/>
+                class="org.rust.ide.actions.ToggleExternalLinterOnTheFlyAction"/>
 
         <action id="Cargo.ShowSettings"
-                class="org.rust.ide.actions.CargoEditSettingsAction" text="Cargo Settings"
-                description="Edit Cargo settings for the current project"
+                class="org.rust.ide.actions.CargoEditSettingsAction"
                 icon="AllIcons.General.Settings">
         </action>
 
@@ -1197,20 +1287,44 @@
             <add-to-group group-id="ProjectViewPopupMenu"/>
         </group>
 
-        <!-- Repl -->
-
         <action id="Rust.ConsoleREPL"
                 class="org.rust.ide.console.RunRustConsoleAction"
-                text="Rust REPL"
                 icon="/icons/repl.svg">
-            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+
+        <group id="Rust.Tools"
+               class="org.rust.ide.actions.RsToolsActionGroup"
+               icon="/icons/rust.svg"
+               popup="true">
+            <group id="Rust.MacroExpansionActions"
+                   class="org.rust.ide.actions.macroExpansion.RsShowMacroExpansionGroup">
+                <reference id="Rust.ShowRecursiveMacroExpansionAction"/>
+                <reference id="Rust.ShowSingleStepMacroExpansionAction"/>
+                <separator/>
+            </group>
+
+            <reference id="Cargo.RustfmtFile"/>
+            <reference id="Cargo.RustfmtCargoProject"/>
+            <reference id="Rust.ConsoleREPL"/>
+            <reference id="Rust.ShareInPlayground"/>
+
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorTabPopupMenu" anchor="last"/>
+        </group>
 
         <!-- Internal -->
 
-        <action id="RsGenerateDictionaries" class="org.rust.ide.spelling.RsSpellCheckerGenerateDictionariesAction"
-                text="Generate Rust Spellchecker Dictionaries" internal="true">
+        <action id="Rust.GenerateDictionaries"
+                class="org.rust.ide.spelling.RsSpellCheckerGenerateDictionariesAction"
+                internal="true">
             <add-to-group group-id="Internal"/>
+        </action>
+
+        <action id="Rust.ToggleNewResolve"
+                class="org.rust.lang.core.resolve2.actions.RsToggleNewResolveAction"
+                internal="true">
         </action>
 
     </actions>

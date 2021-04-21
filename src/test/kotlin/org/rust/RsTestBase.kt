@@ -7,12 +7,8 @@ package org.rust
 
 import com.intellij.TestCase
 import com.intellij.findAnnotationInstance
-import com.intellij.injected.editor.VirtualFileWindow
-import com.intellij.lang.LanguageCommenters
-import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.runWriteAction
-import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapi.util.io.StreamUtil
@@ -23,11 +19,12 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
 import com.intellij.psi.impl.PsiManagerEx
-import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.testFramework.LightProjectDescriptor
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.UsefulTestCase
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.ThrowableRunnable
 import com.intellij.util.text.SemVer
 import junit.framework.AssertionFailedError
 import org.intellij.lang.annotations.Language
@@ -35,16 +32,17 @@ import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.impl.testCargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.FeatureDep
+import org.rust.cargo.project.workspace.PackageFeature
 import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.toolchain.RustcVersion
-import org.rust.lang.core.macros.findExpansionElements
+import org.rust.cargo.toolchain.impl.RustcVersion
 import org.rust.lang.core.macros.macroExpansionManager
-import org.rust.lang.core.psi.ext.startOffset
+import org.rust.openapiext.document
 import org.rust.openapiext.saveAllDocuments
 import org.rust.stdext.BothEditions
 import kotlin.reflect.KMutableProperty0
 
-abstract class RsTestBase : RsPlatformTestBase() {
+abstract class RsTestBase : BasePlatformTestCase(), RsTestCase {
 
     // Needed for assertion that the directory doesn't acidentally renamed during the test
     private var tempDirRootUrl: String? = null
@@ -70,6 +68,8 @@ abstract class RsTestBase : RsPlatformTestBase() {
         setupMockRustcVersion()
         setupMockEdition()
         setupMockCfgOptions()
+        setupMockCargoFeatures()
+        setupResolveEngine(project, testRootDisposable)
         findAnnotationInstance<ExpandMacros>()?.let {
             val disposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(it.mode, it.cache)
             Disposer.register(testRootDisposable, disposable)
@@ -113,7 +113,31 @@ abstract class RsTestBase : RsPlatformTestBase() {
             CfgOptions.DEFAULT.keyValueOptions,
             CfgOptions.DEFAULT.nameOptions + additionalOptions
         )
-        project.testCargoProjects.setCfgOptions(allOptions)
+        project.testCargoProjects.setCfgOptions(allOptions, testRootDisposable)
+    }
+
+    private fun setupMockCargoFeatures() {
+        val featuresToParse = findAnnotationInstance<MockCargoFeatures>()?.features
+            ?.takeIf { it.isNotEmpty() } ?: return
+
+        val testCargoProjects = project.testCargoProjects
+
+        val packages = testCargoProjects.allProjects.asSequence()
+            .flatMap { it.workspace?.packages.orEmpty().asSequence() }
+            .associateBy { it.name }
+
+        val packageFeatures = featuresToParse.mapNotNull { feature ->
+            val (pkgName, featureName) = if ("/" in feature) {
+                feature.split('/', limit = 2)
+            } else {
+                listOf("test-package", feature)
+            }
+            val pkg = packages[pkgName] ?: return@mapNotNull null
+
+            PackageFeature(pkg, featureName) to emptyList<FeatureDep>()
+        }.toMap()
+
+        testCargoProjects.setCargoFeatures(packageFeatures, testRootDisposable)
     }
 
     private fun parse(version: String): Pair<SemVer, RustChannel> {
@@ -133,7 +157,7 @@ abstract class RsTestBase : RsPlatformTestBase() {
         return semVer to channel
     }
 
-    override fun runTestInternal(context: TestContext) {
+    override fun runTestRunnable(testRunnable: ThrowableRunnable<Throwable>) {
         val reason = skipTestReason
         if (reason != null) {
             System.err.println("SKIP \"$name\": $reason")
@@ -154,36 +178,37 @@ abstract class RsTestBase : RsPlatformTestBase() {
                 error("Can't mix `BothEditions` and `MockEdition` annotations")
             }
             // These functions exist to simplify stacktrace analyzing
-            runTestEdition2015(context)
-            runTestEdition2018(context)
+            runTestEdition2015(testRunnable)
+            runTestEdition2018(testRunnable)
         } else {
-            super.runTestInternal(context)
+            super.runTestRunnable(testRunnable)
         }
     }
 
     protected open val skipTestReason: String?
         get() {
             val projectDescriptor = projectDescriptor as? RustProjectDescriptorBase
-            var reason = projectDescriptor?.skipTestReason
-            if (reason == null) {
+
+            fun getMinRustVersionReason(): String? {
                 val minRustVersion = findAnnotationInstance<MinRustcVersion>() ?: return null
                 val requiredVersion = minRustVersion.semver
                 val rustcVersion = projectDescriptor?.rustcInfo?.version ?: return null
-                if (rustcVersion.semver < requiredVersion) {
-                    reason = "$requiredVersion Rust version required, ${rustcVersion.semver} found"
-                }
+                if (rustcVersion.semver >= requiredVersion) return null
+                return "$requiredVersion Rust version required, ${rustcVersion.semver} found"
             }
-            return reason
+
+            return projectDescriptor?.skipTestReason
+                ?: getMinRustVersionReason()
         }
 
-    private fun runTestEdition2015(context: TestContext) {
+    private fun runTestEdition2015(testRunnable: ThrowableRunnable<Throwable>) {
         project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2015, testRootDisposable)
-        super.runTestInternal(context)
+        super.runTestRunnable(testRunnable)
     }
 
-    private fun runTestEdition2018(context: TestContext) {
+    private fun runTestEdition2018(testRunnable: ThrowableRunnable<Throwable>) {
         project.testCargoProjects.setEdition(CargoWorkspace.Edition.EDITION_2018, testRootDisposable)
-        super.runTestInternal(context)
+        super.runTestRunnable(testRunnable)
     }
 
     protected val fileName: String
@@ -212,7 +237,7 @@ abstract class RsTestBase : RsPlatformTestBase() {
 
         action(beforeDir)
 
-        val afterDir = getVirtualFileByName("$testDataPath/$after")
+        val afterDir = getVirtualFileByName("$testDataPath/$after") ?: error("Failed find `$testDataPath/$after`")
         PlatformTestUtil.assertDirectoriesEqual(afterDir, beforeDir)
     }
 
@@ -303,6 +328,11 @@ abstract class RsTestBase : RsPlatformTestBase() {
         return element to data
     }
 
+    protected inline fun <reified T : PsiElement> findElementAndOffsetInEditor(marker: String = "^"): Pair<T, Int> {
+        val (element, _, offset) = findElementWithDataAndOffsetInEditor<T>(marker)
+        return element to offset
+    }
+
     protected inline fun <reified T : PsiElement> findElementWithDataAndOffsetInEditor(
         marker: String = "^"
     ): Triple<T, String, Int> {
@@ -329,44 +359,13 @@ abstract class RsTestBase : RsPlatformTestBase() {
         psiClass: Class<T>,
         marker: String
     ): List<Triple<T, String, Int>> {
-        val commentPrefix = LanguageCommenters.INSTANCE.forLanguage(myFixture.file.language).lineCommentPrefix ?: "//"
-        val caretMarker = "$commentPrefix$marker"
-        val text = myFixture.file.text
-        val result = mutableListOf<Triple<T, String, Int>>()
-        var markerOffset = -caretMarker.length
-        while (true) {
-            markerOffset = text.indexOf(caretMarker, markerOffset + caretMarker.length)
-            if (markerOffset == -1) break
-            val data = text.drop(markerOffset).removePrefix(caretMarker).takeWhile { it != '\n' }.trim()
-            val markerPosition = myFixture.editor.offsetToLogicalPosition(markerOffset + caretMarker.length - 1)
-            val previousLine = LogicalPosition(markerPosition.line - 1, markerPosition.column)
-            val elementOffset = myFixture.editor.logicalPositionToOffset(previousLine)
-            val elementAtMarker = myFixture.file.findElementAt(elementOffset)!!
-
-            if (followMacroExpansions) {
-                val expandedElementAtMarker = elementAtMarker.findExpansionElements()?.singleOrNull()
-                val expandedElement = expandedElementAtMarker?.let { PsiTreeUtil.getParentOfType(it, psiClass, false) }
-                if (expandedElement != null) {
-                    val offset = expandedElementAtMarker.startOffset + (elementOffset - elementAtMarker.startOffset)
-                    result.add(Triple(expandedElement, data, offset))
-                    continue
-                }
-            }
-
-            val element = PsiTreeUtil.getParentOfType(elementAtMarker, psiClass, false)
-            if (element != null) {
-                result.add(Triple(element, data, elementOffset))
-            } else {
-                val injectionElement = InjectedLanguageManager.getInstance(project)
-                    .findInjectedElementAt(myFixture.file, elementOffset)
-                    ?.let { PsiTreeUtil.getParentOfType(it, psiClass, false) }
-                    ?: error("No ${psiClass.simpleName} at ${elementAtMarker.text}")
-                val injectionOffset = (injectionElement.containingFile.virtualFile as VirtualFileWindow)
-                    .documentWindow.hostToInjected(elementOffset)
-                result.add(Triple(injectionElement, data, injectionOffset))
-            }
-        }
-        return result
+        return findElementsWithDataAndOffsetInEditor(
+            myFixture.file,
+            myFixture.file.document!!,
+            followMacroExpansions,
+            psiClass,
+            marker
+        )
     }
 
     protected open val followMacroExpansions: Boolean get() = false

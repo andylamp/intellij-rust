@@ -6,6 +6,7 @@
 package org.rust.lang.core.completion
 
 import org.rust.*
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 
 class RsCompletionTest : RsCompletionTestBase() {
     fun `test local variable`() = doSingleCompletion("""
@@ -280,6 +281,32 @@ class RsCompletionTest : RsCompletionTestBase() {
         trait T { fn foo() -> Self/*caret*/ }
     """)
 
+    fun `test complete Self type in nested impls`() = doSingleCompletion("""
+        struct A;
+        impl A {
+            fn foo() {
+                struct E {
+                    value: i32
+                }
+                impl E {
+                    fn new() -> Se/*caret*/ {}
+                }
+            }
+        }
+    """, """
+        struct A;
+        impl A {
+            fn foo() {
+                struct E {
+                    value: i32
+                }
+                impl E {
+                    fn new() -> Self/*caret*/ {}
+                }
+            }
+        }
+    """)
+
     fun `test complete self method`() = doSingleCompletion("""
         struct S;
         impl S { fn foo(&se/*caret*/) {}}
@@ -544,6 +571,17 @@ class RsCompletionTest : RsCompletionTestBase() {
         macro_rules! foo_bar { () => () }
         fn main() {
             foo_bar!(/*caret*/)
+        }
+    """)
+
+    @MockEdition(Edition.EDITION_2018)
+    fun `test complete macro 3`() = checkContainsCompletion("foobar1", """
+        mod inner {
+            macro_rules! foobar1 { () => {} }
+            macro_rules! foobar2 { () => {} }
+            fn test() {
+                foo/*caret*/ba!();
+            }
         }
     """)
 
@@ -934,6 +972,17 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """)
 
+    fun `test complete path in path attribute under cfg_attr on mod decl`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        #[cfg_attr(unix, path="b/*caret*/")]
+        mod foo;
+    //- bar.rs
+        fn bar() {}
+    """, """
+        #[cfg_attr(unix, path="bar.rs/*caret*/")]
+        mod foo;
+    """)
+
     @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test private extern crate`() = checkNoCompletion("""
         mod foo { extern crate std; }
@@ -1248,4 +1297,39 @@ class RsCompletionTest : RsCompletionTestBase() {
         struct FnOnceStruct;
         fn foo(f: FnOnce(/*caret*/)) {}
     """, completionChar = '(', testmark = Testmarks.doNotAddOpenParenCompletionChar)
+
+    @MockEdition(Edition.EDITION_2018)
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test completion cfg-disabled item 1`() = checkNoCompletionByFileTree("""
+    //- main.rs
+        #[cfg(not(intellij_rust))]
+        mod foo;
+        fn main() {
+            foo::/*caret*/
+        }
+    //- foo.rs
+        pub fn func() {}
+    """)
+
+    @UseNewResolve
+    @MockEdition(Edition.EDITION_2018)
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test completion cfg-disabled item 2`() = doSingleCompletionByFileTree("""
+    //- main.rs
+        #[cfg(not(intellij_rust))]
+        mod foo;
+        #[cfg(not(intellij_rust))]
+        fn main() {
+            foo::/*caret*/
+        }
+    //- foo.rs
+        pub fn func() {}
+    """, """
+        #[cfg(not(intellij_rust))]
+        mod foo;
+        #[cfg(not(intellij_rust))]
+        fn main() {
+            foo::func()
+        }
+    """)
 }

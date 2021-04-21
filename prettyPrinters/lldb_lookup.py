@@ -1,19 +1,16 @@
-import lldb
+from lldb import SBType
+from lldb import eTypeClassStruct, eTypeClassUnion
 
 from lldb_providers import *
 from rust_types import RustType, classify_struct, classify_union
 
 
-# BACKCOMPAT: rust 1.35
-def is_hashbrown_hashmap(hash_map):
-    return len(hash_map.type.fields) == 1
-
-
 def classify_rust_type(type):
+    # type: (SBType) -> RustType
     type_class = type.GetTypeClass()
-    if type_class == lldb.eTypeClassStruct:
+    if type_class == eTypeClassStruct:
         return classify_struct(type.name, type.fields)
-    if type_class == lldb.eTypeClassUnion:
+    if type_class == eTypeClassUnion:
         return classify_union(type.fields)
 
     return RustType.OTHER
@@ -86,17 +83,9 @@ def synthetic_lookup(valobj, dict):
         return StdVecDequeSyntheticProvider(valobj, dict)
 
     if rust_type == RustType.STD_HASH_MAP:
-        if is_hashbrown_hashmap(valobj):
-            return StdHashMapSyntheticProvider(valobj, dict)
-        else:
-            return StdOldHashMapSyntheticProvider(valobj, dict)
+        return StdHashMapSyntheticProvider(valobj, dict)
     if rust_type == RustType.STD_HASH_SET:
-        hash_map = valobj.GetChildAtIndex(0)
-        if is_hashbrown_hashmap(hash_map):
-            return StdHashMapSyntheticProvider(hash_map, dict, show_values=False)
-        else:
-            return StdOldHashMapSyntheticProvider(hash_map, dict, show_values=False)
-
+        return StdHashMapSyntheticProvider(valobj, dict, show_values=False)
     if rust_type == RustType.STD_RC:
         return StdRcSyntheticProvider(valobj, dict)
     if rust_type == RustType.STD_ARC:
@@ -111,4 +100,4 @@ def synthetic_lookup(valobj, dict):
     if rust_type == RustType.STD_REF_CELL:
         return StdRefSyntheticProvider(valobj, dict, is_cell=True)
 
-    return DefaultSynthteticProvider(valobj, dict)
+    return DefaultSyntheticProvider(valobj, dict)

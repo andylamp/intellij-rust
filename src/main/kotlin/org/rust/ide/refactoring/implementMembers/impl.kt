@@ -28,6 +28,7 @@ import org.rust.lang.core.types.type
 import org.rust.openapiext.checkReadAccessAllowed
 import org.rust.openapiext.checkWriteAccessAllowed
 import org.rust.openapiext.checkWriteAccessNotAllowed
+import kotlin.math.max
 
 fun generateTraitMembers(impl: RsImplItem, editor: Editor?) {
     checkWriteAccessNotAllowed()
@@ -128,7 +129,7 @@ private fun insertNewTraitMembers(
         }
     }
 
-    importTypeReferencesFromElements(existingMembers, selected, trait.subst, true)
+    importTypeReferencesFromElements(existingMembers, selected, trait.subst, useAliases = true, skipUnchangedDefaultTypeArguments = true)
 
     if (needToSelect != null && editor != null) {
         selectElement(needToSelect, editor)
@@ -149,7 +150,7 @@ private fun createExtraWhitespacesAroundFunction(left: PsiElement, right: PsiEle
         .filterIsInstance<PsiWhiteSpace>()
         .map { it.text.count { c -> c == '\n' } }
         .sum()
-    val extraLineCount = Math.max(0, 2 - lineCount)
+    val extraLineCount = max(0, 2 - lineCount)
     return RsPsiFactory(left.project).createWhitespace("\n".repeat(extraLineCount))
 }
 
@@ -169,7 +170,7 @@ private fun RsPsiFactory.createTraitMembers(
             is RsTypeAlias ->
                 "    type ${it.escapedName} = ();"
             is RsFunction ->
-                "    ${it.getSignatureText(subst, trait, impl) ?: ""}{\n        unimplemented!()\n    }"
+                "    ${it.getSignatureText(subst, trait, impl) ?: ""}{\n        todo!()\n    }"
             else ->
                 error("Unknown trait member")
         }

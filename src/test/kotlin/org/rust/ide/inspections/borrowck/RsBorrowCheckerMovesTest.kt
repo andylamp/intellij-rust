@@ -5,8 +5,11 @@
 
 package org.rust.ide.inspections.borrowck
 
+import org.rust.MockAdditionalCfgOptions
+import org.rust.MockEdition
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.ide.inspections.RsBorrowCheckerInspection
 import org.rust.ide.inspections.RsInspectionsTestBase
 
@@ -221,6 +224,7 @@ class RsBorrowCheckerMovesTest : RsInspectionsTestBase(RsBorrowCheckerInspection
         }
     """, checkWarn = false)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test no move error E0382 when closure used twice`() = checkByText("""
         fn main() {
             let f = |x: i32| {};
@@ -718,6 +722,50 @@ class RsBorrowCheckerMovesTest : RsInspectionsTestBase(RsBorrowCheckerInspection
             s.x;
             s.x = T;
             s.x;
+        }
+    """, checkWarn = false)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test move in async block`() = checkByText("""
+        struct S;
+
+        fn foo() {
+            let s = S;
+            async { s; };
+            <error descr="Use of moved value">s</error>;
+        }
+    """, checkWarn = false)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test move in conditionally enabled code`() = checkByText("""
+        struct S;
+
+        fn main() {
+            let s = S;
+            #[cfg(intellij_rust)] s;
+            <error descr="Use of moved value">s</error>;
+        }
+    """, checkWarn = false)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test move in conditionally disabled code`() = checkByText("""
+        struct S;
+
+        fn main() {
+            let s = S;
+            #[cfg(not(intellij_rust))] s;
+            s;
+        }
+    """, checkWarn = false)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test no move function type parameter`() = checkByText("""
+        #[derive(Copy, Clone)]
+        struct Bar<Fn> { a: Fn }
+
+        fn bar(x: Bar<fn()>) {
+            x;
+            x;
         }
     """, checkWarn = false)
 }

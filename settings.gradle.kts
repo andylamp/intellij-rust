@@ -12,5 +12,17 @@ include(
     "intelliLang",
     "duplicates",
     "grazie",
+    "js",
+    "ml-completion",
     "intellij-toml"
 )
+
+// Configure Gradle Build Cache. It is enabled in `gradle.properties` via `org.gradle.caching`.
+// Also, `gradle clean` task is configured to delete `build-cache` directory.
+buildCache {
+    local {
+        isEnabled = System.getenv("CI") == null
+        directory = File(rootDir, "build-cache")
+        removeUnusedEntriesAfterDays = 30
+    }
+}

@@ -5,16 +5,14 @@
 
 package org.rust.ide.annotator
 
-import com.google.gson.JsonParser
-import com.google.gson.stream.JsonReader
 import com.intellij.CommonBundle
 import com.intellij.execution.ExecutionException
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.lang.annotation.ProblemGroup
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.PerformInBackgroundOption
@@ -34,23 +32,29 @@ import com.intellij.util.PathUtil
 import com.intellij.util.messages.MessageBus
 import org.apache.commons.lang.StringEscapeUtils
 import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.cargo.toolchain.*
+import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.impl.CargoTopMessage
+import org.rust.cargo.toolchain.impl.ErrorCode
+import org.rust.cargo.toolchain.impl.RustcMessage
+import org.rust.cargo.toolchain.impl.RustcSpan
+import org.rust.cargo.toolchain.tools.CargoCheckArgs
+import org.rust.cargo.toolchain.tools.cargoOrWrapper
 import org.rust.ide.annotator.RsExternalLinterFilteredMessage.Companion.filterMessage
 import org.rust.ide.annotator.RsExternalLinterUtils.TEST_MESSAGE
 import org.rust.ide.annotator.fixes.ApplySuggestionFix
 import org.rust.lang.RsConstants
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.ext.containingCargoPackage
+import org.rust.openapiext.JsonUtils.tryParseJsonObject
 import org.rust.openapiext.ProjectCache
 import org.rust.openapiext.checkReadAccessAllowed
 import org.rust.openapiext.checkReadAccessNotAllowed
 import org.rust.openapiext.saveAllDocumentsAsTheyAre
-import java.io.StringReader
 import java.nio.file.Path
 import java.util.*
 
 object RsExternalLinterUtils {
-    private val LOG: Logger = Logger.getInstance(RsExternalLinterUtils::class.java)
+    private val LOG: Logger = logger<RsExternalLinterUtils>()
     const val TEST_MESSAGE: String = "RsExternalLint"
 
     /**
@@ -62,14 +66,14 @@ object RsExternalLinterUtils {
      * @see PsiModificationTracker.MODIFICATION_COUNT
      */
     fun checkLazily(
-        toolchain: RustToolchain,
+        toolchain: RsToolchain,
         project: Project,
         owner: Disposable,
         workingDirectory: Path,
-        packageName: String?
+        args: CargoCheckArgs
     ): Lazy<RsExternalLinterResult?> {
         checkReadAccessAllowed()
-        return externalLinterLazyResultCache.getOrPut(project, Key(toolchain, workingDirectory, packageName)) {
+        return externalLinterLazyResultCache.getOrPut(project, Key(toolchain, workingDirectory, args)) {
             // We want to run external linter in background thread and *without* read action.
             // And also we want to cache result of external linter because it is cargo package-global,
             // but annotator can be invoked separately for each file.
@@ -88,17 +92,17 @@ object RsExternalLinterUtils {
             lazy {
                 // This code will be executed out of read action in background thread
                 if (!isUnitTestMode) checkReadAccessNotAllowed()
-                checkWrapped(toolchain, project, owner, workingDirectory, packageName)
+                checkWrapped(toolchain, project, owner, workingDirectory, args)
             }
         }
     }
 
     private fun checkWrapped(
-        toolchain: RustToolchain,
+        toolchain: RsToolchain,
         project: Project,
         owner: Disposable,
         workingDirectory: Path,
-        packageName: String?
+        args: CargoCheckArgs
     ): RsExternalLinterResult? {
         val indicator = WriteAction.computeAndWait<ProgressIndicator, Throwable> {
             saveAllDocumentsAsTheyAre()
@@ -107,32 +111,33 @@ object RsExternalLinterUtils {
             } else {
                 BackgroundableProcessIndicator(
                     project,
-                    "Analyzing Project with External Linter",
+                    "Analyzing project with External Linter",
                     PerformInBackgroundOption.ALWAYS_BACKGROUND,
                     CommonBundle.getCancelButtonText(),
+                    @Suppress("DialogTitleCapitalization")
                     CommonBundle.getCancelButtonText(),
                     true
                 )
             }
         }
         return ProgressManager.getInstance().runProcess(
-            Computable { check(toolchain, project, owner, workingDirectory, packageName) },
+            Computable { check(toolchain, project, owner, workingDirectory, args) },
             indicator
         )
     }
 
     private fun check(
-        toolchain: RustToolchain,
+        toolchain: RsToolchain,
         project: Project,
         owner: Disposable,
         workingDirectory: Path,
-        packageName: String?
+        args: CargoCheckArgs
     ): RsExternalLinterResult? {
         ProgressManager.checkCanceled()
         val output = try {
             toolchain
                 .cargoOrWrapper(workingDirectory)
-                .checkProject(project, owner, workingDirectory, packageName)
+                .checkProject(project, owner, args)
         } catch (e: ExecutionException) {
             LOG.error(e)
             return null
@@ -143,9 +148,9 @@ object RsExternalLinterUtils {
     }
 
     private data class Key(
-        val toolchain: RustToolchain,
+        val toolchain: RsToolchain,
         val workingDirectory: Path,
-        val packageName: String?
+        val args: CargoCheckArgs
     )
 
     private val externalLinterLazyResultCache =
@@ -197,10 +202,8 @@ fun AnnotationHolder.createAnnotationsForFile(file: RsFile, annotationResult: Rs
 class RsExternalLinterResult(commandOutput: List<String>) {
     val messages: List<CargoTopMessage> = commandOutput.asSequence()
         .filter { MESSAGE_REGEX.matches(it) }
-        .map { JsonReader(StringReader(it)).apply { isLenient = true } }
-        .map { JsonParser.parseReader(it) }
-        .filter { it.isJsonObject }
-        .mapNotNull { CargoTopMessage.fromJson(it.asJsonObject) }
+        .mapNotNull { tryParseJsonObject(it) }
+        .mapNotNull { CargoTopMessage.fromJson(it) }
         .toList()
 
     companion object {
@@ -250,7 +253,7 @@ private data class RsExternalLinterFilteredMessage(
                 }
 
                 message.children
-                    .filter { !it.message.isBlank() }
+                    .filter { it.message.isNotBlank() }
                     .map { "${it.level.capitalize()}: ${StringEscapeUtils.escapeHtml(it.message)}" }
                     .forEach { add(it) }
 

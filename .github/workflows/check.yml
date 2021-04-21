@@ -11,7 +11,7 @@ on:
 jobs:
     # TODO: drop it when GitHub supports its by itself
     cancel-previous:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         steps:
             - name: Cancel Previous Runs
               uses: styfle/cancel-workflow-action@0.4.1
@@ -19,33 +19,102 @@ jobs:
                   access_token: ${{ github.token }}
 
     check-license:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         steps:
             - uses: actions/checkout@v2
 
             - name: Check license
               run: ./check-license.sh
 
+    build-native-code:
+        strategy:
+            fail-fast: true
+            matrix:
+                config:
+                    - name: linux
+                      arch: x86-64
+                      os: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper
+                    - name: windows
+                      arch: x86-64
+                      os: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper.exe
+                    - name: macos
+                      arch: x86-64
+                      os: macos-latest
+                      target: x86_64-apple-darwin
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper
+
+        name: ${{ matrix.config.name }}-${{ matrix.config.arch }}
+        runs-on: ${{ matrix.config.os }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v2
+
+            - name: Set up Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  target: ${{ matrix.config.target }}
+                  default: true
+
+            - name: Cache native code
+              uses: actions/cache@v2.1.4
+              with:
+                  path: |
+                      ~/.cargo/registry
+                      ~/.cargo/git
+                      native-helper/target
+                  key: ${{ runner.os }}-native-helper-${{ hashFiles('native-helper/Cargo.lock') }}
+
+            - name: Build
+              uses: actions-rs/cargo@v1
+              with:
+                  command: build
+                  args: --manifest-path native-helper/Cargo.toml --release
+
+            - name: Publish
+              uses: actions/upload-artifact@v2
+              with:
+                  name: ${{ matrix.config.name }}-${{ matrix.config.arch }}
+                  path: ${{ matrix.config.artifact_path }}
+
     check-plugin:
+        needs: [ build-native-code ]
         strategy:
             fail-fast: false
             matrix:
-                os: [ ubuntu-latest, windows-latest ]
-                rust-version: [ 1.46.0, nightly-2020-07-10 ]
+                os: [ ubuntu-18.04, windows-latest ]
+                rust-version: [ 1.51.0, nightly-2021-03-24 ]
                 base-ide: [ idea, clion ]
-                platform-version: [ 202, 203 ]
+                platform-version: [ 203, 211 ]
+                resolve-engine: [ resolve-new ]
+                # it's enough to verify plugin structure only once per platform version
+                verify-plugin: [ false ]
                 include:
-                    - os: ubuntu-latest
+                    - os: ubuntu-18.04
                       # Don't forget to update condition in `Set up additional env variables` step
-                      rust-version: 1.32.0
+                      rust-version: 1.41.0
                       base-ide: idea
-                      platform-version: 202
+                      platform-version: 203
+                      resolve-engine: resolve-old
+                      verify-plugin: true
+                    - os: ubuntu-18.04
+                      rust-version: 1.51.0
+                      base-ide: idea
+                      platform-version: 211
+                      resolve-engine: resolve-old
+                      verify-plugin: true
 
         runs-on: ${{ matrix.os }}
-        timeout-minutes: 60
+        timeout-minutes: 120
         env:
             ORG_GRADLE_PROJECT_baseIDE: ${{ matrix.base-ide }}
             ORG_GRADLE_PROJECT_platformVersion: ${{ matrix.platform-version }}
+            ORG_GRADLE_PROJECT_compileNativeCode: false
 
         steps:
             - uses: actions/checkout@v2
@@ -63,6 +132,15 @@ jobs:
                   components: rust-src, rustfmt, clippy
                   default: true
 
+            # Requires for tests with overridden toolchain
+            - name: Set up nightly Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: nightly
+                  components: rust-src
+                  default: false
+
             - name: Cache evcxr
               uses: actions/cache@v2
               with:
@@ -75,7 +153,7 @@ jobs:
                       ${{ runner.os }}-cache-evcxr-${{ matrix.rust-version }}-
 
             - name: Install evcxr
-              if: matrix.os != 'windows-latest' && matrix.rust-version >= '1.40.0' # BACKCOMPAT: Rust 1.39.0
+              if: matrix.os != 'windows-latest' && matrix.rust-version >= '1.46.0' # BACKCOMPAT: Rust 1.45.0
               uses: actions-rs/cargo@v1
               with:
                   command: install
@@ -88,24 +166,48 @@ jobs:
                   cargo install --list
 
             - name: Set up additional env variables
-              if: matrix.rust-version == '1.32.0'
+              if: matrix.rust-version == '1.41.0'
               # see https://help.github.com/en/actions/reference/workflow-commands-for-github-actions#setting-an-environment-variable
+              # BACKCOMPAT: 1.45.0. Don't redefine `compileNativeCode` property
               run: |
-                  echo "::set-env name=ORG_GRADLE_PROJECT_ideaVersion::IU-2020.2"
-                  echo "::set-env name=ORG_GRADLE_PROJECT_clionVersion::CL-2020.2"
-                  echo "::set-env name=ORG_GRADLE_PROJECT_nativeDebugPluginVersion::202.6397.20"
-                  echo "::set-env name=ORG_GRADLE_PROJECT_graziePluginVersion::202.6397.11"
+                  echo "ORG_GRADLE_PROJECT_ideaVersion=IU-2020.3.2" >> $GITHUB_ENV
+                  echo "ORG_GRADLE_PROJECT_clionVersion=CL-2020.3.2" >> $GITHUB_ENV
+                  echo "ORG_GRADLE_PROJECT_nativeDebugPluginVersion=203.7148.57" >> $GITHUB_ENV
+                  echo "ORG_GRADLE_PROJECT_graziePluginVersion=203.7148.20" >> $GITHUB_ENV
+
+            - name: Set up env variable for old resolve
+              if: matrix.resolve-engine == 'resolve-old'
+              run: echo "INTELLIJ_RUST_FORCE_USE_OLD_RESOLVE=" >> $GITHUB_ENV
 
             - name: Set up test env variables
-              run: echo "::set-env name=RUST_SRC_WITH_SYMLINK::$HOME/.rust-src"
+              run: echo "RUST_SRC_WITH_SYMLINK=$HOME/.rust-src" >> $GITHUB_ENV
 
             - name: Create symlink for Rust stdlib Unix
               if: matrix.os != 'windows-latest'
               run: ln -s $(rustc --print sysroot)/lib/rustlib/src/rust $RUST_SRC_WITH_SYMLINK
 
-            - name: Create symlink for Rust stdlib Windows
-              if: matrix.os == 'windows-latest'
-              run: New-Item -ItemType Junction -Path "$env:RUST_SRC_WITH_SYMLINK" -Target "$(rustc --print sysroot)/lib/rustlib/src/rust"
+            # FIXME: find out why it doesn't work on CI
+            # - name: Create symlink for Rust stdlib Windows
+            #  if: matrix.os == 'windows-latest'
+            #  run: New-Item -ItemType Junction -Path "$env:RUST_SRC_WITH_SYMLINK" -Target "$(rustc --print sysroot)/lib/rustlib/src/rust"
+
+            - name: Load linux binaries
+              uses: actions/download-artifact@v2
+              with:
+                  name: linux-x86-64
+                  path: bin/linux/x86-64
+
+            - name: Load windows binaries
+              uses: actions/download-artifact@v2
+              with:
+                  name: windows-x86-64
+                  path: bin/windows/x86-64
+
+            - name: Load macos binaries
+              uses: actions/download-artifact@v2
+              with:
+                  name: macos-x86-64
+                  path: bin/macos/x86-64
 
             - name: Download
               uses: eskatos/gradle-command-action@v1
@@ -122,7 +224,17 @@ jobs:
               with:
                   arguments: "check -PexcludeTests=org/rustPerformanceTests/** --continue -Pkotlin.incremental=false --no-daemon"
 
+            - name: Collect fail reports
+              if: failure()
+              uses: actions/upload-artifact@v2
+              with:
+                  name: tests-report-${{ matrix.os }}-${{ matrix.rust-version }}-${{ matrix.base-ide }}-${{ matrix.platform-version }}
+                  path: |
+                      build/reports/tests
+                      */build/reports/tests
+
             - name: Verify plugin
+              if: matrix.verify-plugin
               uses: eskatos/gradle-command-action@v1
               with:
                   arguments: ":plugin:verifyPlugin"
@@ -135,7 +247,7 @@ jobs:
 
     check:
         needs: [ check-license, check-plugin ]
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         steps:
             - name: Finish check
               run: echo "Check finished successfully!"

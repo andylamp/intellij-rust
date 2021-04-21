@@ -8,13 +8,16 @@ package org.rust.lang.utils
 import com.intellij.codeInsight.intention.IntentionAction
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalQuickFix
+import com.intellij.codeInspection.LocalQuickFixAndIntentionActionOnPsiElement
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.openapi.application.ApplicationInfo
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil.pluralize
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.xml.util.XmlStringUtil.escapeString
 import org.rust.ide.annotator.RsAnnotationHolder
 import org.rust.ide.annotator.RsErrorAnnotator
@@ -33,16 +36,19 @@ import org.rust.ide.refactoring.implementMembers.ImplementMembersFix
 import org.rust.ide.utils.checkMatch.Pattern
 import org.rust.ide.utils.import.RsImportHelper.getTypeReferencesInfoFromTys
 import org.rust.ide.utils.isEnabledByCfg
+import org.rust.lang.core.CONST_GENERICS
+import org.rust.lang.core.CompilerFeature
+import org.rust.lang.core.MIN_CONST_GENERICS
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.KnownItems
+import org.rust.lang.core.stubs.index.RsFeatureIndex
 import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.*
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.utils.RsErrorCode.*
 import org.rust.lang.utils.Severity.*
-import org.rust.openapiext.BUILD_202
 import org.rust.stdext.buildList
 import org.rust.stdext.buildMap
 
@@ -76,79 +82,14 @@ sealed class RsDiagnostic(
                 "mismatched types",
                 description ?: expectedFound(element, expectedTy, actualTy),
                 fixes = buildList {
-                    if (expectedTy is TyNumeric && isActualTyNumeric()) {
-                        add(AddAsTyFix(element, expectedTy))
-                    } else if (element is RsElement) {
-                        val (lookup, items) = element.implLookupAndKnownItems
-                        if (isFromActualImplForExpected(items, lookup)) {
-                            add(ConvertToTyUsingFromTraitFix(element, expectedTy))
-                        } else { // only check TryFrom if From is not available
-                            val resultErrTy = errTyOfTryFromActualImplForTy(expectedTy, items, lookup)
-                            if (resultErrTy != null) {
-                                add(ConvertToTyUsingTryFromTraitAndUnpackFix(element, expectedTy, resultErrTy))
-                            }
-                        }
-                        // currently it's possible to have `impl FromStr` independently form `impl<'a> From<&'a str>` or
-                        // `impl<'a> TryFrom<&'a str>`, so check for FromStr even if From or TryFrom is available
-                        val resultFromStrErrTy = ifActualIsStrGetErrTyOfFromStrImplForTy(expectedTy, items, lookup)
-                        if (resultFromStrErrTy != null) {
-                            add(ConvertToTyUsingFromStrAndUnpackFix(element, expectedTy, resultFromStrErrTy))
-                        }
-                        if (isToOwnedImplWithExpectedForActual(items, lookup)) {
-                            add(ConvertToOwnedTyFix(element, expectedTy))
-                        }
-                        val stringTy = items.String.asTy()
-                        if (expectedTy == stringTy
-                            && (isToStringImplForActual(items, lookup) || isActualTyNumeric())) {
-                            add(ConvertToStringFix(element))
-                        } else if (expectedTy is TyReference) {
-                            if (expectedTy.mutability == Mutability.IMMUTABLE) {
-                                if (isTraitWithTySubstImplForActual(lookup, items.Borrow, expectedTy)) {
-                                    add(ConvertToBorrowedTyFix(element, expectedTy))
-                                }
-                                if (isTraitWithTySubstImplForActual(lookup, items.AsRef, expectedTy)) {
-                                    add(ConvertToRefTyFix(element, expectedTy))
-                                }
-                            } else if (expectedTy.mutability == Mutability.MUTABLE) {
-                                if (actualTy is TyReference && actualTy.mutability == Mutability.IMMUTABLE) {
-                                    add(ChangeRefToMutableFix(element))
-                                }
-
-                                if (element is RsExpr && element.isMutable
-                                    && lookup.coercionSequence(actualTy).all { it !is TyReference || it.mutability.isMut }) {
-                                    if (isTraitWithTySubstImplForActual(lookup, items.BorrowMut, expectedTy)) {
-                                        add(ConvertToBorrowedTyWithMutFix(element, expectedTy))
-                                    }
-                                    if (isTraitWithTySubstImplForActual(lookup, items.AsMut, expectedTy)) {
-                                        add(ConvertToMutTyFix(element, expectedTy))
-                                    }
-                                }
-                            }
-                        } else if (expectedTy is TyAdt && expectedTy.item == items.Result) {
-                            val (expOkTy, expErrTy) = expectedTy.typeArguments
-                            if (expErrTy == errTyOfTryFromActualImplForTy(expOkTy, items, lookup)) {
-                                add(ConvertToTyUsingTryFromTraitFix(element, expOkTy))
-                            }
-                            if (expErrTy == ifActualIsStrGetErrTyOfFromStrImplForTy(expOkTy, items, lookup)) {
-                                add(ConvertToTyUsingFromStrFix(element, expOkTy))
-                            }
-                        }
-                        if (actualTy == stringTy) {
-                            if (expectedTy == REF_STR_TY) {
-                                add(ConvertToImmutableStrFix(element))
-                            } else if (expectedTy == MUT_REF_STR_TY) {
-                                add(ConvertToMutStrFix(element))
-                            }
+                    if (element is RsElement) {
+                        if (element is RsExpr) {
+                            addAll(createExprQuickFixes(element))
                         }
 
                         val retFix = ChangeReturnTypeFix.createIfCompatible(element, actualTy)
                         if (retFix != null) {
                             add(retFix)
-                        }
-
-                        val derefsRefsToExpected = derefRefPathFromActualToExpected(lookup, element)
-                        if (derefsRefsToExpected != null) {
-                            add(ConvertToTyWithDerefsRefsFix(element, expectedTy, derefsRefsToExpected))
                         }
                     }
 
@@ -163,6 +104,80 @@ sealed class RsDiagnostic(
                     }
                 }
             )
+        }
+
+        private fun createExprQuickFixes(element: RsExpr): List<LocalQuickFix> {
+            return buildList {
+                if (expectedTy is TyNumeric && isActualTyNumeric()) {
+                    add(AddAsTyFix(element, expectedTy))
+                } else {
+                    val (lookup, items) = element.implLookupAndKnownItems
+                    if (isFromActualImplForExpected(items, lookup)) {
+                        add(ConvertToTyUsingFromTraitFix(element, expectedTy))
+                    } else { // only check TryFrom if From is not available
+                        val resultErrTy = errTyOfTryFromActualImplForTy(expectedTy, items, lookup)
+                        if (resultErrTy != null) {
+                            add(ConvertToTyUsingTryFromTraitAndUnpackFix(element, expectedTy, resultErrTy))
+                        }
+                    }
+                    // currently it's possible to have `impl FromStr` independently form `impl<'a> From<&'a str>` or
+                    // `impl<'a> TryFrom<&'a str>`, so check for FromStr even if From or TryFrom is available
+                    val resultFromStrErrTy = ifActualIsStrGetErrTyOfFromStrImplForTy(expectedTy, items, lookup)
+                    if (resultFromStrErrTy != null) {
+                        add(ConvertToTyUsingFromStrAndUnpackFix(element, expectedTy, resultFromStrErrTy))
+                    }
+                    if (isToOwnedImplWithExpectedForActual(items, lookup)) {
+                        add(ConvertToOwnedTyFix(element, expectedTy))
+                    }
+                    val stringTy = items.String.asTy()
+                    if (expectedTy == stringTy
+                        && (isToStringImplForActual(items, lookup) || isActualTyNumeric())) {
+                        add(ConvertToStringFix(element))
+                    } else if (expectedTy is TyReference) {
+                        if (expectedTy.mutability == Mutability.IMMUTABLE) {
+                            if (isTraitWithTySubstImplForActual(lookup, items.Borrow, expectedTy)) {
+                                add(ConvertToBorrowedTyFix(element, expectedTy))
+                            }
+                            if (isTraitWithTySubstImplForActual(lookup, items.AsRef, expectedTy)) {
+                                add(ConvertToRefTyFix(element, expectedTy))
+                            }
+                        } else if (expectedTy.mutability == Mutability.MUTABLE) {
+                            if (actualTy is TyReference && actualTy.mutability == Mutability.IMMUTABLE) {
+                                add(ChangeRefToMutableFix(element))
+                            }
+
+                            if (element.isMutable && lookup.coercionSequence(actualTy).all { it !is TyReference || it.mutability.isMut }) {
+                                if (isTraitWithTySubstImplForActual(lookup, items.BorrowMut, expectedTy)) {
+                                    add(ConvertToBorrowedTyWithMutFix(element, expectedTy))
+                                }
+                                if (isTraitWithTySubstImplForActual(lookup, items.AsMut, expectedTy)) {
+                                    add(ConvertToMutTyFix(element, expectedTy))
+                                }
+                            }
+                        }
+                    } else if (expectedTy is TyAdt && expectedTy.item == items.Result) {
+                        val (expOkTy, expErrTy) = expectedTy.typeArguments
+                        if (expErrTy == errTyOfTryFromActualImplForTy(expOkTy, items, lookup)) {
+                            add(ConvertToTyUsingTryFromTraitFix(element, expOkTy))
+                        }
+                        if (expErrTy == ifActualIsStrGetErrTyOfFromStrImplForTy(expOkTy, items, lookup)) {
+                            add(ConvertToTyUsingFromStrFix(element, expOkTy))
+                        }
+                    }
+                    if (actualTy == stringTy) {
+                        if (expectedTy == REF_STR_TY) {
+                            add(ConvertToImmutableStrFix(element))
+                        } else if (expectedTy == MUT_REF_STR_TY) {
+                            add(ConvertToMutStrFix(element))
+                        }
+                    }
+
+                    val derefsRefsToExpected = derefRefPathFromActualToExpected(lookup, element)
+                    if (derefsRefsToExpected != null) {
+                        add(ConvertToTyWithDerefsRefsFix(element, expectedTy, derefsRefsToExpected))
+                    }
+                }
+            }
         }
 
         private fun isActualTyNumeric() = actualTy is TyNumeric || actualTy is TyInfer.IntVar || actualTy is TyInfer.FloatVar
@@ -204,7 +219,7 @@ sealed class RsDiagnostic(
 
         private fun expectedFound(element: PsiElement, expectedTy: Ty, actualTy: Ty): String {
             val useQualifiedName = getConflictingNames(element, expectedTy, actualTy)
-            return "expected `${expectedTy.escaped(useQualifiedName)}`, found `${actualTy.escaped(useQualifiedName)}`"
+            return "expected `${expectedTy.rendered(useQualifiedName)}`, found `${actualTy.rendered(useQualifiedName)}`"
         }
 
         /**
@@ -266,7 +281,7 @@ sealed class RsDiagnostic(
         override fun prepare() = PreparedAnnotation(
             ERROR,
             E0614,
-            "type ${ty.escaped(getConflictingNames(element, ty))} cannot be dereferenced"
+            "type ${ty.rendered(getConflictingNames(element, ty))} cannot be dereferenced"
         )
     }
 
@@ -279,7 +294,7 @@ sealed class RsDiagnostic(
         override fun prepare() = PreparedAnnotation(
             ERROR,
             errorCode,
-            "$itemType `${escapeString(element.text)}` is private",
+            "$itemType `${element.text}` is private",
             fixes = listOfNotNull(fix)
         )
     }
@@ -292,8 +307,8 @@ sealed class RsDiagnostic(
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
-            if (element is RsStructLiteralField) E0451 else E0616,
-            "Field `${escapeString(fieldName)}` of struct `${escapeString(structName)}` is private",
+            if (element.parent is RsStructLiteralField) E0451 else E0616,
+            "Field `$fieldName` of struct `$structName` is private",
             fixes = listOfNotNull(fix)
         )
     }
@@ -347,12 +362,13 @@ sealed class RsDiagnostic(
     }
 
     class UnnecessaryVisibilityQualifierError(
-        element: PsiElement
+        element: RsVis
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
             E0449,
-            "Unnecessary visibility qualifier"
+            "Unnecessary visibility qualifier",
+            fixes = listOf(RemoveElementFix(element, "visibility qualifier"))
         )
     }
 
@@ -377,8 +393,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val traitNameS = escapeString(traitName)
-            return "Implementing the trait `$traitNameS` is not unsafe"
+            return "Implementing the trait `$traitName` is not unsafe"
         }
     }
 
@@ -393,8 +408,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val traitNameS = escapeString(traitName)
-            return "The trait `$traitNameS` requires an `unsafe impl` declaration"
+            return "The trait `$traitName` requires an `unsafe impl` declaration"
         }
     }
 
@@ -437,9 +451,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val memberNameS = escapeString(member.name)
-            val traitNameS = escapeString(traitName)
-            return "Method `$memberNameS` is not a member of trait `$traitNameS`"
+            return "Method `${member.name}` is not a member of trait `$traitName`"
         }
     }
 
@@ -514,29 +526,44 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val fnName = escapeString(fn.name)
-            val traitNameS = escapeString(traitName)
-            return "Method `$fnName` has $paramsCount ${pluralise(paramsCount, "parameter", "parameters")} but the declaration in trait `$traitNameS` has $superParamsCount"
+            return "Method `${fn.name}` has $paramsCount ${pluralize("parameter", paramsCount)} but the declaration in trait `$traitName` has $superParamsCount"
         }
+    }
+
+    class CastAsBoolError(val castExpr: RsCastExpr) : RsDiagnostic(castExpr) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0054,
+            "It is not allowed to cast to a bool.",
+            fixes = listOfNotNull(CompareWithZeroFix.createIfCompatible(castExpr))
+        )
     }
 
     class IncorrectFunctionArgumentCountError(
         element: PsiElement,
         private val expectedCount: Int,
         private val realCount: Int,
-        private val variadic: Boolean = false
+        private val functionType: FunctionType = FunctionType.FUNCTION,
+        private val fixes: List<LocalQuickFix> = emptyList()
     ) : RsDiagnostic(element) {
         override fun prepare() = PreparedAnnotation(
             ERROR,
-            if (variadic) E0060 else E0061,
-            errorText()
+            functionType.errorCode,
+            errorText(),
+            fixes = fixes
         )
 
         private fun errorText(): String {
-            return "This function takes${if (variadic) " at least" else ""}" +
-                " $expectedCount ${pluralise(expectedCount, "parameter", "parameters")}" +
-                " but $realCount ${pluralise(realCount, "parameter", "parameters")}" +
-                " ${pluralise(realCount, "was", "were")} supplied"
+            return "This function takes${if (functionType.variadic) " at least" else ""}" +
+                " $expectedCount ${pluralize("parameter", expectedCount)}" +
+                " but $realCount ${pluralize("parameter", realCount)}" +
+                " ${if (realCount == 1) "was" else "were"} supplied"
+        }
+
+        enum class FunctionType(val variadic: Boolean, val errorCode: RsErrorCode) {
+            VARIADIC_FUNCTION(true, E0060),
+            FUNCTION(false, E0061),
+            CLOSURE(false, E0057)
         }
     }
 
@@ -634,8 +661,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(fieldName)
-            return "Enum variant `$name` is already declared"
+            return "Enum variant `$fieldName` is already declared"
         }
     }
 
@@ -650,8 +676,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(lifetimeName)
-            return "`$name` is a reserved lifetime name"
+            return "`$lifetimeName` is a reserved lifetime name"
         }
     }
 
@@ -666,8 +691,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(fieldName)
-            return "Lifetime name `$name` declared twice in the same scope"
+            return "Lifetime name `$fieldName` declared twice in the same scope"
         }
     }
 
@@ -702,8 +726,20 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(fieldName)
-            return "Identifier `$name` is bound more than once in this parameter list"
+            return "Identifier `$fieldName` is bound more than once in this parameter list"
+        }
+    }
+
+    class RepeatedIdentifierInPattern(
+        repeatedIdentifier: RsPatBinding,
+        private val name: String
+    ) : RsDiagnostic(repeatedIdentifier) {
+        override fun prepare(): PreparedAnnotation {
+            return PreparedAnnotation(
+                ERROR,
+                E0416,
+                "Identifier `$name` is bound more than once in the same pattern"
+            )
         }
     }
 
@@ -718,8 +754,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(fieldName)
-            return "The name `$name` is already used for a type parameter in this type parameter list"
+            return "The name `$fieldName` is already used for a type parameter in this type parameter list"
         }
     }
 
@@ -735,7 +770,7 @@ sealed class RsDiagnostic(
 
         private fun errorText(): String {
             val itemKind = found.itemKindName
-            val name = escapeString(found.name)
+            val name = found.name
             return "Expected trait, found $itemKind `$name`"
         }
     }
@@ -751,8 +786,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val name = escapeString(fieldName)
-            return "Duplicate definitions with name `$name`"
+            return "Duplicate definitions with name `$fieldName`"
         }
     }
 
@@ -769,10 +803,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val itemTypeS = escapeString(itemType)
-            val fieldNameS = escapeString(fieldName)
-            val scopeTypeS = escapeString(scopeType)
-            return "A $itemTypeS named `$fieldNameS` has already been defined in this $scopeTypeS"
+            return "A $itemType named `$fieldName` has already been defined in this $scopeType"
         }
     }
 
@@ -840,8 +871,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val labelText = escapeString(element.text)
-            return "Use of undeclared label `$labelText`"
+            return "Use of undeclared label `${element.text}`"
         }
     }
 
@@ -858,8 +888,7 @@ sealed class RsDiagnostic(
         }
 
         private fun errorText(): String {
-            val lifetimeText = escapeString(element.text)
-            return "Use of undeclared lifetime name `$lifetimeText`"
+            return "Use of undeclared lifetime name `${element.text}`"
         }
     }
 
@@ -892,8 +921,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val missingS = escapeString(missing)
-            return "Not all trait items implemented, missing: $missingS"
+            return "Not all trait items implemented, missing: $missing"
         }
     }
 
@@ -908,8 +936,7 @@ sealed class RsDiagnostic(
         )
 
         private fun errorText(): String {
-            val elTextS = escapeString(crateName)
-            return "Can't find crate for `$elTextS`"
+            return "Can't find crate for `$crateName`"
         }
     }
 
@@ -920,8 +947,8 @@ sealed class RsDiagnostic(
         override fun prepare() = PreparedAnnotation(
             ERROR,
             E0277,
-            header = escapeString("the trait bound `$ty: std::marker::Sized` is not satisfied"),
-            description = escapeString("`$ty` does not have a constant size known at compile-time"),
+            header = "the trait bound `$ty: std::marker::Sized` is not satisfied",
+            description = "`$ty` does not have a constant size known at compile-time",
             fixes = listOf(ConvertToReferenceFix(element), ConvertToBoxFix(element))
         )
     }
@@ -936,8 +963,8 @@ sealed class RsDiagnostic(
         override fun prepare() = PreparedAnnotation(
             ERROR,
             E0277,
-            header = escapeString("the trait bound `$typeText: $missingTrait` is not satisfied"),
-            description = escapeString("the trait `$missingTrait` is not implemented for `$typeText`")
+            header = "the trait bound `$typeText: $missingTrait` is not satisfied",
+            description = "the trait `$missingTrait` is not implemented for `$typeText`"
         )
     }
 
@@ -950,7 +977,7 @@ sealed class RsDiagnostic(
         override fun prepare(): PreparedAnnotation = PreparedAnnotation(
             ERROR,
             E0658,
-            header = escapeString(message),
+            header = message,
             fixes = fixes
         )
     }
@@ -961,7 +988,7 @@ sealed class RsDiagnostic(
         override fun prepare(): PreparedAnnotation = PreparedAnnotation(
             ERROR,
             E0433,
-            header = escapeString(errorText())
+            header = errorText()
         )
 
         private fun errorText(): String {
@@ -1090,7 +1117,10 @@ sealed class RsDiagnostic(
             ERROR,
             E0004,
             "Match must be exhaustive",
-            fixes = listOf(AddRemainingArmsFix(matchExpr, patterns), AddWildcardArmFix(matchExpr))
+            fixes = listOfNotNull(
+                AddRemainingArmsFix(matchExpr, patterns),
+                AddWildcardArmFix(matchExpr).takeIf { matchExpr.arms.isNotEmpty() }
+            )
         )
     }
 
@@ -1098,7 +1128,7 @@ sealed class RsDiagnostic(
         override fun prepare(): PreparedAnnotation = PreparedAnnotation(
             ERROR,
             E0618,
-            escapeString("Expected function, found `${element.text}`")
+            "Expected function, found `${element.text}`"
         )
     }
 
@@ -1171,7 +1201,7 @@ sealed class RsDiagnostic(
     ) : RsDiagnostic(pat) {
         override fun prepare(): PreparedAnnotation {
             val itemType = if (declaration is RsEnumVariant) "Enum variant" else "Struct"
-            val missingFieldNames = escapeString(missingFields.joinToString(", ") { "`${it.name!!}`" })
+            val missingFieldNames = missingFields.joinToString(", ") { "`${it.name!!}`" }
             return PreparedAnnotation(
                 ERROR,
                 E0027,
@@ -1187,6 +1217,19 @@ sealed class RsDiagnostic(
                 ERROR,
                 E0026,
                 "Extra field found in the $kindName pattern: `${extraField.kind.fieldName}`"
+            )
+        }
+    }
+
+    class RepeatedFieldInStructPattern(
+        repeatedField: RsPatField,
+        private val name: String
+    ) : RsDiagnostic(repeatedField) {
+        override fun prepare(): PreparedAnnotation {
+            return PreparedAnnotation(
+                ERROR,
+                E0025,
+                "Field `$name` bound multiple times in the pattern"
             )
         }
     }
@@ -1261,6 +1304,15 @@ sealed class RsDiagnostic(
         )
     }
 
+    class NoAttrParentheses(element: RsMetaItem, private val attrName: String) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            null,
+            "Malformed `$attrName` attribute input: missing parentheses",
+            fixes = listOf(AddAttrParenthesesFix(element as RsMetaItem, attrName))
+        )
+    }
+
     class ReprAttrUnsupportedItem(element: PsiElement,
                                   private val errorText: String
     ) : RsDiagnostic(element) {
@@ -1282,14 +1334,55 @@ sealed class RsDiagnostic(
             fixes = listOf(RemoveReprValueFix(element))
         )
     }
+
+    class InvalidReexport(
+        element: PsiElement,
+        private val name: String,
+        private val exportedItem: RsItemElement
+    ) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            if (exportedItem is RsMod) E0365 else E0364,
+            "`$name` is private, and cannot be re-exported",
+            fixes = listOfNotNull(MakePublicFix.createIfCompatible(exportedItem, exportedItem.name, false))
+        )
+    }
+
+    class ForbiddenConstGenericType(
+        private val typeReference: RsTypeReference
+    ) : RsDiagnostic(typeReference) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            null,
+            "the only supported types are integers, `bool` and `char`",
+            "`${typeReference.text}` is forbidden as the type of a const generic parameter",
+            fixes = listOf(createAddOrReplaceFeatureFix(typeReference, CONST_GENERICS, MIN_CONST_GENERICS))
+        )
+    }
+
+    class InherentImplDifferentCrateError(element: PsiElement) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0116,
+            "Cannot define inherent `impl` for a type outside of the crate where the type is defined"
+        )
+    }
+
+    class TraitImplOrphanRulesError(element: PsiElement) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0117,
+            "Only traits defined in the current crate can be implemented for arbitrary types"
+        )
+    }
 }
 
 enum class RsErrorCode {
-    E0004, E0015, E0023, E0026, E0027, E0040, E0046, E0050, E0060, E0061, E0069, E0081, E0084,
-    E0106, E0107, E0118, E0120, E0121, E0124, E0132, E0133, E0184, E0185, E0186, E0198, E0199,
+    E0004, E0015, E0023, E0025, E0026, E0027, E0040, E0046, E0050, E0054, E0057, E0060, E0061, E0069, E0081, E0084,
+    E0106, E0107, E0116, E0117, E0118, E0120, E0121, E0124, E0132, E0133, E0184, E0185, E0186, E0198, E0199,
     E0200, E0201, E0202, E0252, E0261, E0262, E0263, E0267, E0268, E0277,
-    E0308, E0322, E0328, E0379, E0384,
-    E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0435, E0449, E0451, E0463,
+    E0308, E0322, E0328, E0364, E0365, E0379, E0384,
+    E0403, E0404, E0407, E0415, E0416, E0424, E0426, E0428, E0433, E0435, E0449, E0451, E0463,
     E0517, E0518, E0552, E0562, E0569, E0583, E0586, E0594,
     E0601, E0603, E0614, E0616, E0618, E0624, E0658, E0666, E0667, E0688, E0695,
     E0704, E0732;
@@ -1333,7 +1426,7 @@ fun RsDiagnostic.addToHolder(holder: AnnotationHolder) {
     val message = simpleHeader(prepared.errorCode, prepared.header)
 
     val annotationBuilder = holder.newAnnotation(prepared.severity.toHighlightSeverity(), message)
-        .tooltip("<html>${htmlHeader(prepared.errorCode, prepared.header)}<br>${prepared.description}</html>")
+        .tooltip(prepared.fullDescription)
         .range(textRange)
         .highlightType(prepared.severity.toProblemHighlightType())
 
@@ -1363,12 +1456,16 @@ fun RsDiagnostic.addToHolder(holder: RsProblemsHolder) {
     val descriptor = holder.manager.createProblemDescriptor(
         element,
         endElement ?: element,
-        "<html>${htmlHeader(prepared.errorCode, prepared.header)}<br>${prepared.description}</html>",
+        prepared.fullDescription,
         prepared.severity.toProblemHighlightType(),
         holder.isOnTheFly,
         *prepared.fixes.toTypedArray()
     )
     holder.registerProblem(descriptor)
+}
+
+private val PreparedAnnotation.fullDescription: String get() {
+    return "<html>${htmlHeader(errorCode, escapeString(header))}<br>${escapeString(description)}</html>"
 }
 
 private fun Severity.toProblemHighlightType(): ProblemHighlightType = when (this) {
@@ -1398,9 +1495,6 @@ private fun htmlHeader(error: RsErrorCode?, description: String): String =
         "$description [<a href='${error.infoUrl}'>${error.code}</a>]"
     }
 
-private fun pluralise(count: Int, singular: String, plural: String): String =
-    if (count == 1) singular else plural
-
 private val RsSelfParameter.canonicalDecl: String
     get() = buildString {
         if (isRef) append('&')
@@ -1408,19 +1502,8 @@ private val RsSelfParameter.canonicalDecl: String
         append("self")
     }
 
-// BACKCOMPAT: 2020.1. Replace with `escapeString(str)`
-private fun escapeTy(str: String): String {
-    return if (ApplicationInfo.getInstance().build > BUILD_202) {
-        escapeString(str)
-    } else {
-        str.replace("&", "&amp;")
-            .replace("<", "&#60;")
-            .replace(">", "&#62;")
-    }
-}
-
-private fun Ty.escaped(useQualifiedName: Set<RsQualifiedNamedElement> = emptySet()): String =
-    escapeTy(render(useQualifiedName = useQualifiedName, useAliasNames = true))
+private fun Ty.rendered(useQualifiedName: Set<RsQualifiedNamedElement> = emptySet()): String =
+    render(useQualifiedName = useQualifiedName, useAliasNames = true)
 
 private fun getConflictingNames(element: PsiElement, vararg tys: Ty): Set<RsQualifiedNamedElement> {
     val context = element.ancestorOrSelf<RsElement>()
@@ -1430,3 +1513,21 @@ private fun getConflictingNames(element: PsiElement, vararg tys: Ty): Set<RsQual
         emptySet()
     }
 }
+
+private fun createAddOrReplaceFeatureFix(element: RsElement, newFix: CompilerFeature, oldFix: CompilerFeature): LocalQuickFix {
+    val project = element.project
+    val crateRoot = element.crateRoot
+    val oldAttr = RsFeatureIndex.getFeatureAttributes(project, oldFix.name)
+        .find { it.crateRoot == crateRoot }
+        ?: return AddFeatureAttributeFix(newFix.name, element)
+    return object : LocalQuickFixAndIntentionActionOnPsiElement(element) {
+        override fun getFamilyName(): String = "Replace feature attribute"
+        override fun getText(): String = "Replace `${oldFix.name}` feature with `${newFix.name}` feature"
+        override fun invoke(project: Project, file: PsiFile, editor: Editor?, startElement: PsiElement, endElement: PsiElement) {
+            val psiFactory = RsPsiFactory(project)
+            val attr = psiFactory.createInnerAttr("feature(${newFix.name})")
+            oldAttr.replace(attr)
+        }
+    }
+}
+

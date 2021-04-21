@@ -15,7 +15,6 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiManager
-import com.intellij.psi.impl.PsiModificationTrackerImpl
 import com.intellij.util.xmlb.XmlSerializer.deserializeInto
 import org.jdom.Element
 import org.jetbrains.annotations.TestOnly
@@ -24,7 +23,9 @@ import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.RustProjectSettingsService.*
 import org.rust.cargo.project.settings.RustProjectSettingsService.Companion.RUST_SETTINGS_TOPIC
 import org.rust.cargo.toolchain.ExternalLinter
+import org.rust.cargo.toolchain.RsToolchain
 import org.rust.cargo.toolchain.RustToolchain
+import org.rust.lang.core.resolve2.defMapService
 
 private const val serviceName: String = "RustProjectSettings"
 
@@ -49,7 +50,7 @@ class RustProjectSettingsServiceImpl(
         }
 
     override val version: Int? get() = _state.version
-    override val toolchain: RustToolchain? get() = _state.toolchain
+    override val toolchain: RsToolchain? get() = _state.toolchain
     override val autoUpdateEnabled: Boolean get() = _state.autoUpdateEnabled
     override val explicitPathToStdlib: String? get() = _state.explicitPathToStdlib
     override val externalLinter: ExternalLinter get() = _state.externalLinter
@@ -58,9 +59,13 @@ class RustProjectSettingsServiceImpl(
     override val compileAllTargets: Boolean get() = _state.compileAllTargets
     override val useOffline: Boolean get() = _state.useOffline
     override val macroExpansionEngine: MacroExpansionEngine get() = _state.macroExpansionEngine
+    override val newResolveEnabled: Boolean get() = _state.newResolveEnabled
     override val doctestInjectionEnabled: Boolean get() = _state.doctestInjectionEnabled
     override val useRustfmt: Boolean get() = _state.useRustfmt
     override val runRustfmtOnSave: Boolean get() = _state.runRustfmtOnSave
+
+    @Suppress("OverridingDeprecatedMember", "DEPRECATION")
+    override fun getToolchain(): RustToolchain? = _state.toolchain?.let(RustToolchain::from)
 
     override fun getState(): Element {
         val element = Element(serviceName)
@@ -88,7 +93,7 @@ class RustProjectSettingsServiceImpl(
     }
 
     override fun configureToolchain() {
-        ShowSettingsUtil.getInstance().editConfigurable(project, RsProjectConfigurable(project))
+        ShowSettingsUtil.getInstance().showSettingsDialog(project, RsProjectConfigurable::class.java)
     }
 
     private fun notifySettingsChanged(oldState: State, newState: State) {
@@ -97,7 +102,10 @@ class RustProjectSettingsServiceImpl(
 
         if (event.isChanged(State::doctestInjectionEnabled)) {
             // flush injection cache
-            (PsiManager.getInstance(project).modificationTracker as PsiModificationTrackerImpl).incCounter()
+            PsiManager.getInstance(project).dropPsiCaches()
+        }
+        if (event.isChanged(State::newResolveEnabled)) {
+            project.defMapService.onNewResolveEnabledChanged(newState.newResolveEnabled)
         }
         if (event.affectsHighlighting) {
             DaemonCodeAnalyzer.getInstance(project).restart()

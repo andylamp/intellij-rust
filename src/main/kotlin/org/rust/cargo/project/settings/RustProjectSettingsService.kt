@@ -13,6 +13,7 @@ import com.intellij.util.messages.Topic
 import com.intellij.util.xmlb.annotations.Transient
 import org.jetbrains.annotations.TestOnly
 import org.rust.cargo.toolchain.ExternalLinter
+import org.rust.cargo.toolchain.RsToolchain
 import org.rust.cargo.toolchain.RustToolchain
 import org.rust.ide.experiments.RsExperiments
 import org.rust.openapiext.isFeatureEnabled
@@ -44,17 +45,26 @@ interface RustProjectSettingsService {
         var useOffline: Boolean = false,
         var macroExpansionEngine: MacroExpansionEngine = defaultMacroExpansionEngine,
         @AffectsHighlighting
+        var newResolveEnabled: Boolean = isFeatureEnabled(RsExperiments.RESOLVE_NEW_ENGINE)
+            && System.getenv("INTELLIJ_RUST_FORCE_USE_OLD_RESOLVE") == null,
+        @AffectsHighlighting
         var doctestInjectionEnabled: Boolean = true,
         var useRustfmt: Boolean = false,
         var runRustfmtOnSave: Boolean = false,
     ) {
         @get:Transient
         @set:Transient
-        var toolchain: RustToolchain?
-            get() = toolchainHomeDirectory?.let { RustToolchain(Paths.get(it)) }
+        var toolchain: RsToolchain?
+            get() = toolchainHomeDirectory?.let { RsToolchain(Paths.get(it)) }
             set(value) {
                 toolchainHomeDirectory = value?.location?.systemIndependentPath
             }
+
+        @Suppress("DEPRECATION", "DeprecatedCallableAddReplaceWith")
+        @Deprecated("Use toolchain property")
+        fun setToolchain(toolchain: RustToolchain?) {
+            toolchainHomeDirectory = toolchain?.location?.systemIndependentPath
+        }
     }
 
     enum class MacroExpansionEngine {
@@ -85,7 +95,7 @@ interface RustProjectSettingsService {
     var settingsState: State
 
     val version: Int?
-    val toolchain: RustToolchain?
+    val toolchain: RsToolchain?
     val explicitPathToStdlib: String?
     val autoUpdateEnabled: Boolean
     val externalLinter: ExternalLinter
@@ -94,9 +104,14 @@ interface RustProjectSettingsService {
     val compileAllTargets: Boolean
     val useOffline: Boolean
     val macroExpansionEngine: MacroExpansionEngine
+    val newResolveEnabled: Boolean
     val doctestInjectionEnabled: Boolean
     val useRustfmt: Boolean
     val runRustfmtOnSave: Boolean
+
+    @Suppress("DEPRECATION")
+    @Deprecated("Use toolchain property")
+    fun getToolchain(): RustToolchain?
 
     /*
      * Show a dialog for toolchain configuration
@@ -145,4 +160,4 @@ val Project.rustSettings: RustProjectSettingsService
     get() = ServiceManager.getService(this, RustProjectSettingsService::class.java)
         ?: error("Failed to get RustProjectSettingsService for $this")
 
-val Project.toolchain: RustToolchain? get() = rustSettings.toolchain
+val Project.toolchain: RsToolchain? get() = rustSettings.toolchain

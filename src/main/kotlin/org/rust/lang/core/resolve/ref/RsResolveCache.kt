@@ -26,7 +26,7 @@ import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiUtilCore
 import com.intellij.util.containers.ConcurrentWeakKeySoftValueHashMap
-import com.intellij.util.containers.ContainerUtil
+import com.intellij.util.containers.HashingStrategy
 import org.rust.lang.core.macros.MacroExpansionManager
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsModificationTrackerOwner
@@ -45,9 +45,10 @@ import java.util.concurrent.atomic.AtomicReference
  * See [RsPsiManager.rustStructureModificationTracker].
  */
 @Service
-class RsResolveCache(project: Project): Disposable {
+class RsResolveCache(project: Project) : Disposable {
     /** The cache is cleared on [RsPsiManager.rustStructureModificationTracker] increment */
     private val _rustStructureDependentCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
+
     /** The cache is cleared on [ANY_PSI_CHANGE_TOPIC] event */
     private val _anyPsiChangeDependentCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
     private val _macroCache: AtomicReference<ConcurrentMap<PsiElement, Any?>?> = AtomicReference(null)
@@ -267,16 +268,17 @@ private fun AtomicReference<ConcurrentMap<PsiElement, Any?>?>.getOrCreateMap(): 
 }
 
 private fun <K, V> createWeakMap(): ConcurrentMap<K, V> {
+    @Suppress("UnstableApiUsage")
     return object : ConcurrentWeakKeySoftValueHashMap<K, V>(
         100,
         0.75f,
         Runtime.getRuntime().availableProcessors(),
-        ContainerUtil.canonicalStrategy()
+        HashingStrategy.canonical()
     ) {
         override fun createValueReference(
             value: V,
             queue: ReferenceQueue<in V>
-        ): ConcurrentWeakKeySoftValueHashMap.ValueReference<K, V> {
+        ): ValueReference<K, V> {
             val isTrivialValue = value === NULL_RESULT ||
                 value is Array<*> && value.size == 0 ||
                 value is List<*> && value.size == 0
@@ -295,6 +297,8 @@ private fun <K, V> createWeakMap(): ConcurrentMap<K, V> {
     }
 }
 
+// BACKCOMPAT: 2020.3
+@Suppress("UnstableApiUsage")
 private class StrongValueReference<K, V>(
     private val value: V
 ) : ConcurrentWeakKeySoftValueHashMap.ValueReference<K, V> {

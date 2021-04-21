@@ -3,9 +3,6 @@
  * found in the LICENSE file.
  */
 
-// BACKCOMPAT: 2019.3
-@file:Suppress("DEPRECATION")
-
 package org.rust.lang.core.psi
 
 import com.intellij.ProjectTopics
@@ -24,15 +21,17 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.messages.Topic
+import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionMode
-import org.rust.lang.core.macros.isTopLevelExpansion
 import org.rust.lang.core.macros.macroExpansionManagerIfCreated
 import org.rust.lang.core.psi.RsPsiManager.Companion.isIgnorePsiEvents
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.findModificationTrackerOwner
+import org.rust.lang.core.psi.ext.isTopLevelExpansion
 
 /** Don't subscribe directly or via plugin.xml lazy listeners. Use [RsPsiManager.subscribeRustStructureChange] */
 private val RUST_STRUCTURE_CHANGE_TOPIC: Topic<RustStructureChangeListener> = Topic.create(
@@ -71,13 +70,6 @@ interface RsPsiManager {
     companion object {
         private val IGNORE_PSI_EVENTS: Key<Boolean> = Key.create("IGNORE_PSI_EVENTS")
 
-        fun setIgnorePsiEvents(psi: PsiFile, ignore: Boolean) {
-            val virtualFile = psi.virtualFile ?: return
-            check(virtualFile is LightVirtualFile)
-
-            psi.putUserData(IGNORE_PSI_EVENTS, if (ignore) true else null)
-        }
-
         fun <T> withIgnoredPsiEvents(psi: PsiFile, f: () -> T): T {
             setIgnorePsiEvents(psi, true)
             try {
@@ -89,6 +81,13 @@ interface RsPsiManager {
 
         fun isIgnorePsiEvents(psi: PsiFile): Boolean =
             psi.getUserData(IGNORE_PSI_EVENTS) == true
+
+        private fun setIgnorePsiEvents(psi: PsiFile, ignore: Boolean) {
+            val virtualFile = psi.virtualFile ?: return
+            check(virtualFile is LightVirtualFile)
+
+            psi.putUserData(IGNORE_PSI_EVENTS, if (ignore) true else null)
+        }
     }
 }
 
@@ -111,6 +110,9 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
                 incRustStructureModificationCount()
             }
         })
+        project.messageBus.connect().subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+            incRustStructureModificationCount()
+        })
     }
 
     override fun dispose() {}
@@ -119,6 +121,7 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
         override fun handleEvent(event: RsPsiTreeChangeEvent) {
             val element = when (event) {
                 is ChildRemoval.Before -> event.child
+                is ChildRemoval.After -> event.parent
                 is ChildReplacement.Before -> event.oldChild
                 is ChildReplacement.After -> event.newChild
                 is ChildAddition.After -> event.child
@@ -158,7 +161,7 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
                 // Most of events means that some element *itself* is changed, but ChildrenChange means
                 // that changed some of element's children, not the element itself. In this case
                 // we should look up for ModificationTrackerOwner a bit differently
-                val isChildrenChange = event is ChildrenChange
+                val isChildrenChange = event is ChildrenChange || event is ChildRemoval.After
 
                 updateModificationCount(file, element, isChildrenChange, isWhitespaceOrComment)
             }
@@ -189,7 +192,9 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
 
         // Whitespace/comment changes are meaningful for macros only
         // (b/c they affect range mappings and body hashes)
-        if (isWhitespaceOrComment && owner !is RsMacroCall && owner !is RsMacro) return
+        if (isWhitespaceOrComment) {
+            if (owner !is RsMacroCall && owner !is RsMacro && !RsProcMacroPsiUtil.canBeInProcMacroCallBody(psi)) return
+        }
 
         val isStructureModification = owner == null || !owner.incModificationCount(psi)
 
@@ -216,8 +221,7 @@ class RsPsiManagerImpl(val project: Project) : RsPsiManager, Disposable {
     }
 }
 
-val Project.rustPsiManager: RsPsiManager
-    get() = service<RsPsiManager>()
+val Project.rustPsiManager: RsPsiManager get() = service()
 
 /** @see RsPsiManager.rustStructureModificationTracker */
 val Project.rustStructureModificationTracker: ModificationTracker
@@ -230,12 +234,12 @@ val Project.rustStructureModificationTracker: ModificationTracker
 val RsElement.rustStructureOrAnyPsiModificationTracker: Any
     get() {
         val containingFile = containingFile
-        return when {
+        return when (containingFile.virtualFile) {
             // The case of injected language. Injected PSI don't have it's own event system, so can only
             // handle evens from outer PSI. For example, Rust language is injected to Kotlin's string
             // literal. If a user change the literal, we can only be notified that the literal is changed.
             // So we have to invalidate the cached value on any PSI change
-            containingFile.virtualFile is VirtualFileWindow -> PsiModificationTracker.MODIFICATION_COUNT
+            is VirtualFileWindow -> PsiModificationTracker.MODIFICATION_COUNT
             else -> containingFile.project.rustStructureModificationTracker
         }
     }

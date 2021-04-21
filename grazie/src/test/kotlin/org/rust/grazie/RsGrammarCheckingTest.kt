@@ -9,18 +9,15 @@ import com.intellij.grazie.GrazieConfig
 import com.intellij.grazie.ide.inspection.grammar.GrazieInspection
 import com.intellij.grazie.ide.language.LanguageGrammarChecking
 import com.intellij.grazie.jlanguage.Lang
-import com.intellij.openapi.application.ApplicationInfo
-import com.intellij.openapi.util.BuildNumber
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import org.intellij.lang.annotations.Language
-import org.rust.IgnoreInPlatform
 import org.rust.ide.annotator.RsAnnotationTestFixture
 import org.rust.ide.inspections.RsInspectionsTestBase
 
 class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
 
-    override fun createAnnotationFixture(): RsAnnotationTestFixture =
+    override fun createAnnotationFixture(): RsAnnotationTestFixture<Unit> =
         RsAnnotationTestFixture(this, myFixture, inspectionClasses = listOf(inspectionClass), baseFileName = "lib.rs")
 
     override fun setUp() {
@@ -56,6 +53,28 @@ class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
         }
     """, checkInComments = true)
 
+    // https://github.com/intellij-rust/intellij-rust/issues/7024
+    fun `test check single sentence in sequential comments 1`() = doTest("""
+        fn main() {
+            // Path to directory where someone <TYPO>write</TYPO>
+            // and from where someone reads
+            let path1 = "/foo/bar";
+            /* Path to directory where someone <TYPO>write</TYPO> */
+            /* and from where someone reads */
+            let path2 = "/foo/bar";
+        }
+    """, checkInComments = true)
+
+    // https://github.com/intellij-rust/intellij-rust/issues/7024
+    fun `test check single sentence in sequential comments 2`() = doTest("""
+        fn main() {
+            // Path to directory where someone writes
+
+            // <TYPE>and</TYPE> from where someone reads
+            let path = "/foo/bar";
+        }
+    """, checkInComments = true)
+
     fun `test check doc comments`() = doTest("""
         /// <TYPO>There is two apples</TYPO>
         mod foo {
@@ -66,8 +85,6 @@ class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
         }
     """, checkInDocumentation = true)
 
-    // BACKCOMPAT: 2020.2. Proofreading was broken in grazie plugin for 2020.2 in injected code
-    @IgnoreInPlatform(202)
     fun `test check injected Rust code in doc comments`() = doTest("""
         ///
         /// ```
@@ -76,6 +93,14 @@ class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
         /// ```
         pub fn foo() {}
     """, checkInStringLiterals = true)
+
+    fun `test no typos in injected Rust code in doc comments`() = doTest("""
+        ///
+        /// ```
+        /// foo!(There is two apples);
+        /// ```
+        pub fn foo() {}
+    """, checkInDocumentation = true)
 
     private fun doTest(
         @Language("Rust") text: String,
@@ -93,19 +118,16 @@ class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
         }
         checkByText(text)
 
-        // BACKCOMPAT: 2020.2. GrazieInspection is always enabled for any element for 2020.2
-        if (ApplicationInfo.getInstance().build >= BUILD_203) {
-            updateSettings { state ->
-                val newContext = state.checkingContext.copy(
-                    isCheckInStringLiteralsEnabled = false,
-                    isCheckInCommentsEnabled = false,
-                    isCheckInDocumentationEnabled = false
-                )
-                state.copy(checkingContext = newContext)
-            }
-
-            checkByText(text.replace("<TYPO.*?>(.*?)</TYPO>".toRegex(), "$1"))
+        updateSettings { state ->
+            val newContext = state.checkingContext.copy(
+                isCheckInStringLiteralsEnabled = false,
+                isCheckInCommentsEnabled = false,
+                isCheckInDocumentationEnabled = false
+            )
+            state.copy(checkingContext = newContext)
         }
+
+        checkByText(text.replace("<TYPO.*?>(.*?)</TYPO>".toRegex(), "$1"))
     }
 
     private fun updateSettings(change: (GrazieConfig.State) -> GrazieConfig.State) {
@@ -115,7 +137,5 @@ class RsGrammarCheckingTest : RsInspectionsTestBase(GrazieInspection::class) {
 
     companion object {
         private val enabledLanguages = setOf(Lang.AMERICAN_ENGLISH)
-
-        private val BUILD_203: BuildNumber = BuildNumber.fromString("203")!!
     }
 }

@@ -4,7 +4,7 @@ on: [ workflow_dispatch, pull_request ]
 
 jobs:
     calculate-base-commit:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         outputs:
             base-commit: ${{ steps.base-commit.outputs.base-commit }}
         steps:
@@ -17,14 +17,14 @@ jobs:
             # to calculate difference only for branch changes
             - name: Calculate base commit for workflow_dispatch event
               if: github.event_name == 'workflow_dispatch'
-              run: echo "::set-env name=BASE_COMMIT::$(git merge-base origin/master ${{ github.sha }})"
+              run: echo "BASE_COMMIT=$(git merge-base origin/master ${{ github.sha }})" >> $GITHUB_ENV
 
             # For pull request event, GitHub produces additional merge commit with `master` branch and PR branch as parents
             # In this case, we want to check difference between master branch and merge commit
             # so emit hash of `origin/master` branch itself as base commit
             - name: Calculate base commit for pull_request event
               if: github.event_name == 'pull_request'
-              run: echo "::set-env name=BASE_COMMIT::$(git rev-parse origin/master)"
+              run: echo "BASE_COMMIT=$(git rev-parse origin/master)" >> $GITHUB_ENV
 
             - name: Emit base commit
               id: base-commit
@@ -39,39 +39,30 @@ jobs:
 
     check:
         needs: [ calculate-base-commit ]
-        name: ${{ matrix.project.name }}
-        runs-on: ubuntu-latest
+        name: ${{ matrix.batch.name }}
+        runs-on: ubuntu-18.04
         strategy:
             fail-fast: false
             matrix:
-                project:
-                    - name: cargo
-                      path: cargo
-                      repository: rust-lang/cargo
-                      exclude_paths: ""
-                    - name: tokio
-                      path: tokio
-                      repository: tokio-rs/tokio
-                      exclude_paths: ""
-                    - name: amethyst
-                      path: amethyst
-                      repository: amethyst/amethyst
-                      exclude_paths: ""
+                batch:
+                    - name: regressions-1
+                      projects:
+                          - name: cargo
+                            repository: rust-lang/cargo
+                          - name: tokio
+                            repository: tokio-rs/tokio
+                          - name: amethyst
+                            repository: amethyst/amethyst
+                    - name: regressions-2
+                      projects:
+                          - name: stdlib
         env:
-            PROJECT_PATH: ${{ matrix.project.path }}
-            PROJECT_URL: https://github.com/${{ matrix.project.url }}
-            PROJECT_EXCLUDE_PATHS: ${{ matrix.project.exclude_paths }}
             ORG_GRADLE_PROJECT_showStandardStreams: true
+            PROJECTS: ${{ toJSON(matrix.batch.projects) }}
         steps:
             - uses: actions/checkout@v2
               with:
                   fetch-depth: 0
-
-            - uses: actions/checkout@v2
-              with:
-                  repository: ${{ matrix.project.repository }}
-                  ref: master
-                  path: testData/${{ matrix.project.name }}
 
             - name: Set up JDK 11
               uses: actions/setup-java@v1
@@ -91,6 +82,9 @@ jobs:
                   components: rust-src
                   default: true
 
+            - name: Checkout projects
+              run: python scripts/fetch_projects.py --projects $'${{ toJSON(matrix.batch.projects) }}'
+
             - name: Download
               uses: eskatos/gradle-command-action@v1
               with:
@@ -99,9 +93,9 @@ jobs:
             - name: Check with changes
               uses: eskatos/gradle-command-action@v1
               env:
-                  PROJECT_NAME: ${{ matrix.project.name }}_with_changes
+                  RESULT_SUFFIX: _with_changes
               with:
-                  arguments: "clean :test --tests \"org.rustPerformanceTests.CustomRealProjectAnalysisTest.test\""
+                  arguments: "clean :test --tests \"org.rustPerformanceTests.CustomRealProjectAnalysisTest\""
 
             - name: Checkout base version
               run: git checkout ${{ needs.calculate-base-commit.outputs.base-commit }}
@@ -109,19 +103,19 @@ jobs:
             - name: Check without changes
               uses: eskatos/gradle-command-action@v1
               env:
-                  PROJECT_NAME: ${{ matrix.project.name }}_without_changes
+                  RESULT_SUFFIX: _without_changes
               with:
-                  arguments: "clean :test --tests \"org.rustPerformanceTests.CustomRealProjectAnalysisTest.test\""
+                  arguments: "clean :test --tests \"org.rustPerformanceTests.CustomRealProjectAnalysisTest\""
 
             - name: Checkout current version
               run: git checkout ${{ github.sha }}
 
             - name: Calculate regressions
-              run: python scripts/calculate_regressions.py --name ${{ matrix.project.name }}
+              run: python scripts/calculate_regressions.py --projects $'${{ toJSON(matrix.batch.projects) }}'
 
             - name: Upload results
               if: ${{ always() }}
               uses: actions/upload-artifact@v2
               with:
-                  name: ${{ matrix.project.name }}
+                  name: ${{ matrix.batch.name }}
                   path: regressions/

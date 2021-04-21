@@ -8,8 +8,8 @@ package org.rust.lang.core.psi
 import com.intellij.openapi.project.Project
 import com.intellij.psi.*
 import com.intellij.util.LocalTimeCounter
-import org.rust.ide.utils.checkMatch.Pattern
 import org.rust.ide.presentation.renderInsertionSafe
+import org.rust.ide.utils.checkMatch.Pattern
 import org.rust.lang.RsFileType
 import org.rust.lang.RsLanguage
 import org.rust.lang.core.macros.MacroExpansionContext
@@ -183,13 +183,16 @@ class RsPsiFactory(
         return createFromText("struct S($fieldsText)") ?: error("Failed to create tuple fields")
     }
 
+    @Suppress("unused")
     fun createEnum(text: String): RsEnumItem =
         createFromText(text)
             ?: error("Failed to create enum from text: `$text`")
 
     fun createStruct(text: String): RsStructItem =
-        createFromText(text)
+        tryCreateStruct(text)
             ?: error("Failed to create struct from text: `$text`")
+
+    fun tryCreateStruct(text: String): RsStructItem? = createFromText(text)
 
     fun createStatement(text: String): RsStmt =
         createFromText("fn main() { $text 92; }")
@@ -220,9 +223,11 @@ class RsPsiFactory(
     fun tryCreateModDeclItem(modName: String): RsModDeclItem? =
         createFromText("mod $modName;")
 
-    fun createUseItem(text: String, visibility: String = ""): RsUseItem =
-        createFromText("$visibility use $text;")
+    fun createUseItem(text: String, visibility: String = "", alias: String? = null): RsUseItem {
+        val aliasText = if (!alias.isNullOrEmpty()) " as $alias" else ""
+        return createFromText("$visibility use $text$aliasText;")
             ?: error("Failed to create use item from text: `$text`")
+    }
 
     fun createUseSpeck(text: String): RsUseSpeck =
         createFromText("use $text;")
@@ -241,8 +246,7 @@ class RsPsiFactory(
     }
 
     fun createTraitMethodMember(text: String): RsFunction {
-        return createFromText<RsFunction>("trait Foo { $text }")
-            ?: error("Failed to create a method member from text: `$text`")
+        return createFromText("trait Foo { $text }") ?: error("Failed to create a method member from text: `$text`")
     }
 
     fun createMembers(text: String): RsMembers {
@@ -370,6 +374,10 @@ class RsPsiFactory(
         createFromText<RsFunction>("unsafe fn foo(){}")?.unsafe
             ?: error("Failed to create unsafe element")
 
+    fun createAsyncKeyword(): PsiElement =
+        createFromText<RsFunction>("async fn foo(){}")?.node?.findChildByType(RsElementTypes.ASYNC)?.psi
+            ?: error("Failed to create async element")
+
     fun createFunction(text: String): RsFunction =
         tryCreateFunction(text) ?: error("Failed to create function element: $text")
 
@@ -389,8 +397,17 @@ class RsPsiFactory(
             ?: error("Failed to create parameter element")
     }
 
-    fun createValueParameter(name: String, type: RsTypeReference, mutable: Boolean = false, lifetime: RsLifetime? = null): RsValueParameter {
-        return createFromText<RsFunction>("fn main($name: &${if (lifetime != null) lifetime.text + " " else ""}${if (mutable) "mut " else ""}${type.text}){}")
+    fun createValueParameter(
+        name: String,
+        type: RsTypeReference,
+        mutable: Boolean = false,
+        reference: Boolean = true,
+        lifetime: RsLifetime? = null
+    ): RsValueParameter {
+        val referenceText = if (reference) "&" else ""
+        val lifetimeText = if (lifetime != null) "${lifetime.text} " else ""
+        val mutText = if (mutable) "mut " else ""
+        return createFromText<RsFunction>("fn main($name: $referenceText$lifetimeText$mutText${type.text}){}")
             ?.valueParameterList?.valueParameterList?.get(0)
             ?: error("Failed to create parameter element")
     }
@@ -474,6 +491,9 @@ class RsPsiFactory(
     fun tryCreateMethodCall(receiver: RsExpr, methodNameText: String, arguments: List<RsExpr>): RsDotExpr? =
         tryCreateExpressionOfType("${receiver.text}.$methodNameText(${arguments.joinToString(", ") { it.text }})")
 
+    fun tryCreateValueArgumentList(arguments: List<RsExpr>): RsValueArgumentList? =
+        createFromText("fn bar() { foo(${arguments.joinToString(", ") { it.text }}); }")
+
     fun createDerefExpr(expr: RsExpr, nOfDerefs: Int = 1): RsExpr =
         if (nOfDerefs > 0)
             when (expr) {
@@ -499,8 +519,9 @@ class RsPsiFactory(
             ?: error("Failed to create vis restriction element")
     }
 
-    fun createVis(text: String): RsVis =
-        createFromText("$text fn foo() {}") ?: error("Failed to create vis")
+    fun tryCreateVis(text: String): RsVis? = createFromText("$text fn foo() {}")
+
+    fun createVis(text: String): RsVis = tryCreateVis(text) ?: error("Failed to create vis")
 
     private inline fun <reified E : RsExpr> createExpressionOfType(text: String): E =
         createExpression(text) as? E
@@ -511,12 +532,20 @@ class RsPsiFactory(
     fun createDynTraitType(pathText: String): RsTraitType =
         createFromText("type T = &dyn $pathText;}")
             ?: error("Failed to create trait type")
+
+    fun createPat(patText: String): RsPat = tryCreatePat(patText) ?: error("Failed to create pat element")
+
+    fun tryCreatePat(patText: String): RsPat? = (createStatement("let $patText;") as RsLetDecl).pat
 }
 
 private fun String.iff(cond: Boolean) = if (cond) "$this " else " "
 
 fun RsTypeReference.substAndGetText(subst: Substitution): String =
-    type.substitute(subst).renderInsertionSafe(includeLifetimeArguments = true, useAliasNames = true)
+    type.substitute(subst).renderInsertionSafe(
+        includeLifetimeArguments = true,
+        useAliasNames = true,
+        skipUnchangedDefaultTypeArguments = true
+    )
 
 private fun mutsToRefs(mutability: List<Mutability>): String =
     mutability.joinToString("", "", "") {

@@ -14,8 +14,8 @@ import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import org.rust.ide.icons.RsIcons
-import org.rust.lang.core.macros.MacroGraph
-import org.rust.lang.core.macros.MacroGraphBuilder
+import org.rust.lang.core.macros.decl.MacroGraph
+import org.rust.lang.core.macros.decl.MacroGraphBuilder
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.stubs.RsMacroStub
 import org.rust.lang.doc.documentation
@@ -54,15 +54,37 @@ val RsMacro.macroRules: PsiElement
 val RsMacro.macroBody: RsMacroBody?
     get() = childOfType()
 
+val HAS_MACRO_EXPORT_PROP: StubbedAttributeProperty<RsMacro, RsMacroStub> =
+    StubbedAttributeProperty(QueryAttributes<*>::hasMacroExport, RsMacroStub::mayHaveMacroExport)
+val HAS_MACRO_EXPORT_LOCAL_INNER_MACROS_PROP: StubbedAttributeProperty<RsMacro, RsMacroStub> =
+    StubbedAttributeProperty(QueryAttributes<*>::hasMacroExportLocalInnerMacros, RsMacroStub::mayHaveMacroExportLocalInnerMacros)
+val HAS_RUSTC_BUILTIN_MACRO_PROP: StubbedAttributeProperty<RsMacro, RsMacroStub> =
+    StubbedAttributeProperty(QueryAttributes<*>::hasRustcBuiltinMacro, RsMacroStub::mayHaveRustcBuiltinMacro)
+
 val RsMacro.hasMacroExport: Boolean
-    get() = queryAttributes.hasAttribute("macro_export")
+    get() = HAS_MACRO_EXPORT_PROP.getByPsi(this)
+
+val QueryAttributes<*>.hasMacroExport: Boolean
+    get() = hasAttribute("macro_export")
 
 /** `#[macro_export(local_inner_macros)]` */
 val RsMacro.hasMacroExportLocalInnerMacros: Boolean
-    get() = queryAttributes.hasAttributeWithArg("macro_export", "local_inner_macros")
+    get() = HAS_MACRO_EXPORT_LOCAL_INNER_MACROS_PROP.getByPsi(this)
+
+val QueryAttributes<*>.hasMacroExportLocalInnerMacros: Boolean
+    get() = hasAttributeWithArg("macro_export", "local_inner_macros")
+
+val RsMacro.hasRustcBuiltinMacro: Boolean
+    get() = HAS_RUSTC_BUILTIN_MACRO_PROP.getByPsi(this)
+
+val QueryAttributes<*>.hasRustcBuiltinMacro: Boolean
+    get() = hasAttribute("rustc_builtin_macro")
 
 val RsMacro.isRustcDocOnlyMacro: Boolean
-    get() = queryAttributes.hasAttribute("rustc_doc_only_macro")
+    get() = queryAttributes.isRustcDocOnlyMacro
+
+val QueryAttributes<*>.isRustcDocOnlyMacro: Boolean
+    get() = hasAttribute("rustc_doc_only_macro")
 
 val RsMacro.macroBodyStubbed: RsMacroBody?
     get() {

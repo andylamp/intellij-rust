@@ -20,6 +20,7 @@ import com.intellij.openapi.actionSystem.CommonShortcuts
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.*
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.actions.ScrollToTheEndToolbarAction
 import com.intellij.openapi.keymap.KeymapUtil
 import com.intellij.openapi.progress.ProgressIndicator
@@ -33,7 +34,8 @@ import com.intellij.util.ui.MessageCategory
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.workingDirectory
-import org.rust.cargo.toolchain.Cargo
+import org.rust.cargo.toolchain.tools.Cargo
+import org.rust.cargo.toolchain.tools.evcxr
 import org.rust.ide.icons.RsIcons
 import org.rust.openapiext.saveAllDocuments
 import java.awt.BorderLayout
@@ -156,7 +158,7 @@ class RsConsoleRunner(project: Project) :
         if (Cargo.checkNeedInstallEvcxr(project)) return
         // BACKCOMPAT: 2019.3
         @Suppress("DEPRECATION")
-        TransactionGuard.submitTransaction(project, Runnable { saveAllDocuments() })
+        TransactionGuard.submitTransaction(project) { saveAllDocuments() }
 
         ApplicationManager.getApplication().executeOnPooledThread {
             ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Connecting to Console", false) {
@@ -230,7 +232,7 @@ class RsConsoleRunner(project: Project) :
     }
 
     fun rerun() {
-        object : Task.Backgroundable(project, "Restarting Console", true) {
+        object : Task.Backgroundable(project, "Restarting console", true) {
             override fun run(indicator: ProgressIndicator) {
                 val processHandler = processHandler
                 if (processHandler != null) {
@@ -266,7 +268,7 @@ class RsConsoleRunner(project: Project) :
         errorViewPanel.addMessage(MessageCategory.ERROR, messages.toTypedArray(), null, -1, -1, null)
         panel.add(errorViewPanel, BorderLayout.CENTER)
 
-        val contentDescriptor = RunContentDescriptor(null, processHandler, panel, "Error running console")
+        val contentDescriptor = RunContentDescriptor(null, processHandler, panel, "Error Running Console")
 
         showConsole(executor, contentDescriptor)
     }
@@ -276,7 +278,8 @@ class RsConsoleRunner(project: Project) :
     }
 
     companion object {
+        val LOG: Logger = logger<RsConsoleRunner>()
+
         const val TOOL_WINDOW_TITLE: String = "Rust REPL"
-        val LOG: Logger = Logger.getInstance(RsConsoleRunner::class.java)
     }
 }

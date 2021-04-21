@@ -6,8 +6,11 @@
 package org.rust.lang.core.resolve
 
 import org.intellij.lang.annotations.Language
+import org.rust.ExpandMacros
+import org.rust.MockEdition
+import org.rust.UseNewResolve
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.lang.core.psi.ext.RsReferenceElement
-
 
 class RsMultiResolveTest : RsResolveTestBase() {
     fun `test struct expr`() = doTest("""
@@ -35,14 +38,83 @@ class RsMultiResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test use multi reference`() = doTest("""
+    fun `test use multi reference, function and mod`() = doTest("""
         use m::foo;
               //^
 
         mod m {
-            fn foo() {}
-            mod foo {}
+            pub fn foo() {}
+            pub mod foo {}
         }
+    """)
+
+    @UseNewResolve
+    fun `test use multi reference, duplicated function`() = doTest("""
+        mod m {
+            pub fn foo() {}
+            pub fn foo() {}
+        }
+        use m::foo;
+        fn main() {
+            foo();
+        } //^
+    """)
+
+    @UseNewResolve
+    fun `test use multi reference, duplicated struct`() = doTest("""
+        mod m {
+            pub struct Foo {}
+            pub struct Foo {}
+        }
+        use m::Foo;
+        fn main() {
+            let _ = Foo {};
+        }         //^
+    """)
+
+    @UseNewResolve
+    fun `test use multi reference, duplicated unit struct`() = doTest("""
+        mod m {
+            pub struct Foo;
+            pub struct Foo;
+        }
+        use m::Foo;
+        fn main() {
+            let _ = Foo;
+        }         //^
+    """)
+
+    @UseNewResolve
+    fun `test use multi reference, duplicated enum variant`() = doTest("""
+        enum E { A, A }
+        use E::A;
+        fn main() {
+            let _ = A;
+        }         //^
+    """)
+
+    @UseNewResolve
+    @MockEdition(Edition.EDITION_2018)
+    fun `test use multi reference, item in duplicated inline mod`() = doTest("""
+        mod m {
+            pub fn foo() {}
+        }
+        mod m {
+            pub fn foo() {}
+        }
+        use m::foo;
+        fn main() {
+            foo();
+        } //^
+    """)
+
+    @MockEdition(Edition.EDITION_2018)
+    fun `test duplicated inline mod`() = doTest("""
+        mod m {}
+        mod m {}
+        fn main() {
+            m::func();
+        } //^
     """)
 
     fun `test other mod trait bound method`() = doTest("""
@@ -65,28 +137,37 @@ class RsMultiResolveTest : RsResolveTestBase() {
         }   //^
     """)
 
-    fun `test trait method and private inherent method`() = doTest("""
-        use foo::{Foo, Trait};
+    @MockEdition(Edition.EDITION_2018)
+    fun `test import item vs local item`() = doTest("""
+        mod m {
+            pub fn foo() {}
+        }
+        pub use crate::m::foo;
+        pub fn foo() {}
+        fn main() {
+            foo();
+        } //^
+    """)
 
-        mod foo {
-            pub struct Foo;
-            impl Foo {
-                fn get(&self) { println!("struct"); }
-            }
+    // From https://github.com/Alexhuszagh/rust-lexical/blob/1ec9d7660e70ab731eecb3390bdf95e767548dcc/lexical-core/src/util/slice_index.rs#L82
+    @ExpandMacros
+    @MockEdition(Edition.EDITION_2018)
+    fun `test import item vs local item (inside expanded mod)`() = doTest("""
+        mod m {
+            pub fn foo() {}
+        }
 
-            pub trait Trait {
-                fn get(&self);
-            }
-            impl Trait for Foo {
-                fn get(&self) { println!("trait"); }
+        macro_rules! as_is { ($($ t:tt)*) => { $($ t)* }; }
+        as_is! {
+            mod inner {
+                pub use crate::m::foo;
+                pub fn foo() {}
             }
         }
 
         fn main() {
-            let f = foo::Foo;
-            f.get();
-            //^
-        }
+            inner::foo();
+        }        //^
     """)
 
     private fun doTest(@Language("Rust") code: String) {

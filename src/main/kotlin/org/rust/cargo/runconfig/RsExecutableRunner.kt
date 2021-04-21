@@ -9,22 +9,25 @@ import com.intellij.execution.DefaultExecutionResult
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.configurations.RunProfile
 import com.intellij.execution.configurations.RunProfileState
-import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.runners.showRunContent
 import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Key
+import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.getBuildConfiguration
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildConfiguration
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildToolWindowEnabled
 import org.rust.cargo.runconfig.buildtool.cargoPatches
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
-import org.rust.cargo.toolchain.Cargo
-import org.rust.cargo.toolchain.Cargo.Companion.cargoCommonPatch
+import org.rust.cargo.toolchain.CargoCommandLine
+import org.rust.cargo.toolchain.impl.CompilerArtifactMessage
+import org.rust.cargo.toolchain.tools.Cargo.Companion.getCargoCommonPatch
+import org.rust.cargo.toolchain.tools.RsTool.Companion.createGeneralCommandLine
 import org.rust.cargo.util.CargoArgsParser.Companion.parseArgs
 import org.rust.openapiext.computeWithCancelableProgress
+import org.rust.stdext.toPath
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 
@@ -44,7 +47,7 @@ abstract class RsExecutableRunner(
         val state = environment.state as CargoRunStateBase
         val project = environment.project
         val host = project.computeWithCancelableProgress("Checking if toolchain is supported...") {
-            state.rustVersion().rustc?.host.orEmpty()
+            state.rustVersion()?.host.orEmpty()
         }
         if (!checkToolchainConfigured(project)) return
         val toolchainError = checkToolchainSupported(host)
@@ -52,15 +55,16 @@ abstract class RsExecutableRunner(
             processInvalidToolchain(project, toolchainError)
             return
         }
-        environment.cargoPatches += cargoCommonPatch
-        environment.putUserData(BINARIES, CompletableFuture())
+        environment.cargoPatches += getCargoCommonPatch(project)
+        environment.putUserData(ARTIFACT, CompletableFuture())
         super.execute(environment)
     }
 
     override fun doExecute(state: RunProfileState, environment: ExecutionEnvironment): RunContentDescriptor? {
         if (state !is CargoRunStateBase) return null
 
-        val binaries = environment.binaries.orEmpty()
+        val artifact = environment.artifact
+        val binaries = artifact?.executables.orEmpty()
         val errorMessage = when {
             binaries.isEmpty() -> "Can't find a binary."
             binaries.size > 1 -> "More than one binary was produced. " +
@@ -73,16 +77,31 @@ abstract class RsExecutableRunner(
         }
 
         val runCargoCommand = state.prepareCommandLine()
+        val workingDirectory = getWorkingDirectory(environment.project, runCargoCommand, artifact)
         val (_, executableArguments) = parseArgs(runCargoCommand.command, runCargoCommand.additionalArguments)
-        val runExecutable = Cargo.createGeneralCommandLine(
-            binaries.single(),
-            runCargoCommand.workingDirectory,
+        val runExecutable = createGeneralCommandLine(
+            binaries.single().toPath(),
+            workingDirectory,
+            runCargoCommand.redirectInputFrom,
             runCargoCommand.backtraceMode,
             runCargoCommand.environmentVariables,
             executableArguments,
             runCargoCommand.emulateTerminal
         )
         return showRunContent(state, environment, runExecutable)
+    }
+
+    private fun getWorkingDirectory(
+        project: Project,
+        runCargoCommand: CargoCommandLine,
+        artifact: CompilerArtifactMessage?
+    ): Path {
+        if (runCargoCommand.command != "test") return runCargoCommand.workingDirectory
+        val packageId = artifact?.package_id ?: return runCargoCommand.workingDirectory
+        val pkg = project.cargoProjects.allProjects
+            .mapNotNull { it.workspace?.findPackageById(packageId) }
+            .firstOrNull()
+        return pkg?.rootDirectory ?: runCargoCommand.workingDirectory
     }
 
     protected open fun showRunContent(
@@ -95,23 +114,7 @@ abstract class RsExecutableRunner(
         state: CargoRunStateBase,
         commandLine: GeneralCommandLine,
         environment: ExecutionEnvironment
-    ): DefaultExecutionResult {
-        val runConfiguration = state.runConfiguration
-        val context = ConfigurationExtensionContext()
-
-        val extensionManager = RsRunConfigurationExtensionManager.getInstance()
-        extensionManager.patchCommandLine(runConfiguration, environment, commandLine, context)
-        extensionManager.patchCommandLineState(runConfiguration, environment, state, context)
-
-        val handler = RsKillableColoredProcessHandler(commandLine)
-        ProcessTerminatedListener.attach(handler) // shows exit code upon termination
-
-        extensionManager.attachExtensionsToProcess(runConfiguration, handler, environment, context)
-
-        val console = state.consoleBuilder.console
-        console.attachToProcess(handler)
-        return DefaultExecutionResult(console, handler)
-    }
+    ): DefaultExecutionResult = state.executeCommandLine(commandLine, environment)
 
     open fun checkToolchainSupported(host: String): BuildResult.ToolchainError? = null
 
@@ -126,12 +129,13 @@ abstract class RsExecutableRunner(
     }
 
     companion object {
-        private val BINARIES: Key<CompletableFuture<List<Path>>> = Key.create("CARGO.CONFIGURATION.BINARIES")
+        private val ARTIFACT: Key<CompletableFuture<CompilerArtifactMessage>> =
+            Key.create("CARGO.CONFIGURATION.ARTIFACT")
 
-        var ExecutionEnvironment.binaries: List<Path>?
-            get() = getUserData(this@Companion.BINARIES)?.get()
+        var ExecutionEnvironment.artifact: CompilerArtifactMessage?
+            get() = getUserData(this@Companion.ARTIFACT)?.get()
             set(value) {
-                getUserData(this@Companion.BINARIES)?.complete(value)
+                getUserData(this@Companion.ARTIFACT)?.complete(value)
             }
     }
 }

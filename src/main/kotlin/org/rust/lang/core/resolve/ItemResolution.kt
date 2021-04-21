@@ -5,18 +5,16 @@
 
 package org.rust.lang.core.resolve
 
-import com.intellij.openapi.util.Computable
-import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapiext.Testmark
 import com.intellij.psi.PsiElement
-import com.intellij.psi.util.CachedValue
 import org.rust.cargo.util.AutoInjectedCrates.CORE
 import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.resolve.ref.advancedDeepResolve
+import org.rust.lang.core.resolve2.processItemDeclarations2
 import org.rust.openapiext.recursionGuard
 import org.rust.stdext.intersects
 import java.util.*
@@ -65,6 +63,10 @@ fun processItemDeclarations(
     originalProcessor: RsResolveProcessor,
     ipm: ItemProcessingMode
 ): Boolean {
+    if (scope is RsMod) {
+        processItemDeclarations2(scope, ns, originalProcessor, ipm)?.let { return it }
+    }
+
     val withPrivateImports = ipm != ItemProcessingMode.WITHOUT_PRIVATE_IMPORTS
 
     val directlyDeclaredNames = HashMap<String, Set<Namespace>>()
@@ -81,7 +83,9 @@ fun processItemDeclarations(
 
     val cachedItems = scope.expandedItemsCached
 
-    loop@ for (item in cachedItems.rest) {
+    val items = processor.name?.let { cachedItems.named[it].orEmpty().asSequence() }
+        ?: cachedItems.named.values.asSequence().flatten()
+    loop@ for (item in items) {
         when (item) {
             // Unit like structs are both types and values
             is RsStructItem -> {
@@ -100,26 +104,18 @@ fun processItemDeclarations(
             is RsFunction, is RsConstant ->
                 if (Namespace.Values in ns && processor(item as RsNamedElement)) return true
 
-            is RsForeignModItem -> if (Namespace.Values in ns) {
-                for (child in item.stubChildrenOfType<RsNamedElement>()) {
-                    if (child is RsFunction || child is RsConstant) {
-                        if (processor(child)) return true
-                    }
-                }
-            }
-
             is RsExternCrateItem -> {
                 if (processExternCrateItem(item, processor, withPrivateImports)) return true
             }
         }
     }
 
-    val isEdition2018 = scope.isEdition2018
+    val isAtLeastEdition2018 = scope.isAtLeastEdition2018
     for ((isPublic, path, name, isAtom) in cachedItems.namedImports) {
         if (!(isPublic || withPrivateImports)) continue
 
-        if (isEdition2018 && isAtom) {
-            // Use items like `use foo;` or `use foo::{self}` are meaningful on 2018 edition
+        if (isAtLeastEdition2018 && isAtom) {
+            // Use items like `use foo;` or `use foo::{self}` are meaningful since 2018 edition
             // only if `foo` is a crate, and it is `pub use` item. Otherwise,
             // we should ignore it or it breaks resolve of such `foo` in other places.
             ItemResolutionTestmarks.extraAtomUse.hit()
@@ -135,14 +131,14 @@ fun processItemDeclarations(
         }
     }
 
-    if (withPrivateImports && Namespace.Types in ns && scope is RsFile && !isEdition2018 && scope.isCrateRoot) {
+    if (withPrivateImports && Namespace.Types in ns && scope is RsFile && !isAtLeastEdition2018 && scope.isCrateRoot) {
         // Rust injects implicit `extern crate std` in every crate root module unless it is
         // a `#![no_std]` crate, in which case `extern crate core` is injected. However, if
         // there is a (unstable?) `#![no_core]` attribute, nothing is injected.
         //
         // https://doc.rust-lang.org/book/using-rust-without-the-standard-library.html
         // The stdlib lib itself is `#![no_std]`, and the core is `#![no_core]`
-        when (scope.attributes) {
+        when (scope.stdlibAttributes) {
             RsFile.Attributes.NONE ->
                 if (processor.lazy(STD) { scope.findDependencyCrateRoot(STD) }) return true
 
@@ -158,7 +154,7 @@ fun processItemDeclarations(
     }
 
     if (ipm.withExternCrates && Namespace.Types in ns && scope is RsMod) {
-        if (isEdition2018 && !scope.isCrateRoot) {
+        if (isAtLeastEdition2018 && !scope.isCrateRoot) {
             val crateRoot = scope.crateRoot
             if (crateRoot != null) {
                 val result = processWithShadowingAndUpdateScope(directlyDeclaredNames, originalProcessor) { shadowingProcessor ->
@@ -218,7 +214,7 @@ fun processItemDeclarations(
             speck.crateRoot
         } ?: continue
 
-        val found = recursionGuard(mod, Computable {
+        val found = recursionGuard(mod, {
             processWithShadowing(directlyDeclaredNames, originalProcessor) { shadowingProcessor ->
                 processItemOrEnumVariantDeclarations(
                     mod,
@@ -268,7 +264,7 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
 
     var variants: List<RsNamedElement> = emptyList()
     val visitedNamespaces = EnumSet.noneOf(Namespace::class.java)
-    if (processor.lazy(name) {
+    val result = processor.lazy(name) {
         variants = ref.multiResolve()
             .filterIsInstance<RsNamedElement>()
             .filter { ns.intersects(it.namespaces) }
@@ -277,9 +273,8 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
             visitedNamespaces.addAll(first.namespaces)
         }
         first
-    }) {
-        return true
     }
+    if (result) return true
     // `variants` will be populated if processor looked at the corresponding element
     for (element in variants.drop(1)) {
         if (element.namespaces.all { it in visitedNamespaces }) continue
@@ -294,8 +289,6 @@ enum class ItemProcessingMode(val withExternCrates: Boolean) {
     WITH_PRIVATE_IMPORTS(false),
     WITH_PRIVATE_IMPORTS_N_EXTERN_CRATES(true),
     WITH_PRIVATE_IMPORTS_N_EXTERN_CRATES_COMPLETION(true);
-
-    val cacheKey: Key<CachedValue<List<ScopeEntry>>> = Key.create("CACHED_ITEM_DECLS_$name")
 }
 
 object ItemResolutionTestmarks {

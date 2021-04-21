@@ -7,7 +7,7 @@ package org.rust.ide.refactoring
 
 import org.intellij.lang.annotations.Language
 import org.rust.RsTestBase
-import org.rust.ide.refactoring.convertStruct.RsConvertToNamedFieldsAction
+import org.rust.launchAction
 
 class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
 
@@ -16,7 +16,7 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
     """, """
         struct Test {
             pub _0: usize,
-            _1: i32
+            _1: i32,
         }
     """)
 
@@ -36,10 +36,7 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
         }
     """, """
         enum Test{
-            A {
-                _0: usize,
-                _1: i32
-            },
+            A { _0: usize, _1: i32 },
             B
         }
         fn main(){
@@ -59,7 +56,7 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
     """, """
         struct Test {
             pub _0: usize,
-            _1: i32
+            _1: i32,
         }
 
         fn main (){
@@ -81,7 +78,7 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
     """, """
         struct Test {
             pub _0: usize,
-            _1: i32
+            _1: i32,
         }
 
         fn main (){
@@ -108,7 +105,7 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
     """, """
         struct Test {
             pub _0: usize,
-            _1: i32
+            _1: i32,
         }
 
         fn main (){
@@ -138,7 +135,9 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
             let s = S::new(0);
         }
     """, """
-        struct S { _0: u32 }
+        struct S {
+            _0: u32,
+        }
 
         impl S {
             fn new(v: u32) -> S {
@@ -167,7 +166,9 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
         }
     """, """
         mod nested {
-            pub struct S { pub _0: u32 }
+            pub struct S {
+                pub _0: u32,
+            }
 
             impl S {
                 pub fn new(v: u32) -> S {
@@ -182,9 +183,37 @@ class ConvertToNamedFieldsRefactoringTest : RsTestBase() {
         }
     """)
 
+    fun `test where clause`() = doAvailableTest("""
+        trait Trait {}
+        struct Test/*caret*/<T>(T) where T: Trait ;
+    """, """
+        trait Trait {}
+        struct Test<T> where T: Trait {
+            _0: T,
+        }
+    """)
+
+    fun `test where clause (multiline)`() = doAvailableTest("""
+        trait Trait {}
+        struct Test/*caret*/<T1, T2>(T1, T2)
+            where
+                T1: Trait,
+                T2: Trait;
+    """, """
+        trait Trait {}
+        struct Test<T1, T2>
+            where
+                T1: Trait,
+                T2: Trait
+        {
+            _0: T1,
+            _1: T2,
+        }
+    """)
+
     private fun doAvailableTest(@Language("Rust") before: String, @Language("Rust") after: String) {
         InlineFile(before.trimIndent()).withCaret()
-        myFixture.testAction(RsConvertToNamedFieldsAction())
+        myFixture.launchAction("Rust.RsConvertToNamedFields")
         myFixture.checkResult(replaceCaretMarker(after.trimIndent()))
     }
 }

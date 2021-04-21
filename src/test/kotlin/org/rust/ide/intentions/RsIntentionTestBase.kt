@@ -7,14 +7,16 @@ package org.rust.ide.intentions
 
 import com.intellij.codeInsight.intention.IntentionAction
 import com.intellij.codeInsight.intention.IntentionActionDelegate
+import com.intellij.codeInsight.intention.IntentionManager
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapiext.Testmark
 import com.intellij.util.ui.UIUtil
 import org.intellij.lang.annotations.Language
 import org.rust.RsTestBase
 import org.rust.fileTreeFromText
-import kotlin.reflect.KClass
 import java.nio.file.Path
 import java.nio.file.Paths
+import kotlin.reflect.KClass
 import kotlin.reflect.full.isSubclassOf
 
 abstract class RsIntentionTestBase(private val intentionClass: KClass<out IntentionAction>) : RsTestBase() {
@@ -36,12 +38,17 @@ abstract class RsIntentionTestBase(private val intentionClass: KClass<out Intent
     private fun checkFileExists(path: Path): String = getResourceAsString(path.toString())
         ?: error("No ${path.fileName} found for $intentionClass ($path)")
 
-    protected fun doAvailableTest(@Language("Rust") before: String, @Language("Rust") after: String) {
-        InlineFile(before.trimIndent()).withCaret()
+    protected fun doAvailableTest(
+        @Language("Rust") before: String,
+        @Language("Rust") after: String,
+        fileName: String = "main.rs"
+    ) {
+        InlineFile(before.trimIndent(), fileName).withCaret()
         launchAction()
         myFixture.checkResult(replaceCaretMarker(after.trimIndent()))
     }
 
+    @Suppress("unused")
     protected fun doAvailableTestWithFileTree(
         @Language("Rust") fileStructureBefore: String,
         @Language("Rust") openedFileAfter: String
@@ -60,18 +67,19 @@ abstract class RsIntentionTestBase(private val intentionClass: KClass<out Intent
         fileTreeFromText(replaceCaretMarker(fileStructureAfter)).check(myFixture)
     }
 
-    private fun launchAction() {
+    protected fun launchAction() {
         UIUtil.dispatchAllInvocationEvents()
         myFixture.launchAction(intention)
     }
 
-    protected fun doAvailableTest(@Language("Rust") before: String,
-                                  @Language("Rust") after: String,
-                                  testmark: Testmark) =
-        testmark.checkHit { doAvailableTest(before, after) }
+    protected fun doAvailableTest(
+        @Language("Rust") before: String,
+        @Language("Rust") after: String,
+        testmark: Testmark
+    ) = testmark.checkHit { doAvailableTest(before, after) }
 
-    protected fun doUnavailableTest(@Language("Rust") before: String) {
-        InlineFile(before).withCaret()
+    protected fun doUnavailableTest(@Language("Rust") before: String, fileName: String = "main.rs") {
+        InlineFile(before, fileName).withCaret()
         val intention = findIntention()
         check(intention == null) {
             "\"${intentionClass.simpleName}\" should not be available"
@@ -82,6 +90,27 @@ abstract class RsIntentionTestBase(private val intentionClass: KClass<out Intent
         return myFixture.availableIntentions.firstOrNull {
             val originalIntention = IntentionActionDelegate.unwrap(it)
             intentionClass == originalIntention::class
+        }
+    }
+
+    protected fun checkAvailableInSelectionOnly(@Language("Rust") code: String, fileName: String = "main.rs") {
+        InlineFile(code.replace("<selection>", "<selection><caret>"), fileName)
+        val selections = myFixture.editor.selectionModel.let { model ->
+            model.blockSelectionStarts.zip(model.blockSelectionEnds)
+                .map { TextRange(it.first, it.second + 1) }
+        }
+        val intention = IntentionManager.getInstance().intentionActions.find {
+            IntentionActionDelegate.unwrap(it).javaClass == intentionClass.java
+        } ?: error("Intention action with class $intentionClass is not registered")
+        for (pos in myFixture.file.text.indices) {
+            myFixture.editor.caretModel.moveToOffset(pos)
+            val expectAvailable = selections.any { it.contains(pos) }
+            val isAvailable = intention.isAvailable(project, myFixture.editor, myFixture.file)
+            check(isAvailable == expectAvailable) {
+                "Expect ${if (expectAvailable) "available" else "unavailable"}, " +
+                    "actually ${if (isAvailable) "available" else "unavailable"} " +
+                    "at `${StringBuilder(myFixture.file.text).insert(pos, "/*caret*/")}`"
+            }
         }
     }
 }

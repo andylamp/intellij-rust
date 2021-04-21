@@ -23,7 +23,6 @@ import org.rust.ide.console.RsConsoleView
 import org.rust.lang.RsDebugInjectionListener
 import org.rust.lang.core.lexer.RsLexer
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.RsElementTypes.STRING_LITERAL
 import org.rust.lang.core.stubs.RsFileStub
 
 class RustParserDefinition : ParserDefinition {
@@ -63,8 +62,7 @@ class RustParserDefinition : ParserDefinition {
 
     override fun getFileNodeType(): IFileElementType = RsFileStub.Type
 
-    override fun getStringLiteralElements(): TokenSet =
-        TokenSet.create(STRING_LITERAL)
+    override fun getStringLiteralElements(): TokenSet = RS_ALL_STRING_LITERALS
 
     override fun getWhitespaceTokens(): TokenSet =
         TokenSet.create(TokenType.WHITE_SPACE)
@@ -94,6 +92,6 @@ class RustParserDefinition : ParserDefinition {
         /**
          * Should be increased after any change of parser rules
          */
-        const val PARSER_VERSION: Int = LEXER_VERSION + 12
+        const val PARSER_VERSION: Int = LEXER_VERSION + 25
     }
 }

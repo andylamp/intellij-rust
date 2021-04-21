@@ -1,7 +1,7 @@
 import sys
 
-from lldb import SBValue, SBData, SBError, eBasicTypeLong, eBasicTypeUnsignedLong, eBasicTypeUnsignedChar
-from lldb.formatters import Logger
+from lldb import SBValue, SBData, SBError
+from lldb import eBasicTypeLong, eBasicTypeUnsignedLong, eBasicTypeUnsignedChar
 
 #################################################################################################################
 # This file contains two kinds of pretty-printers: summary and synthetic.
@@ -35,6 +35,8 @@ from lldb.formatters import Logger
 ################################################################################################################
 
 PY3 = sys.version_info[0] == 3
+if PY3:
+    from typing import Optional
 
 
 class ValueBuilder:
@@ -58,17 +60,9 @@ class ValueBuilder:
         return self.valobj.CreateValueFromData(name, data, type)
 
 
-def unwrap_unique_or_non_null(unique_or_nonnull):
-    # BACKCOMPAT: rust 1.32 https://github.com/rust-lang/rust/commit/7a0911528058e87d22ea305695f4047572c5e067
-    ptr = unique_or_nonnull.GetChildMemberWithName("pointer")
-    return ptr if ptr.TypeIsPointerType() else ptr.GetChildAtIndex(0)
-
-
-class DefaultSynthteticProvider:
-    def __init__(self, valobj, dict):
-        # type: (SBValue, dict) -> DefaultSynthteticProvider
-        logger = Logger.Logger()
-        # logger >> "Default synthetic provider for " + str(valobj.GetName())
+class DefaultSyntheticProvider:
+    def __init__(self, valobj, _dict):
+        # type: (SBValue, dict) -> DefaultSyntheticProvider
         self.valobj = valobj
 
     def num_children(self):
@@ -93,22 +87,20 @@ class DefaultSynthteticProvider:
 
 
 class EmptySyntheticProvider:
-    def __init__(self, valobj, dict):
+    def __init__(self, valobj, _dict):
         # type: (SBValue, dict) -> EmptySyntheticProvider
-        logger = Logger.Logger()
-        logger >> "[EmptySyntheticProvider] for " + str(valobj.GetName())
         self.valobj = valobj
 
     def num_children(self):
         # type: () -> int
         return 0
 
-    def get_child_index(self, name):
-        # type: (str) -> int
+    def get_child_index(self, _name):
+        # type: (str) -> Optional[int]
         return None
 
-    def get_child_at_index(self, index):
-        # type: (int) -> SBValue
+    def get_child_at_index(self, _index):
+        # type: (int) -> Optional[SBValue]
         return None
 
     def update(self):
@@ -120,40 +112,34 @@ class EmptySyntheticProvider:
         return False
 
 
-def SizeSummaryProvider(valobj, dict):
+def SizeSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
     return 'size=' + str(valobj.GetNumChildren())
 
 
 def vec_to_string(vec):
+    # type: (SBValue) -> str
     length = vec.GetNumChildren()
     chars = [vec.GetChildAtIndex(i).GetValueAsUnsigned() for i in range(length)]
     return bytes(chars).decode(errors='replace') if PY3 else "".join(chr(char) for char in chars)
 
 
-def StdStringSummaryProvider(valobj, dict):
+def StdStringSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
-    logger = Logger.Logger()
-    logger >> "[StdStringSummaryProvider] for " + str(valobj.GetName())
     vec = valobj.GetChildAtIndex(0)
     return '"%s"' % vec_to_string(vec)
 
 
-def StdOsStringSummaryProvider(valobj, dict):
+def StdOsStringSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
-    logger = Logger.Logger()
-    logger >> "[StdOsStringSummaryProvider] for " + str(valobj.GetName())
     buf = valobj.GetChildAtIndex(0).GetChildAtIndex(0)
     is_windows = "Wtf8Buf" in buf.type.name
     vec = buf.GetChildAtIndex(0) if is_windows else buf
     return '"%s"' % vec_to_string(vec)
 
 
-def StdStrSummaryProvider(valobj, dict):
+def StdStrSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
-    logger = Logger.Logger()
-    logger >> "[StdStrSummaryProvider] for " + str(valobj.GetName())
-
     length = valobj.GetChildMemberWithName("length").GetValueAsUnsigned()
     if length == 0:
         return '""'
@@ -171,9 +157,8 @@ def StdStrSummaryProvider(valobj, dict):
 class StructSyntheticProvider:
     """Pretty-printer for structs and struct enum variants"""
 
-    def __init__(self, valobj, dict, is_variant=False):
+    def __init__(self, valobj, _dict, is_variant=False):
         # type: (SBValue, dict, bool) -> StructSyntheticProvider
-        logger = Logger.Logger()
         self.valobj = valobj
         self.is_variant = is_variant
         self.type = valobj.GetType()
@@ -217,9 +202,8 @@ class StructSyntheticProvider:
 class TupleSyntheticProvider:
     """Pretty-printer for tuples and tuple enum variants"""
 
-    def __init__(self, valobj, dict, is_variant=False):
+    def __init__(self, valobj, _dict, is_variant=False):
         # type: (SBValue, dict, bool) -> TupleSyntheticProvider
-        logger = Logger.Logger()
         self.valobj = valobj
         self.is_variant = is_variant
         self.type = valobj.GetType()
@@ -268,10 +252,8 @@ class StdVecSyntheticProvider:
     struct NonZero<T>(T)
     """
 
-    def __init__(self, valobj, dict):
+    def __init__(self, valobj, _dict):
         # type: (SBValue, dict) -> StdVecSyntheticProvider
-        logger = Logger.Logger()
-        logger >> "[StdVecSyntheticProvider] for " + str(valobj.GetName())
         self.valobj = valobj
         self.update()
 
@@ -299,7 +281,7 @@ class StdVecSyntheticProvider:
         self.length = self.valobj.GetChildMemberWithName("len").GetValueAsUnsigned()
         self.buf = self.valobj.GetChildMemberWithName("buf")
 
-        self.data_ptr = unwrap_unique_or_non_null(self.buf.GetChildMemberWithName("ptr"))
+        self.data_ptr = self.buf.GetChildMemberWithName("ptr").GetChildMemberWithName("pointer")
 
         self.element_type = self.data_ptr.GetType().GetPointeeType()
         self.element_type_size = self.element_type.GetByteSize()
@@ -315,10 +297,8 @@ class StdVecDequeSyntheticProvider:
     struct VecDeque<T> { tail: usize, head: usize, buf: RawVec<T> }
     """
 
-    def __init__(self, valobj, dict):
+    def __init__(self, valobj, _dict):
         # type: (SBValue, dict) -> StdVecDequeSyntheticProvider
-        logger = Logger.Logger()
-        logger >> "[StdVecDequeSyntheticProvider] for " + str(valobj.GetName())
         self.valobj = valobj
         self.update()
 
@@ -329,7 +309,7 @@ class StdVecDequeSyntheticProvider:
     def get_child_index(self, name):
         # type: (str) -> int
         index = name.lstrip('[').rstrip(']')
-        if index.isdigit() and self.tail <= index and (self.tail + index) % self.cap < self.head:
+        if index.isdigit() and self.tail <= int(index) and (self.tail + int(index)) % self.cap < self.head:
             return int(index)
         else:
             return -1
@@ -349,7 +329,7 @@ class StdVecDequeSyntheticProvider:
         self.cap = self.buf.GetChildMemberWithName("cap").GetValueAsUnsigned()
         self.size = self.head - self.tail if self.head >= self.tail else self.cap + self.head - self.tail
 
-        self.data_ptr = unwrap_unique_or_non_null(self.buf.GetChildMemberWithName("ptr"))
+        self.data_ptr = self.buf.GetChildMemberWithName("ptr").GetChildMemberWithName("pointer")
 
         self.element_type = self.data_ptr.GetType().GetPointeeType()
         self.element_type_size = self.element_type.GetByteSize()
@@ -359,96 +339,10 @@ class StdVecDequeSyntheticProvider:
         return True
 
 
-# BACKCOMPAT: rust 1.35
-class StdOldHashMapSyntheticProvider:
-    """Pretty-printer for std::collections::hash::map::HashMap<K, V, S>
-
-    struct HashMap<K, V, S> {..., table: RawTable<K, V>, ... }
-    struct RawTable<K, V> { capacity_mask: usize, size: usize, hashes: TaggedHashUintPtr, ... }
-    """
-
-    def __init__(self, valobj, dict, show_values=True):
-        # type: (SBValue, dict, bool) -> StdOldHashMapSyntheticProvider
-        self.valobj = valobj
-        self.show_values = show_values
-        self.update()
-
-    def num_children(self):
-        # type: () -> int
-        return self.size
-
-    def get_child_index(self, name):
-        # type: (str) -> int
-        index = name.lstrip('[').rstrip(']')
-        if index.isdigit():
-            return int(index)
-        else:
-            return -1
-
-    def get_child_at_index(self, index):
-        # type: (int) -> SBValue
-        logger = Logger.Logger()
-        start = self.data_ptr.GetValueAsUnsigned() & ~1
-
-        # See `libstd/collections/hash/table.rs:raw_bucket_at
-        hashes = self.hash_uint_size * self.capacity
-        align = self.pair_type_size
-        # See `libcore/alloc.rs:padding_needed_for`
-        len_rounded_up = (((((hashes + align) % self.modulo - 1) % self.modulo) & ~(
-                (align - 1) % self.modulo)) % self.modulo - hashes) % self.modulo
-        # len_rounded_up = ((hashes + align - 1) & ~(align - 1)) - hashes
-
-        pairs_offset = hashes + len_rounded_up
-        pairs_start = start + pairs_offset
-
-        table_index = self.valid_indices[index]
-        idx = table_index & self.capacity_mask
-        address = pairs_start + idx * self.pair_type_size
-        element = self.data_ptr.CreateValueFromAddress("[%s]" % index, address, self.pair_type)
-        if self.show_values:
-            return element
-        else:
-            key = element.GetChildAtIndex(0)
-            return self.valobj.CreateValueFromData("[%s]" % index, key.GetData(), key.GetType())
-
-    def update(self):
-        # type: () -> None
-        logger = Logger.Logger()
-
-        self.table = self.valobj.GetChildMemberWithName("table")  # type: SBValue
-        self.size = self.table.GetChildMemberWithName("size").GetValueAsUnsigned()
-        self.hashes = self.table.GetChildMemberWithName("hashes")
-        self.hash_uint_type = self.hashes.GetType()
-        self.hash_uint_size = self.hashes.GetType().GetByteSize()
-        self.modulo = 2 ** self.hash_uint_size
-        self.data_ptr = self.hashes.GetChildAtIndex(0).GetChildAtIndex(0)
-
-        self.capacity_mask = self.table.GetChildMemberWithName("capacity_mask").GetValueAsUnsigned()
-        self.capacity = (self.capacity_mask + 1) % self.modulo
-
-        marker = self.table.GetChildMemberWithName("marker").GetType()  # type: SBType
-        self.pair_type = marker.template_args[0]
-        self.pair_type_size = self.pair_type.GetByteSize()
-
-        self.valid_indices = []
-        for idx in range(self.capacity):
-            address = self.data_ptr.GetValueAsUnsigned() + idx * self.hash_uint_size
-            hash_uint = self.data_ptr.CreateValueFromAddress("[%s]" % idx, address, self.hash_uint_type)
-            hash_ptr = hash_uint.GetChildAtIndex(0).GetChildAtIndex(0)
-            if hash_ptr.GetValueAsUnsigned() != 0:
-                self.valid_indices.append(idx)
-
-        logger >> "Valid indices: {}".format(str(self.valid_indices))
-
-    def has_children(self):
-        # type: () -> bool
-        return True
-
-
 class StdHashMapSyntheticProvider:
     """Pretty-printer for hashbrown's HashMap"""
 
-    def __init__(self, valobj, dict, show_values=True):
+    def __init__(self, valobj, _dict, show_values=True):
         # type: (SBValue, dict, bool) -> StdHashMapSyntheticProvider
         self.valobj = valobj
         self.show_values = show_values
@@ -470,6 +364,8 @@ class StdHashMapSyntheticProvider:
         # type: (int) -> SBValue
         pairs_start = self.data_ptr.GetValueAsUnsigned()
         idx = self.valid_indices[index]
+        if self.new_layout:
+            idx = -(idx + 1)
         address = pairs_start + idx * self.pair_type_size
         element = self.data_ptr.CreateValueFromAddress("[%s]" % index, address, self.pair_type)
         if self.show_values:
@@ -480,14 +376,25 @@ class StdHashMapSyntheticProvider:
 
     def update(self):
         # type: () -> None
-        table = self.valobj.GetChildMemberWithName("base").GetChildMemberWithName("table")
-        capacity = table.GetChildMemberWithName("bucket_mask").GetValueAsUnsigned() + 1
-        ctrl = table.GetChildMemberWithName("ctrl").GetChildAtIndex(0)
+        table = self.table()
+        # BACKCOMPAT: rust 1.51. Just drop `else` branch
+        if table.GetChildMemberWithName("table").IsValid():
+            inner_table = table.GetChildMemberWithName("table")
+        else:
+            inner_table = table
 
-        self.size = table.GetChildMemberWithName("items").GetValueAsUnsigned()
-        self.data_ptr = table.GetChildMemberWithName("data").GetChildAtIndex(0)
-        self.pair_type = self.data_ptr.Dereference().GetType()
+        capacity = inner_table.GetChildMemberWithName("bucket_mask").GetValueAsUnsigned() + 1
+        ctrl = inner_table.GetChildMemberWithName("ctrl").GetChildAtIndex(0)
+
+        self.size = inner_table.GetChildMemberWithName("items").GetValueAsUnsigned()
+        self.pair_type = table.type.template_args[0].GetTypedefedType()
         self.pair_type_size = self.pair_type.GetByteSize()
+
+        self.new_layout = not inner_table.GetChildMemberWithName("data").IsValid()
+        if self.new_layout:
+            self.data_ptr = ctrl.Cast(self.pair_type.GetPointerType())
+        else:
+            self.data_ptr = inner_table.GetChildMemberWithName("data").GetChildAtIndex(0)
 
         u8_type = self.valobj.GetTarget().GetBasicType(eBasicTypeUnsignedChar)
         u8_type_size = self.valobj.GetTarget().GetBasicType(eBasicTypeUnsignedChar).GetByteSize()
@@ -495,17 +402,29 @@ class StdHashMapSyntheticProvider:
         self.valid_indices = []
         for idx in range(capacity):
             address = ctrl.GetValueAsUnsigned() + idx * u8_type_size
-            value = ctrl.CreateValueFromAddress("ctrl[%s]" % idx, address, u8_type).GetValueAsUnsigned()
+            value = ctrl.CreateValueFromAddress("ctrl[%s]" % idx, address,
+                                                u8_type).GetValueAsUnsigned()
             is_present = value & 128 == 0
             if is_present:
                 self.valid_indices.append(idx)
+
+    def table(self):
+        # type: () -> SBValue
+        if self.show_values:
+            hashbrown_hashmap = self.valobj.GetChildMemberWithName("base")
+        else:
+            # BACKCOMPAT: rust 1.47
+            # HashSet wraps either std HashMap or hashbrown::HashSet, which both
+            # wrap hashbrown::HashMap, so either way we "unwrap" twice.
+            hashbrown_hashmap = self.valobj.GetChildAtIndex(0).GetChildAtIndex(0)
+        return hashbrown_hashmap.GetChildMemberWithName("table")
 
     def has_children(self):
         # type: () -> bool
         return True
 
 
-def StdRcSummaryProvider(valobj, dict):
+def StdRcSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
     strong = valobj.GetChildMemberWithName("strong").GetValueAsUnsigned()
     weak = valobj.GetChildMemberWithName("weak").GetValueAsUnsigned()
@@ -528,11 +447,11 @@ class StdRcSyntheticProvider:
     struct AtomicUsize { v: UnsafeCell<usize> }
     """
 
-    def __init__(self, valobj, dict, is_atomic=False):
+    def __init__(self, valobj, _dict, is_atomic=False):
         # type: (SBValue, dict, bool) -> StdRcSyntheticProvider
         self.valobj = valobj
 
-        self.ptr = unwrap_unique_or_non_null(self.valobj.GetChildMemberWithName("ptr"))
+        self.ptr = self.valobj.GetChildMemberWithName("ptr").GetChildMemberWithName("pointer")
 
         self.value = self.ptr.GetChildMemberWithName("data" if is_atomic else "value")
 
@@ -559,7 +478,7 @@ class StdRcSyntheticProvider:
         return -1
 
     def get_child_at_index(self, index):
-        # type: (int) -> SBValue
+        # type: (int) -> Optional[SBValue]
         if index == 0:
             return self.value
         if index == 1:
@@ -582,7 +501,7 @@ class StdRcSyntheticProvider:
 class StdCellSyntheticProvider:
     """Pretty-printer for std::cell::Cell"""
 
-    def __init__(self, valobj, dict):
+    def __init__(self, valobj, _dict):
         # type: (SBValue, dict) -> StdCellSyntheticProvider
         self.valobj = valobj
         self.value = valobj.GetChildMemberWithName("value").GetChildAtIndex(0)
@@ -598,7 +517,7 @@ class StdCellSyntheticProvider:
         return -1
 
     def get_child_at_index(self, index):
-        # type: (int) -> SBValue
+        # type: (int) -> Optional[SBValue]
         if index == 0:
             return self.value
         return None
@@ -612,7 +531,7 @@ class StdCellSyntheticProvider:
         return True
 
 
-def StdRefSummaryProvider(valobj, dict):
+def StdRefSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
     borrow = valobj.GetChildMemberWithName("borrow").GetValueAsSigned()
     return "borrow={}".format(borrow) if borrow >= 0 else "borrow_mut={}".format(-borrow)
@@ -621,7 +540,7 @@ def StdRefSummaryProvider(valobj, dict):
 class StdRefSyntheticProvider:
     """Pretty-printer for std::cell::Ref, std::cell::RefMut, and std::cell::RefCell"""
 
-    def __init__(self, valobj, dict, is_cell=False):
+    def __init__(self, valobj, _dict, is_cell=False):
         # type: (SBValue, dict, bool) -> StdRefSyntheticProvider
         self.valobj = valobj
 
@@ -652,7 +571,7 @@ class StdRefSyntheticProvider:
         return -1
 
     def get_child_at_index(self, index):
-        # type: (int) -> SBValue
+        # type: (int) -> Optional[SBValue]
         if index == 0:
             return self.value
         if index == 1:
@@ -668,7 +587,7 @@ class StdRefSyntheticProvider:
         return True
 
 
-def StdNonZeroNumberSummaryProvider(valobj, dict):
+def StdNonZeroNumberSummaryProvider(valobj, _dict):
     # type: (SBValue, dict) -> str
     objtype = valobj.GetType()
     field = objtype.GetFieldAtIndex(0)

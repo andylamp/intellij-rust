@@ -10,12 +10,11 @@ import com.intellij.codeInsight.daemon.LineMarkerProvider
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.editor.markup.GutterIconRenderer
 import com.intellij.psi.PsiElement
-import org.rust.cargo.toolchain.RustToolchain.Companion.CARGO_TOML
+import org.rust.cargo.CargoConstants
 import org.rust.ide.icons.RsIcons
+import org.rust.ide.lineMarkers.RsLineMarkerInfoUtils
 import org.rust.lang.core.psi.ext.elementType
 import org.toml.lang.psi.*
-import org.toml.lang.psi.ext.TomlLiteralKind
-import org.toml.lang.psi.ext.kind
 
 class CargoCrateDocLineMarkerProvider : LineMarkerProvider {
     override fun getLineMarkerInfo(element: PsiElement): LineMarkerInfo<*>? = null
@@ -24,22 +23,21 @@ class CargoCrateDocLineMarkerProvider : LineMarkerProvider {
         if (!tomlPluginIsAbiCompatible()) return
         val firstElement = elements.firstOrNull() ?: return
         val file = firstElement.containingFile
-        if (!file.name.equals(CARGO_TOML, ignoreCase = true)) return
+        if (!file.name.equals(CargoConstants.MANIFEST_FILE, ignoreCase = true)) return
 
         loop@ for (element in elements) {
             val parent = element.parent
-            if (parent is TomlKey) {
-                val key = parent
-                val keyValue = key.parent as? TomlKeyValue ?: continue@loop
+            if (parent is TomlKeySegment) {
+                val keyValue = parent.parent?.parent as? TomlKeyValue ?: continue@loop
                 val table = keyValue.parent as? TomlTable ?: continue@loop
                 if (!table.header.isDependencyListHeader) continue@loop
-                if (key.firstChild?.nextSibling != null) continue@loop
+                if (parent.firstChild?.nextSibling != null) continue@loop
                 val pkgName = keyValue.crateName
                 val pkgVersion = keyValue.version ?: continue@loop
                 result += genLineMarkerInfo(element, pkgName, pkgVersion)
             } else if (element.elementType == TomlElementTypes.L_BRACKET) {
                 val header = parent as? TomlTableHeader ?: continue@loop
-                val names = header.names
+                val names = header.key?.segments.orEmpty()
                 if (names.getOrNull(names.size - 2)?.isDependencyKey != true) continue@loop
                 val table = parent.parent as? TomlTable ?: continue@loop
                 val version = table.entries.find { it.name == "version" }?.value?.stringValue ?: continue@loop
@@ -55,14 +53,13 @@ class CargoCrateDocLineMarkerProvider : LineMarkerProvider {
             else -> version
         }
 
-        return LineMarkerInfo(
+        return RsLineMarkerInfoUtils.create(
             anchor,
             anchor.textRange,
             RsIcons.DOCS_MARK,
-            { "Open documentation for `$name@$urlVersion`" },
             { _, _ -> BrowserUtil.browse("https://docs.rs/$name/$urlVersion") },
-            GutterIconRenderer.Alignment.LEFT)
-
+            GutterIconRenderer.Alignment.LEFT
+        ) { "Open documentation for `$name@$urlVersion`" }
     }
 }
 
@@ -83,8 +80,3 @@ private val TomlKeyValue.version: String?
             else -> null
         }
     }
-
-private val TomlValue.stringValue: String? get() {
-    val kind = (this as? TomlLiteral)?.kind
-    return (kind as? TomlLiteralKind.String)?.value
-}

@@ -5,10 +5,14 @@
 
 package org.rust.cargo.runconfig
 
+import com.intellij.execution.DefaultExecutionResult
 import com.intellij.execution.ExternalizablePath
 import com.intellij.execution.RunManager
 import com.intellij.execution.RunnerAndConfigurationSettings
+import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.filters.Filter
+import com.intellij.execution.process.ProcessTerminatedListener
+import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.ui.RunContentManager
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
@@ -25,6 +29,7 @@ import org.rust.cargo.runconfig.filters.RsConsoleFilter
 import org.rust.cargo.runconfig.filters.RsExplainFilter
 import org.rust.cargo.runconfig.filters.RsPanicFilter
 import org.rust.cargo.toolchain.CargoCommandLine
+import org.rust.cargo.toolchain.tools.cargo
 import org.rust.openapiext.checkIsDispatchThread
 import org.rust.stdext.buildList
 import java.nio.file.Path
@@ -35,6 +40,7 @@ fun CargoCommandLine.mergeWithDefault(default: CargoCommandConfiguration): Cargo
         backtraceMode = default.backtrace,
         channel = default.channel,
         environmentVariables = default.env,
+        requiredFeatures = default.requiredFeatures,
         allFeatures = default.allFeatures,
         emulateTerminal = default.emulateTerminal
     )
@@ -56,7 +62,7 @@ fun Project.buildProject() {
         add("--all")
         if (settings.compileAllTargets) {
             val allTargets = settings.toolchain
-                ?.rawCargo()
+                ?.cargo()
                 ?.checkSupportForBuildCheckAllTargets()
                 ?: false
             if (allTargets) add("--all-targets")
@@ -93,24 +99,24 @@ fun createFilters(cargoProject: CargoProject?): Collection<Filter> = buildList {
     }
 }
 
-fun addFormatJsonOption(additionalArguments: MutableList<String>, formatOption: String) {
-    val formatJsonOption = "$formatOption=json"
+fun addFormatJsonOption(additionalArguments: MutableList<String>, formatOption: String, format: String) {
+    val formatJsonOption = "$formatOption=$format"
     val idx = additionalArguments.indexOf(formatOption)
     val indexArgWithValue = additionalArguments.indexOfFirst { it.startsWith(formatOption) }
     if (idx != -1) {
         if (idx < additionalArguments.size - 1) {
             if (!additionalArguments[idx + 1].startsWith("-")) {
-                additionalArguments[idx + 1] = "json"
+                additionalArguments[idx + 1] = format
             } else {
-                additionalArguments.add(idx + 1, "json")
+                additionalArguments.add(idx + 1, format)
             }
         } else {
-            additionalArguments.add("json")
+            additionalArguments.add(format)
         }
     } else if (indexArgWithValue != -1) {
         additionalArguments[indexArgWithValue] = formatJsonOption
     } else {
-        additionalArguments.add(formatJsonOption)
+        additionalArguments.add(0, formatJsonOption)
     }
 }
 
@@ -167,4 +173,25 @@ fun Element.writePath(name: String, value: Path?) {
 
 fun Element.readPath(name: String): Path? {
     return readString(name)?.let { Paths.get(ExternalizablePath.localPathValue(it)) }
+}
+
+fun CargoRunStateBase.executeCommandLine(
+    commandLine: GeneralCommandLine,
+    environment: ExecutionEnvironment
+): DefaultExecutionResult {
+    val runConfiguration = runConfiguration
+    val context = ConfigurationExtensionContext()
+
+    val extensionManager = RsRunConfigurationExtensionManager.getInstance()
+    extensionManager.patchCommandLine(runConfiguration, environment, commandLine, context)
+    extensionManager.patchCommandLineState(runConfiguration, environment, this, context)
+
+    val handler = RsKillableColoredProcessHandler(commandLine)
+    ProcessTerminatedListener.attach(handler) // shows exit code upon termination
+
+    extensionManager.attachExtensionsToProcess(runConfiguration, handler, environment, context)
+
+    val console = consoleBuilder.console
+    console.attachToProcess(handler)
+    return DefaultExecutionResult(console, handler)
 }

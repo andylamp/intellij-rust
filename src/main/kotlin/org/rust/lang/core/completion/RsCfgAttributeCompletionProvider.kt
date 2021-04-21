@@ -5,23 +5,22 @@
 
 package org.rust.lang.core.completion
 
+import com.intellij.codeInsight.AutoPopupController
 import com.intellij.codeInsight.completion.CompletionParameters
-import com.intellij.codeInsight.completion.CompletionProvider
 import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.InsertionContext
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.openapi.editor.EditorModificationUtil
 import com.intellij.patterns.ElementPattern
-import com.intellij.patterns.PatternCondition
 import com.intellij.patterns.PlatformPatterns.psiElement
 import com.intellij.psi.PsiElement
 import com.intellij.util.ProcessingContext
-import org.rust.lang.RsLanguage
-import org.rust.lang.core.psi.RsMetaItem
-import org.rust.lang.core.psi.RsMetaItemArgs
-import org.rust.lang.core.psi.ext.name
+import org.rust.lang.core.RsPsiPattern
+import org.rust.lang.core.psi.RsElementTypes
+import org.rust.lang.core.psi.RsPath
 import org.rust.lang.core.psiElement
 
+/** See also `RsCfgFeatureCompletionProvider` */
 object RsCfgAttributeCompletionProvider : RsCompletionProvider() {
 
     private val NAME_OPTIONS: List<String> = listOf(
@@ -39,7 +38,8 @@ object RsCfgAttributeCompletionProvider : RsCompletionProvider() {
         "target_feature",
         "target_os",
         "target_pointer_width",
-        "target_vendor"
+        "target_vendor",
+        "feature"
     )
 
     private val OPERATORS: List<String> = listOf(
@@ -55,11 +55,16 @@ object RsCfgAttributeCompletionProvider : RsCompletionProvider() {
 
         for (option in NAME_VALUE_OPTIONS) {
             result.addElement(
-                LookupElementBuilder.create(option).withInsertHandler { ctx, _ ->
-                    if (!ctx.alreadyHasValue) {
+                LookupElementBuilder.create(option).withInsertHandler { ctx, element ->
+                    val alreadyHasValue = ctx.alreadyHasValue
+                    if (!alreadyHasValue) {
                         ctx.document.insertString(ctx.selectionEndOffset, " = \"\"")
                     }
                     EditorModificationUtil.moveCaretRelatively(ctx.editor, 4)
+                    if (!alreadyHasValue && element.lookupString == "feature") {
+                        // Triggers `RsCfgFeatureCompletionProvider`
+                        AutoPopupController.getInstance(ctx.project).scheduleAutoPopup(ctx.editor)
+                    }
                 }
             )
         }
@@ -79,22 +84,12 @@ object RsCfgAttributeCompletionProvider : RsCompletionProvider() {
     private val InsertionContext.alreadyHasValue: Boolean
         get() = nextCharIs('=')
 
-    override val elementPattern: ElementPattern<PsiElement>
+    override val elementPattern: ElementPattern<out PsiElement>
         get() {
-            val cfgAttr = psiElement<RsMetaItem>()
-                .with(object : PatternCondition<RsMetaItem>("cfg") {
-                    override fun accepts(t: RsMetaItem, context: ProcessingContext?): Boolean =
-                        t.name == "cfg"
-                })
-
-            val cfgOption = psiElement<RsMetaItem>()
+            return psiElement(RsElementTypes.IDENTIFIER)
                 .withParent(
-                    psiElement<RsMetaItemArgs>()
-                        .withParent(cfgAttr)
+                    psiElement<RsPath>()
+                        .inside(RsPsiPattern.anyCfgCondition)
                 )
-
-            return psiElement()
-                .withLanguage(RsLanguage)
-                .inside(cfgOption)
         }
 }

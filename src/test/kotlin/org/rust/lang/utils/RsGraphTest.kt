@@ -11,32 +11,28 @@ class RsGraphTest : RsTestBase() {
     fun `test graph depth traversal 1`() {
         val graph = simpleGraph1()
         val depthFirst = graph.depthFirstTraversal(graph.getNode(0)).map { it.data }.joinToString(" ")
-        checkGraphTraversal(depthFirst, "1 2 3")
+        assertEquals("1 2 3", depthFirst)
     }
 
     fun `test graph depth traversal 2`() {
         val graph = simpleGraph2()
         val depthFirst = graph.depthFirstTraversal(graph.getNode(0)).map { it.data }.joinToString(" ")
-        checkGraphTraversal(depthFirst, "1 2 5 6 4")
+        assertEquals("1 2 5 6 4", depthFirst)
     }
 
     fun `test graph postorder 1`() {
         val graph = simpleGraph1()
         val postorder = graph.nodesInPostOrder(graph.getNode(0)).map { it.data }.joinToString(" ")
-        checkGraphTraversal(postorder, "3 2 1 4")
+        assertEquals("3 2 1 4", postorder)
     }
 
     fun `test graph postorder 2`() {
         val graph = simpleGraph2()
         val postorder = graph.nodesInPostOrder(graph.getNode(0)).map { it.data }.joinToString(" ")
-        checkGraphTraversal(postorder, "6 5 2 4 1 3")
+        assertEquals("6 5 2 4 1 3", postorder)
     }
 
-    private fun checkGraphTraversal(actual: String, expected: String) {
-        check(actual == expected) { "Expected: $expected, found: $actual" }
-    }
-
-    fun simpleGraph1(): Graph<Int, String> {
+    private fun simpleGraph1(): Graph<Int, String> {
         val graph = Graph<Int, String>()
         (1..4).forEach { graph.addNode(it) }
 
@@ -48,7 +44,7 @@ class RsGraphTest : RsTestBase() {
         return graph
     }
 
-    fun simpleGraph2(): Graph<Int, String> {
+    private fun simpleGraph2(): Graph<Int, String> {
         val graph = Graph<Int, String>()
         (1..6).forEach { graph.addNode(it) }
 

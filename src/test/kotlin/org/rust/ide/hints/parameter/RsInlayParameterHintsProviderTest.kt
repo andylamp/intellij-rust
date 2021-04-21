@@ -8,6 +8,7 @@ package org.rust.ide.hints.parameter
 import com.intellij.codeInsight.daemon.impl.HintRenderer
 import com.intellij.openapi.vfs.VirtualFileFilter
 import org.intellij.lang.annotations.Language
+import org.rust.MockAdditionalCfgOptions
 import org.rust.RsTestBase
 import org.rust.fileTreeFromText
 import org.rust.lang.core.psi.RsMethodCall
@@ -21,6 +22,16 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
     fun `test arg out of bounds`() = checkByText("""
         fn foo(arg: u32) {}
         fn main() { foo(/*hint text="arg:"*/0, 1); }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test fn args with cfg`() = checkByText("""
+        fn foo(
+            #[cfg(not(intellij_rust))] arg1: u16,
+            #[cfg(intellij_rust)]      arg2: u32,
+            arg3: u64,
+        ) {}
+        fn main() { foo(/*hint text="arg2:"*/0, /*hint text="arg3:"*/1); }
     """)
 
     fun `test method args`() = checkByText("""
@@ -154,6 +165,50 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         fn main() { foo(/*hint text="S(x, y):"*/0); }
     """)
 
+    fun `test generic enum variant single parameter smart mode disabled`() = checkByText("""
+        enum Result<T, E> {
+            Ok(T),
+            Err(E)
+        }
+
+        fn main() {
+            Result::Ok(/*hint text="T:"*/0);
+            Result::Err(/*hint text="E:"*/0);
+        }
+    """, smart = false)
+
+    fun `test generic enum variant single parameter smart mode enabled`() = checkByText("""
+        enum Result<T, E> {
+            Ok(T),
+            Err(E)
+        }
+
+        fn main() {
+            Result::Ok(0);
+            Result::Err(0);
+        }
+    """, smart = true)
+
+    fun `test generic enum variant multiple parameters smart mode disabled`() = checkByText("""
+        enum Foo<T, E> {
+            Bar(T, E),
+        }
+
+        fn main() {
+            Foo::Bar(/*hint text="T:"*/0, /*hint text="E:"*/0);
+        }
+    """, smart = false)
+
+    fun `test generic enum variant multiple parameters smart mode enabled`() = checkByText("""
+        enum Foo<T, E> {
+            Bar(T, E),
+        }
+
+        fn main() {
+            Foo::Bar(/*hint text="T:"*/0, /*hint text="E:"*/0);
+        }
+    """, smart = true)
+
     fun `test don't touch ast`() {
         fileTreeFromText("""
         //- main.rs
@@ -176,11 +231,11 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
     }
 
     @Suppress("UnstableApiUsage")
-    private fun checkByText(@Language("Rust") code: String) {
+    private fun checkByText(@Language("Rust") code: String, smart: Boolean = true) {
         InlineFile(code.replace(HINT_COMMENT_PATTERN, "<$1/>"))
 
         RsInlayParameterHints.enabledOption.set(true)
-        RsInlayParameterHints.smartOption.set(true)
+        RsInlayParameterHints.smartOption.set(smart)
 
         myFixture.testInlays({ (it.renderer as HintRenderer).text }) { it.renderer is HintRenderer }
     }

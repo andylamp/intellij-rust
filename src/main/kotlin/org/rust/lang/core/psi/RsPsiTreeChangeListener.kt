@@ -82,6 +82,7 @@ sealed class RsPsiTreeChangeEvent {
                 "oldChild=`${oldChild.safeText}`, newChild=`${newChild?.text}`)"
     }
 
+    @Suppress("MemberVisibilityCanBePrivate")
     sealed class ChildMovement(
         override val file: PsiFile?,
         val oldParent: PsiElement,
@@ -115,20 +116,35 @@ sealed class RsPsiTreeChangeEvent {
                 "isGenericChange=$isGenericChange)"
     }
 
+    @Suppress("MemberVisibilityCanBePrivate")
     sealed class PropertyChange(
         val propertyName: String,
         val oldValue: Any?,
         val newValue: Any?,
-        val element: PsiElement?
+        val element: PsiElement?,
+        val child: PsiElement?,
     ) : RsPsiTreeChangeEvent() {
-        class Before(propertyName: String, oldValue: Any?, newValue: Any?, element: PsiElement?) : PropertyChange(propertyName, oldValue, newValue, element)
-        class After(propertyName: String, oldValue: Any?, newValue: Any?, element: PsiElement?) : PropertyChange(propertyName, oldValue, newValue, element)
+        class Before(
+            propertyName: String,
+            oldValue: Any?,
+            newValue: Any?,
+            element: PsiElement?,
+            child: PsiElement?
+        ) : PropertyChange(propertyName, oldValue, newValue, element, child)
+
+        class After(
+            propertyName: String,
+            oldValue: Any?,
+            newValue: Any?,
+            element: PsiElement?,
+            child: PsiElement?
+        ) : PropertyChange(propertyName, oldValue, newValue, element, child)
 
         override fun toString(): String {
             val oldValue = if (oldValue is Array<*>) Arrays.toString(oldValue) else oldValue
             val newValue = if (newValue is Array<*>) Arrays.toString(newValue) else newValue
             return "PropertyChange.${javaClass.simpleName}(propertyName='$propertyName', " +
-                "oldValue=$oldValue, newValue=$newValue, element=$element)"
+                "oldValue=$oldValue, newValue=$newValue, element=$element, child=$child)"
         }
     }
 }
@@ -138,105 +154,131 @@ abstract class RsPsiTreeChangeAdapter : PsiTreeChangeListener {
     abstract fun handleEvent(event: RsPsiTreeChangeEvent)
 
     override fun beforePropertyChange(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.PropertyChange.Before(
-            event.propertyName,
-            event.oldValue,
-            event.newValue,
-            event.element
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.PropertyChange.Before(
+                event.propertyName,
+                event.oldValue,
+                event.newValue,
+                event.element,
+                event.child
+            )
+        )
     }
 
     override fun propertyChanged(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.PropertyChange.After(
-            event.propertyName,
-            event.oldValue,
-            event.newValue,
-            event.element
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.PropertyChange.After(
+                event.propertyName,
+                event.oldValue,
+                event.newValue,
+                event.element,
+                event.child
+            )
+        )
     }
 
     override fun beforeChildReplacement(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildReplacement.Before(
-            event.file,
-            event.parent,
-            event.oldChild,
-            event.newChild
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildReplacement.Before(
+                event.file,
+                event.parent,
+                event.oldChild,
+                event.newChild
+            )
+        )
     }
 
     override fun childReplaced(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildReplacement.After(
-            event.file,
-            event.parent,
-            event.oldChild,
-            event.newChild
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildReplacement.After(
+                event.file,
+                event.parent,
+                event.oldChild,
+                event.newChild
+            )
+        )
     }
 
     override fun beforeChildAddition(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildAddition.Before(
-            event.file,
-            event.parent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildAddition.Before(
+                event.file,
+                event.parent,
+                event.child
+            )
+        )
     }
 
     override fun childAdded(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildAddition.After(
-            event.file,
-            event.parent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildAddition.After(
+                event.file,
+                event.parent,
+                event.child
+            )
+        )
     }
 
     override fun beforeChildMovement(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildMovement.Before(
-            event.file,
-            event.oldParent,
-            event.newParent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildMovement.Before(
+                event.file,
+                event.oldParent,
+                event.newParent,
+                event.child
+            )
+        )
     }
 
     override fun childMoved(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildMovement.After(
-            event.file,
-            event.oldParent,
-            event.newParent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildMovement.After(
+                event.file,
+                event.oldParent,
+                event.newParent,
+                event.child
+            )
+        )
     }
 
     override fun beforeChildRemoval(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildRemoval.Before(
-            event.file,
-            event.parent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildRemoval.Before(
+                event.file,
+                event.parent,
+                event.child
+            )
+        )
     }
 
     override fun childRemoved(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildRemoval.After(
-            event.file,
-            event.parent,
-            event.child
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildRemoval.After(
+                event.file,
+                event.parent,
+                event.child
+            )
+        )
     }
 
     override fun beforeChildrenChange(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildrenChange.Before(
-            event.file,
-            event.parent,
-            (event as? PsiTreeChangeEventImpl)?.isGenericChange == true
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildrenChange.Before(
+                event.file,
+                event.parent,
+                (event as? PsiTreeChangeEventImpl)?.isGenericChange == true
+            )
+        )
     }
 
     override fun childrenChanged(event: PsiTreeChangeEvent) {
-        handleEvent(RsPsiTreeChangeEvent.ChildrenChange.After(
-            event.file,
-            event.parent,
-            (event as? PsiTreeChangeEventImpl)?.isGenericChange == true
-        ))
+        handleEvent(
+            RsPsiTreeChangeEvent.ChildrenChange.After(
+                event.file,
+                event.parent,
+                (event as? PsiTreeChangeEventImpl)?.isGenericChange == true
+            )
+        )
     }
 }
 

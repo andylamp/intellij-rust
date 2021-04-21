@@ -1817,6 +1817,33 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         } //^ X
     """)
 
+    fun `test assoc type bound selection 5`() = testExpr("""
+        struct X;
+        trait Foo { type Item: Bar; }
+        trait Bar: Baz<X> {}
+        trait Baz<T> {}
+        fn baz<A: Baz<B>, B>(t: A) -> B { unimplemented!() }
+
+        fn foobar<T: Foo>(a: T::Item) {
+            let b = baz(a);
+            b;
+        } //^ X
+    """)
+
+    fun `test assoc type bound selection 6`() = testExpr("""
+        struct X;
+        trait Foo { type Item: Bar1 + Bar2; }
+        trait Bar1: Baz<X> {}
+        trait Bar2: Baz<X> {}
+        trait Baz<T> {}
+        fn baz<A: Baz<B>, B>(t: A) -> B { unimplemented!() }
+
+        fn foobar<T: Foo>(a: T::Item) {
+            let b = baz(a);
+            b;
+        } //^ X
+    """)
+
     fun `test assoc type bound in path selection`() = testExpr("""
         struct X;
         trait Foo<T> {}
@@ -1850,5 +1877,37 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let a = foo(S);
             a;
         } //^ i32
+    """)
+
+    fun `test infer type parameter from blank impl 1`() = testExpr("""
+        struct S;
+        trait Foo<O> {}
+
+        impl<T> Foo<S> for T {}
+
+        fn foo<T: Foo<B>, B>(t: T) -> B {
+            todo!()
+        }
+
+        fn bar<T>(t: T) {
+            let a = foo(t);
+            a;
+        } //^ S
+    """)
+
+    fun `test infer type parameter from blank impl 2`() = testExpr("""
+        struct S;
+        trait Foo<O> {}
+
+        impl<T> Foo<S> for T {}
+
+        fn foo<T: Foo<B>, B>(t: T) -> B {
+            todo!()
+        }
+
+        fn bar<T: Foo<S>>(t: T) {
+            let a = foo(t);
+            a;
+        } //^ S
     """)
 }

@@ -20,6 +20,7 @@ import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Key
@@ -35,8 +36,10 @@ import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildConfiguration
 import org.rust.cargo.runconfig.buildtool.CargoPatch
 import org.rust.cargo.runconfig.buildtool.cargoPatches
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
-import org.rust.cargo.toolchain.Cargo.Companion.checkNeedInstallGrcov
 import org.rust.cargo.toolchain.RustChannel
+import org.rust.cargo.toolchain.tools.Cargo.Companion.checkNeedInstallGrcov
+import org.rust.cargo.toolchain.tools.grcov
+import org.rust.cargo.toolchain.tools.rustc
 import org.rust.openapiext.computeWithCancelableProgress
 import org.rust.stdext.toPath
 import java.io.File
@@ -77,7 +80,7 @@ class GrcovRunner : RsDefaultProgramRunnerBase() {
     }
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(GrcovRunner::class.java)
+        private val LOG: Logger = logger<GrcovRunner>()
 
         const val RUNNER_ID: String = "GrcovRunner"
 
@@ -139,7 +142,7 @@ class GrcovRunner : RsDefaultProgramRunnerBase() {
             var channel: RustChannel? = config.cmd.channel
             if (channel == RustChannel.DEFAULT) {
                 channel = project.computeWithCancelableProgress("Fetching rustc version...") {
-                    config.toolchain.queryVersions().rustc?.channel
+                    config.toolchain.rustc().queryVersion(config.cmd.workingDirectory)?.channel
                 }
             }
             if (channel == RustChannel.NIGHTLY) return true
@@ -147,7 +150,7 @@ class GrcovRunner : RsDefaultProgramRunnerBase() {
             val option = Messages.showDialog(
                 project,
                 "Code coverage is available only with nightly toolchain",
-                "Unable to run with coverage",
+                "Unable to Run With Coverage",
                 arrayOf("Configure"),
                 Messages.OK,
                 Messages.getErrorIcon()

@@ -10,8 +10,10 @@ import com.intellij.util.SmartList
 import org.rust.stdext.optimizeList
 import org.rust.stdext.readVarInt
 import org.rust.stdext.writeVarInt
-import java.io.DataInputStream
-import java.io.DataOutputStream
+import java.io.DataInput
+import java.io.DataOutput
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Must provide [equals] method because it is used to track changes in the macro expansion mechanism
@@ -55,7 +57,7 @@ data class RangeMap private constructor(val ranges: List<MappedTextRange>) {
         return RangeMap(other.ranges.flatMap(::mapMappedTextRangeFromExpansionToCallBody))
     }
 
-    fun writeTo(data: DataOutputStream) {
+    fun writeTo(data: DataOutput) {
         data.writeInt(ranges.size)
         ranges.forEach {
             data.writeMappedTextRange(it)
@@ -65,7 +67,7 @@ data class RangeMap private constructor(val ranges: List<MappedTextRange>) {
     companion object {
         val EMPTY: RangeMap = RangeMap(emptyList())
 
-        fun readFrom(data: DataInputStream): RangeMap {
+        fun readFrom(data: DataInput): RangeMap {
             val size = data.readInt()
             val ranges = (0 until size).map { data.readMappedTextRange() }
             return RangeMap(ranges)
@@ -77,13 +79,13 @@ data class RangeMap private constructor(val ranges: List<MappedTextRange>) {
     }
 }
 
-private fun DataInputStream.readMappedTextRange(): MappedTextRange = MappedTextRange(
+private fun DataInput.readMappedTextRange(): MappedTextRange = MappedTextRange(
     readVarInt(),
     readVarInt(),
     readVarInt()
 )
 
-private fun DataOutputStream.writeMappedTextRange(range: MappedTextRange) {
+private fun DataOutput.writeMappedTextRange(range: MappedTextRange) {
     writeVarInt(range.srcOffset)
     writeVarInt(range.dstOffset)
     writeVarInt(range.length)
@@ -109,8 +111,8 @@ val MappedTextRange.srcRange: TextRange get() = TextRange(srcOffset, srcOffset +
 fun MappedTextRange.srcShiftLeft(delta: Int) = copy(srcOffset = srcOffset - delta)
 
 private fun MappedTextRange.dstIntersection(range: TextRange): MappedTextRange? {
-    val newDstStart = Math.max(dstOffset, range.startOffset)
-    val newDstEnd = Math.min(dstEndOffset, range.endOffset)
+    val newDstStart = max(dstOffset, range.startOffset)
+    val newDstEnd = min(dstEndOffset, range.endOffset)
     return if (newDstStart < newDstEnd) {
         val srcDelta = newDstStart - dstOffset
         MappedTextRange(
@@ -120,5 +122,23 @@ private fun MappedTextRange.dstIntersection(range: TextRange): MappedTextRange? 
         )
     } else {
         null
+    }
+}
+
+/**
+ * Adds the [range] to [this] list or merges [range] with the last list element if they intersect.
+ * Used as an optimization to reduce the list size
+ */
+fun MutableList<MappedTextRange>.mergeAdd(range: MappedTextRange) {
+    val last = lastOrNull()
+
+    if (last?.srcEndOffset == range.srcOffset && last.dstEndOffset == range.dstOffset) {
+        set(size - 1, MappedTextRange(
+            last.srcOffset,
+            last.dstOffset,
+            last.length + range.length
+        ))
+    } else {
+        add(range)
     }
 }

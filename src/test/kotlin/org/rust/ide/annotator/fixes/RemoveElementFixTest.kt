@@ -57,10 +57,40 @@ class RemoveElementFixTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
     """, checkWeakWarn = true)
 
+    fun `test remove colon colon in array size expr`() = checkFixIsUnavailable("Remove `::`", """
+        use std::mem::size_of;
+
+        fn main() {
+            let b: &[u8; size_of::/*caret*/<i32>()];
+        }
+    """, checkWeakWarn = true)
+
     fun `test derive on function`() = checkFixByText("Remove attribute `derive`","""
         <error descr="`derive` may only be applied to structs, enums and unions">#[derive(Debug)]</error>
         fn foo() { }
     """, """
         fn foo() { }
+    """)
+
+    fun `test remove visibility qualifier impl`() = checkFixByText("Remove visibility qualifier", """
+        struct S;
+        <error descr="Unnecessary visibility qualifier [E0449]">pub/*caret*/</error> impl S {
+            fn foo() {}
+        }
+    """, """
+        struct S;
+        impl S {
+            fn foo() {}
+        }
+    """)
+
+    fun `test remove visibility qualifier enum variant`() = checkFixByText("Remove visibility qualifier", """
+        enum E {
+            <error descr="Unnecessary visibility qualifier [E0449]">pub/*caret*/(crate)</error>V
+        }
+    """, """
+        enum E {
+            V
+        }
     """)
 }

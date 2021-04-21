@@ -357,7 +357,7 @@ class RsTypeInferenceWalker(
             resolveVariants
         }
 
-        ctx.writePath(expr, filteredVariants.mapNotNull { ResolvedPath.from(it) })
+        ctx.writePath(expr, filteredVariants.mapNotNull { ResolvedPath.from(it, expr) })
 
         val first = filteredVariants.singleOrNull() ?: return TyUnknown
         return instantiatePath(first.element ?: return TyUnknown, first, expr)
@@ -670,7 +670,8 @@ class RsTypeInferenceWalker(
         return methodType.retType
     }
 
-    private fun <T : AssocItemScopeEntryBase<E>, E> filterAssocItems(variants: List<T>, context: RsElement): List<T> {
+    private fun <T : AssocItemScopeEntryBase<*>> filterAssocItems(variants: List<T>, context: RsElement): List<T> {
+        val containingMod = context.containingMod
         return variants.singleOrLet { list ->
             // 1. filter traits that are not imported
             TypeInferenceMarks.methodPickTraitScope.hit()
@@ -694,7 +695,12 @@ class RsTypeInferenceWalker(
                 list
             }
         }.singleOrFilter { callee ->
-            // 2. Filter methods by trait bounds (try to select all obligations for each impl)
+            // 2. filter non-visible (private) items
+            val source = callee.source
+            source !is TraitImplSource.ExplicitImpl || !source.isInherent
+                || callee.element.isVisibleFrom(containingMod)
+        }.singleOrFilter { callee ->
+            // 3. Filter methods by trait bounds (try to select all obligations for each impl)
             TypeInferenceMarks.methodPickCheckBounds.hit()
             ctx.canEvaluateBounds(callee.source, callee.selfTy)
         }
@@ -706,7 +712,7 @@ class RsTypeInferenceWalker(
         methodCall: RsMethodCall
     ): MethodResolveVariant? {
         val filtered = filterAssocItems(variants, methodCall).singleOrLet { list ->
-            // 3. Pick results matching receiver type
+            // 4. Pick results matching receiver type
             TypeInferenceMarks.methodPickDerefOrder.hit()
 
             fun pick(ty: Ty): List<MethodResolveVariant> =
@@ -726,7 +732,7 @@ class RsTypeInferenceWalker(
             0 -> null
             1 -> filtered.single()
             else -> {
-                // 4. Try to collapse multiple resolved methods of the same trait, e.g.
+                // 5. Try to collapse multiple resolved methods of the same trait, e.g.
                 // ```rust
                 // trait Foo<T> { fn foo(&self, _: T) {} }
                 // impl Foo<Bar> for S { fn foo(&self, _: Bar) {} }
@@ -786,7 +792,7 @@ class RsTypeInferenceWalker(
     }
 
     private fun inferFieldExprType(receiver: Ty, fieldLookup: RsFieldLookup): Ty {
-        if (fieldLookup.identifier?.text == "await" && fieldLookup.isEdition2018) {
+        if (fieldLookup.identifier?.text == "await" && fieldLookup.isAtLeastEdition2018) {
             return receiver.lookupFutureOutputTy(lookup)
         }
 
@@ -1109,7 +1115,10 @@ class RsTypeInferenceWalker(
             if (!isArrayToSlice(prevType, type)) derefCount++
 
             val outputType = lookup.findIndexOutputType(type, indexType)
-            if (outputType != null) {
+            if (outputType != null
+                // TODO fix resolve in `impl<T, I, const N: usize> Index<I> for [T; N]` and remove this line
+                && (outputType.value != TyUnknown || type !is TyArray)
+            ) {
                 result = outputType.register()
                 break
             }
@@ -1334,12 +1343,15 @@ class RsTypeInferenceWalker(
     }
 
     // TODO should be replaced with coerceMany
-    private fun getMoreCompleteType(ty1: Ty, ty2: Ty): Ty = when (ty1) {
-        is TyNever -> ty2
-        is TyUnknown -> if (ty2 !is TyNever) ty2 else TyUnknown
-        else -> {
-            ctx.combineTypes(ty1, ty2)
-            ty1
+    private fun getMoreCompleteType(ty1: Ty, ty2: Ty): Ty {
+        return when {
+            ty1 is TyNever -> ty2
+            ty2 is TyNever -> ty1
+            ty1 is TyUnknown -> if (ty2 !is TyNever) ty2 else TyUnknown
+            else -> {
+                ctx.combineTypes(ty1, ty2)
+                ty1
+            }
         }
     }
 
@@ -1438,19 +1450,9 @@ val RsFunction.type: TyFunction
 private fun Sequence<Ty>.infiniteWithTyUnknown(): Sequence<Ty> =
     this + generateSequence { TyUnknown }
 
-private fun KnownItems.findVecForElementTy(elementTy: Ty): Ty {
-    val ty = Vec?.declaredType ?: TyUnknown
+private fun KnownItems.findVecForElementTy(elementTy: Ty): Ty = Vec.makeTy("T", elementTy)
 
-    val typeParameter = ty.getTypeParameter("T") ?: return ty
-    return ty.substitute(mapOf(typeParameter to elementTy).toTypeSubst())
-}
-
-private fun KnownItems.findOptionForElementTy(elementTy: Ty): Ty {
-    val ty = Option?.declaredType ?: TyUnknown
-
-    val typeParameter = ty.getTypeParameter("T") ?: return ty
-    return ty.substitute(mapOf(typeParameter to elementTy).toTypeSubst())
-}
+private fun KnownItems.findOptionForElementTy(elementTy: Ty): Ty = Option.makeTy("T", elementTy)
 
 private fun KnownItems.findRangeTy(rangeName: String, indexType: Ty?): Ty {
     val ty = findItem<RsNamedElement>("core::ops::$rangeName")?.asTy() ?: TyUnknown
@@ -1461,10 +1463,32 @@ private fun KnownItems.findRangeTy(rangeName: String, indexType: Ty?): Ty {
     return ty.substitute(mapOf(typeParameter to indexType).toTypeSubst())
 }
 
-private fun KnownItems.makeBox(innerTy: Ty): Ty {
-    val box = Box ?: return TyUnknown
-    val boxTy = TyAdt.valueOf(box)
-    return boxTy.substitute(mapOf(boxTy.typeArguments[0] as TyTypeParameter to innerTy).toTypeSubst())
+private fun KnownItems.makeBox(innerTy: Ty): Ty = Box.makeTy("T", innerTy)
+
+private fun <T> T?.makeTy(typeParamName: String, innerTy: Ty): Ty where T : RsTypeDeclarationElement,
+                                                                        T : RsGenericDeclaration {
+    if (this == null) return TyUnknown
+    val itemTy = declaredType
+
+    val typeParameter = itemTy.getTypeParameter(typeParamName) ?: return itemTy
+    val substitutionMap = mutableMapOf(typeParameter to innerTy)
+
+    val typeParameters = typeParameters
+    if (typeParameters.size > 1) {
+        // Potentially, it's O(n^2) if item contains O(n) type parameters with default value.
+        // But all known stdlib items contain at most one type parameter with default value
+        // so it doesn't matter
+        for (param in typeParameters) {
+            val name = param.name ?: continue
+            val typeReference = param.typeReference ?: continue
+            if (name != typeParamName) {
+                val typeParam = itemTy.getTypeParameter(name) ?: continue
+                substitutionMap[typeParam] = typeReference.type
+            }
+        }
+    }
+
+    return itemTy.substitute(substitutionMap.toTypeSubst())
 }
 
 private fun KnownItems.makeGenerator(yieldTy: Ty, returnTy: Ty): Ty {

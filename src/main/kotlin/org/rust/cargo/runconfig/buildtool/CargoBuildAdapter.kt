@@ -5,6 +5,7 @@
 
 package org.rust.cargo.runconfig.buildtool
 
+import com.intellij.build.BuildContentDescriptor
 import com.intellij.build.BuildProgressListener
 import com.intellij.build.DefaultBuildDescriptor
 import com.intellij.build.events.impl.*
@@ -16,58 +17,52 @@ import com.intellij.execution.process.*
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.runners.ExecutionUtil
 import com.intellij.icons.AllIcons
-import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.util.Key
-import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.openapi.util.text.StringUtil.convertLineSeparators
 import com.intellij.openapi.vfs.VfsUtil
 import org.rust.cargo.CargoConstants
-import org.rust.cargo.runconfig.RsAnsiEscapeDecoder
-import org.rust.cargo.runconfig.RsExecutableRunner.Companion.binaries
 import org.rust.cargo.runconfig.createFilters
+import javax.swing.JComponent
 
 @Suppress("UnstableApiUsage")
 class CargoBuildAdapter(
     private val context: CargoBuildContext,
     private val buildProgressListener: BuildProgressListener
-) : ProcessAdapter(), AnsiEscapeDecoder.ColoredTextAcceptor {
-    private val decoder: AnsiEscapeDecoder = RsAnsiEscapeDecoder()
-
-    private val buildOutputParser: CargoBuildEventsConverter = CargoBuildEventsConverter(context)
-
+) : ProcessAdapter() {
     private val instantReader = BuildOutputInstantReaderImpl(
         context.buildId,
         context.buildId,
         buildProgressListener,
-        listOf(buildOutputParser)
+        listOf(RsBuildEventsConverter(context))
     )
-
-    private val textBuffer: MutableList<String> = mutableListOf()
 
     init {
         val processHandler = checkNotNull(context.processHandler) { "Process handler can't be null" }
         context.environment.notifyProcessStarted(processHandler)
-        val descriptor = DefaultBuildDescriptor(
-            context.buildId,
-            "Run Cargo command",
-            context.workingDirectory.toString(),
-            context.started
-        )
-        val buildStarted = StartBuildEventImpl(descriptor, "${context.taskName} running...")
-            .withExecutionFilters(*createFilters(context.cargoProject).toTypedArray())
+
+        val buildContentDescriptor = BuildContentDescriptor(null, null, object : JComponent() {}, "Build")
+        val activateToolWindow = context.environment.isActivateToolWindowBeforeRun
+        buildContentDescriptor.isActivateToolWindowWhenAdded = activateToolWindow
+        buildContentDescriptor.isActivateToolWindowWhenFailed = activateToolWindow
+
+        val descriptor = DefaultBuildDescriptor(context.buildId, "Run Cargo Command", context.workingDirectory.toString(), context.started)
+            .withContentDescriptor { buildContentDescriptor }
             .withRestartAction(createRerunAction(processHandler, context.environment))
             .withRestartAction(createStopAction(processHandler))
+            .apply { createFilters(context.cargoProject).forEach { withExecutionFilter(it) } }
+
+        val buildStarted = StartBuildEventImpl(descriptor, "${context.taskName} running...")
         buildProgressListener.onEvent(context.buildId, buildStarted)
     }
 
     override fun processTerminated(event: ProcessEvent) {
         instantReader.closeAndGetFuture().whenComplete { _, error ->
-            val isSuccess = event.exitCode == 0 && context.errors == 0
+            val isSuccess = event.exitCode == 0 && context.errors.get() == 0
             val isCanceled = context.indicator?.isCanceled ?: false
-            context.environment.binaries = buildOutputParser.binaries.takeIf { isSuccess && !isCanceled }
 
             val (status, result) = when {
                 isCanceled -> "canceled" to SkippedResultImpl()
@@ -97,39 +92,13 @@ class CargoBuildAdapter(
     }
 
     override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
-        var rawText = event.text
-        if (SystemInfo.isWindows && rawText.matches(BUILD_PROGRESS_INNER_RE)) {
-            rawText += "\n"
-        }
-
-        textBuffer.add(rawText)
-        if (!rawText.endsWith("\n")) return
-
-        val concat = textBuffer.joinToString("")
-
-        // If the line contains a JSON message (contains `{"reason"` substring), then it should end with `}\n`,
-        // otherwise the line contains only part of the message.
-        if (concat.contains("{\"reason\"") && !concat.endsWith("}\n")) return
-
-        val text = concat.replace(BUILD_PROGRESS_FULL_RE) { it.value.trimEnd(' ', '\r', '\n') + "\n" }
-        textBuffer.clear()
-
-        decoder.escapeText(text, outputType, this)
-        buildOutputParser.parseOutput(
-            text.replace(BUILD_PROGRESS_FULL_RE, ""),
-            outputType == ProcessOutputTypes.STDOUT
-        ) {
-            buildProgressListener.onEvent(context.buildId, it)
-        }
-    }
-
-    override fun coloredTextAvailable(text: String, outputType: Key<*>) {
+        // Progress messages end with '\r' instead of '\n'. We want to replace '\r' with '\n'
+        // so that `instantReader` sends progress messages to parsers separately from other messages.
+        val text = convertLineSeparators(event.text)
         instantReader.append(text)
     }
 
     companion object {
-        private val BUILD_PROGRESS_INNER_RE: Regex = """ \[ *=*>? *] \d+/\d+: [\w\-(.)]+(, [\w\-(.)]+)*""".toRegex()
-        private val BUILD_PROGRESS_FULL_RE: Regex = """ *Building$BUILD_PROGRESS_INNER_RE( *[\r\n])*""".toRegex()
 
         private fun createStopAction(processHandler: ProcessHandler): StopProcessAction =
             StopProcessAction("Stop", "Stop", processHandler)
@@ -140,7 +109,7 @@ class CargoBuildAdapter(
         private class RestartProcessAction(
             private val processHandler: ProcessHandler,
             private val environment: ExecutionEnvironment
-        ) : DumbAwareAction(), AnAction.TransparentUpdate {
+        ) : DumbAwareAction() {
             private val isEnabled: Boolean
                 get() {
                     val project = environment.project

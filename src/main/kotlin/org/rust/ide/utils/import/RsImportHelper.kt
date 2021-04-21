@@ -7,9 +7,7 @@ package org.rust.ide.utils.import
 
 import org.rust.ide.settings.RsCodeInsightSettings
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.RsMod
-import org.rust.lang.core.psi.ext.RsQualifiedNamedElement
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.TYPES
 import org.rust.lang.core.resolve.createProcessor
 import org.rust.lang.core.resolve.processNestedScopesUpwards
@@ -25,15 +23,35 @@ object RsImportHelper {
         context: RsElement,
         elements: Collection<RsElement>,
         subst: Substitution = emptySubstitution,
-        useAliases: Boolean = false
+        useAliases: Boolean = false,
+        skipUnchangedDefaultTypeArguments: Boolean = false
     ) {
-        val (toImport, _) = getTypeReferencesInfoFromElements(context, elements, subst, useAliases)
+        val (toImport, _) = getTypeReferencesInfoFromElements(context, elements, subst, useAliases, skipUnchangedDefaultTypeArguments)
         importElements(context, toImport)
     }
 
-    fun importTypeReferencesFromTy(context: RsElement, ty: Ty, useAliases: Boolean = false) {
-        val (toImport, _) = getTypeReferencesInfoFromTys(context, ty, useAliases = useAliases)
+    fun importTypeReferencesFromTys(
+        context: RsElement,
+        tys: Collection<Ty>,
+        useAliases: Boolean = false,
+        skipUnchangedDefaultTypeArguments: Boolean = false
+    ) {
+        val (toImport, _) = getTypeReferencesInfoFromTys(
+            context,
+            *tys.toTypedArray(),
+            useAliases = useAliases,
+            skipUnchangedDefaultTypeArguments = skipUnchangedDefaultTypeArguments
+        )
         importElements(context, toImport)
+    }
+
+    fun importTypeReferencesFromTy(
+        context: RsElement,
+        ty: Ty,
+        useAliases: Boolean = false,
+        skipUnchangedDefaultTypeArguments: Boolean = false
+    ) {
+        importTypeReferencesFromTys(context, listOf(ty), useAliases, skipUnchangedDefaultTypeArguments)
     }
 
     fun importElements(context: RsElement, elements: Set<RsQualifiedNamedElement>) {
@@ -67,9 +85,10 @@ object RsImportHelper {
         context: RsElement,
         elements: Collection<RsElement>,
         subst: Substitution,
-        useAliases: Boolean
+        useAliases: Boolean,
+        skipUnchangedDefaultTypeArguments: Boolean
     ): TypeReferencesInfo = getTypeReferencesInfo(context, elements) { ty, result ->
-        collectImportSubjectsFromTypeReferences(ty, subst, result, useAliases)
+        collectImportSubjectsFromTypeReferences(ty, subst, result, useAliases, skipUnchangedDefaultTypeArguments)
     }
 
     /**
@@ -78,9 +97,10 @@ object RsImportHelper {
     fun getTypeReferencesInfoFromTys(
         context: RsElement,
         vararg elemTys: Ty,
-        useAliases: Boolean = false
+        useAliases: Boolean = false,
+        skipUnchangedDefaultTypeArguments: Boolean = false
     ): TypeReferencesInfo = getTypeReferencesInfo(context, elemTys.toList()) { ty, result ->
-        collectImportSubjectsFromTy(ty, emptySubstitution, result, useAliases)
+        collectImportSubjectsFromTy(ty, emptySubstitution, result, useAliases, skipUnchangedDefaultTypeArguments)
     }
 
     private fun <T> getTypeReferencesInfo(
@@ -97,11 +117,23 @@ object RsImportHelper {
         context: RsElement,
         subst: Substitution,
         result: MutableSet<RsQualifiedNamedElement>,
-        useAliases: Boolean
+        useAliases: Boolean,
+        skipUnchangedDefaultTypeArguments: Boolean
     ) {
         context.accept(object : RsVisitor() {
+            override fun visitPath(path: RsPath) {
+                val qualifier = path.path
+                if (qualifier == null) {
+                    val item = path.reference?.resolve() as? RsQualifiedNamedElement
+                    if (item != null) {
+                        result += item
+                    }
+                }
+                super.visitPath(path)
+            }
+
             override fun visitTypeReference(reference: RsTypeReference) =
-                collectImportSubjectsFromTy(reference.type, subst, result, useAliases)
+                collectImportSubjectsFromTy(reference.type, subst, result, useAliases, skipUnchangedDefaultTypeArguments)
 
             override fun visitElement(element: RsElement) =
                 element.acceptChildren(this)
@@ -112,7 +144,8 @@ object RsImportHelper {
         ty: Ty,
         subst: Substitution,
         result: MutableSet<RsQualifiedNamedElement>,
-        useAliases: Boolean
+        useAliases: Boolean,
+        skipUnchangedDefaultTypeArguments: Boolean
     ) {
         ty.substitute(subst).visitWith(object : TypeVisitor {
             override fun visitTy(ty: Ty): Boolean {
@@ -122,6 +155,14 @@ object RsImportHelper {
                         result += alias ?: ty.item
                         if (alias != null) {
                             return true
+                        }
+
+                        if (skipUnchangedDefaultTypeArguments) {
+                            val filteredTypeArguments = ty.typeArguments
+                                .zip(ty.item.typeParameters)
+                                .dropLastWhile { (argumentTy, param) -> argumentTy == param.typeReference?.type }
+                                .map { (argumentTy, _) -> argumentTy }
+                            return ty.copy(typeArguments = filteredTypeArguments).superVisitWith(this)
                         }
                     }
                     is TyAnon -> result += ty.traits.map { it.element }

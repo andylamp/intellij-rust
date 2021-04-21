@@ -12,17 +12,13 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import com.intellij.psi.codeStyle.CodeStyleManager
-import com.intellij.testFramework.MapDataContext
-import com.intellij.testFramework.TestActionEvent
 import org.intellij.lang.annotations.Language
 import org.rust.FileTreeBuilder
-import org.rust.MinRustcVersion
 import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.fileTree
-import org.rust.ide.actions.RustfmtCargoProjectAction
-import org.rust.ide.actions.RustfmtFileAction
-import org.rust.ide.formatter.RustfmtExternalFormatProcessor
+import org.rust.ide.formatter.RustfmtExternalFormatProcessorBase
+import org.rust.launchAction
 import org.rust.openapiext.saveAllDocuments
 
 class RustfmtTest : RsWithToolchainTestBase() {
@@ -102,7 +98,6 @@ class RustfmtTest : RsWithToolchainTestBase() {
         }
     """) { reformatFile(myFixture.editor) }
 
-    @MinRustcVersion("1.31.0")
     fun `test rustfmt file action edition 2018`() = doTest({
         toml("Cargo.toml", """
             [package]
@@ -314,7 +309,7 @@ class RustfmtTest : RsWithToolchainTestBase() {
 
     private fun reformatRange(file: PsiFile, textRange: TextRange = file.textRange, shouldHitTestmark: Boolean = true) {
         project.rustSettings.modifyTemporary(testRootDisposable) { it.useRustfmt = true }
-        val testmark = RustfmtExternalFormatProcessor.Testmarks.rustfmtUsed
+        val testmark = RustfmtExternalFormatProcessorBase.Testmarks.rustfmtUsed
         val checkMark: (() -> Unit) -> Unit = if (shouldHitTestmark) testmark::checkHit else testmark::checkNotHit
         checkMark {
             WriteCommandAction.runWriteCommandAction(project, ReformatCodeProcessor.getCommandName(), null, {
@@ -324,32 +319,11 @@ class RustfmtTest : RsWithToolchainTestBase() {
     }
 
     private fun reformatFile(editor: Editor) {
-        val dataContext = MapDataContext(mapOf(
-            CommonDataKeys.PROJECT to project,
-            CommonDataKeys.EDITOR_EVEN_IF_INACTIVE to editor
-        ))
-        val action = RustfmtFileAction()
-        val e = TestActionEvent(dataContext, action)
-        action.beforeActionPerformedUpdate(e)
-        check(e.presentation.isEnabledAndVisible) {
-            "Failed to run `${RustfmtFileAction::class.java.simpleName}` action"
-        }
-
-        action.actionPerformed(e)
+        myFixture.launchAction("Cargo.RustfmtFile", CommonDataKeys.EDITOR_EVEN_IF_INACTIVE to editor)
     }
 
     private fun reformatCargoProject() {
-        val dataContext = MapDataContext(mapOf(
-            CommonDataKeys.PROJECT to project
-        ))
-        val action = RustfmtCargoProjectAction()
-        val e = TestActionEvent(dataContext, action)
-        action.beforeActionPerformedUpdate(e)
-        check(e.presentation.isEnabledAndVisible) {
-            "Failed to run `${RustfmtCargoProjectAction::class.java.simpleName}` action"
-        }
-
-        action.actionPerformed(e)
+        myFixture.launchAction("Cargo.RustfmtCargoProject")
     }
 
     /**

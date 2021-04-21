@@ -19,7 +19,7 @@ import org.rust.lang.core.psi.ext.operatorType
 class SplitIfIntention : RsElementBaseIntentionAction<SplitIfIntention.Context>() {
 
     override fun getText(): String = "Split into 2 if's"
-    override fun getFamilyName(): String = "Split If"
+    override fun getFamilyName(): String = "Split if"
 
     data class Context(
         val binaryOp: RsBinaryOp,
@@ -29,7 +29,7 @@ class SplitIfIntention : RsElementBaseIntentionAction<SplitIfIntention.Context>(
     override fun findApplicableContext(project: Project, editor: Editor, element: PsiElement): Context? {
         val binExpr = element.ancestorStrict<RsBinaryExpr>() ?: return null
         if (binExpr.operatorType !is LogicOp) return null
-
+        if (element.parent != binExpr.binaryOp) return null
         val condition = binExpr.findCondition() ?: return null
         return Context(binExpr.binaryOp, condition)
     }

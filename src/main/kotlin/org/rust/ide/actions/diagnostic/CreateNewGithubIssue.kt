@@ -15,19 +15,14 @@ import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.util.io.URLUtil
 import org.rust.cargo.project.model.cargoProjects
+import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.runconfig.hasCargoProject
-import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.toolchain.RustcVersion
-import org.rust.ide.icons.RsIcons
+import org.rust.cargo.toolchain.impl.RustcVersion
 import org.rust.lang.core.psi.isRustFile
 import org.rust.openapiext.plugin
 import org.rust.openapiext.virtualFile
 
-class CreateNewGithubIssue : DumbAwareAction(
-    "Create New Issue",
-    "Creates new issue in https://github.com/intellij-rust/intellij-rust repo",
-    RsIcons.RUST
-) {
+class CreateNewGithubIssue : DumbAwareAction() {
 
     override fun update(e: AnActionEvent) {
         e.presentation.isEnabledAndVisible = e.project?.hasCargoProject == true
@@ -45,8 +40,10 @@ class CreateNewGithubIssue : DumbAwareAction(
         val ideNameAndVersion = ideNameAndVersion
         val os = SystemInfo.getOsNameAndVersion()
         val codeSnippet = e.getData(PlatformDataKeys.EDITOR)?.codeExample ?: ""
+        val macroEngine = project.rustSettings.macroExpansionEngine.name.toLowerCase()
+        val resolveEngine = if (project.rustSettings.newResolveEnabled) "new" else "old"
 
-        val body = ISSUE_TEMPLATE.format(pluginVersion, toolchainVersion, ideNameAndVersion, os, codeSnippet)
+        val body = ISSUE_TEMPLATE.format(pluginVersion, toolchainVersion, ideNameAndVersion, os, macroEngine, resolveEngine, codeSnippet)
         val link = "https://github.com/intellij-rust/intellij-rust/issues/new?body=${URLUtil.encodeURIComponent(body)}"
         BrowserUtil.browse(link)
     }
@@ -58,24 +55,26 @@ class CreateNewGithubIssue : DumbAwareAction(
             If you would like to report a bug, we have added some points below that you can fill out.
             Feel free to remove all the irrelevant text to request a new feature.
             -->
-            
+
             ## Environment
-            
+
             * **IntelliJ Rust plugin version:** %s
             * **Rust toolchain version:** %s
             * **IDE name and version:** %s
             * **Operating system:** %s
-            
+            * **Macro expansion engine:** %s
+            * **Name resolution engine:** %s
+
             ## Problem description
-            
-            
+
+
             ## Steps to reproduce
             %s
-            
+
             <!--
             Please include as much of your codebase as needed to reproduce the error.
             If the relevant files are large, please provide a link to a public repository or a [Gist](https://gist.github.com/).
-            -->            
+            -->
         """.trimIndent()
 
         private val ideNameAndVersion: String
@@ -98,11 +97,7 @@ class CreateNewGithubIssue : DumbAwareAction(
 
         private val RustcVersion.displayText: String
             get() = buildString {
-                append(semver)
-                if (channel != RustChannel.DEFAULT && channel != RustChannel.STABLE) {
-                    append("-")
-                    append(channel.channel)
-                }
+                append(semver.parsedVersion)
                 if (commitHash != null) {
                     append(" (")
                     append(commitHash.take(9))

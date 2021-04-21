@@ -9,6 +9,7 @@ import org.rust.MockEdition
 import org.rust.ProjectDescriptor
 import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.ignoreInNewResolve
 
 @MockEdition(CargoWorkspace.Edition.EDITION_2018)
 @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
@@ -19,12 +20,13 @@ class RsStdlibResolveTestEdition2018 : RsResolveTestBase() {
                  //^ unresolved
     """)
 
+    // BACKCOMPAT: Rust 1.50. Vec struct was moved into `vec/mod.rs` since Rust 1.51
     fun `test extra use of prelude item`() = stubOnlyResolve("""
     //- main.rs
         use Vec;
 
         fn main() {
             let a = Vec::<i32>::new();
-        }         //^ .../vec.rs
-    """, ItemResolutionTestmarks.extraAtomUse)
+        }         //^ .../vec.rs|...vec/mod.rs
+    """, ItemResolutionTestmarks.extraAtomUse.ignoreInNewResolve(project))
 }

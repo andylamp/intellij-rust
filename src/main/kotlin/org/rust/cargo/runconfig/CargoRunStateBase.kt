@@ -6,7 +6,7 @@
 package org.rust.cargo.runconfig
 
 import com.intellij.execution.configurations.CommandLineState
-import com.intellij.execution.configurations.PtyCommandLine
+import com.intellij.execution.process.KillableProcessHandler
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
@@ -15,9 +15,12 @@ import org.rust.cargo.runconfig.buildtool.CargoPatch
 import org.rust.cargo.runconfig.buildtool.cargoPatches
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.command.workingDirectory
-import org.rust.cargo.toolchain.Cargo
 import org.rust.cargo.toolchain.CargoCommandLine
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.impl.RustcVersion
+import org.rust.cargo.toolchain.tools.Cargo
+import org.rust.cargo.toolchain.tools.cargoOrWrapper
+import org.rust.cargo.toolchain.tools.rustc
 import java.nio.file.Path
 
 abstract class CargoRunStateBase(
@@ -25,7 +28,7 @@ abstract class CargoRunStateBase(
     val runConfiguration: CargoCommandConfiguration,
     val config: CargoCommandConfiguration.CleanConfiguration.Ok
 ) : CommandLineState(environment) {
-    val toolchain: RustToolchain = config.toolchain
+    val toolchain: RsToolchain = config.toolchain
     val commandLine: CargoCommandLine = config.cmd
     val cargoProject: CargoProject? = CargoCommandConfiguration.findCargoProject(
         environment.project,
@@ -42,7 +45,7 @@ abstract class CargoRunStateBase(
 
     fun cargo(): Cargo = toolchain.cargoOrWrapper(workingDirectory)
 
-    fun rustVersion(): RustToolchain.VersionInfo = toolchain.queryVersions()
+    fun rustVersion(): RustcVersion? = toolchain.rustc().queryVersion(workingDirectory)
 
     fun prepareCommandLine(vararg additionalPatches: CargoPatch): CargoCommandLine {
         var commandLine = commandLine
@@ -55,16 +58,18 @@ abstract class CargoRunStateBase(
         return commandLine
     }
 
-    override fun startProcess(): ProcessHandler = startProcess(emulateTerminal = false)
+    override fun startProcess(): ProcessHandler = startProcess(processColors = true)
 
-    fun startProcess(emulateTerminal: Boolean): ProcessHandler {
-        var commandLine = cargo().toColoredCommandLine(environment.project, prepareCommandLine())
-        if (emulateTerminal) {
-            commandLine = PtyCommandLine(commandLine)
-                .withInitialColumns(PtyCommandLine.MAX_COLUMNS)
-                .withConsoleMode(false)
+    /**
+     * @param processColors if true, process ANSI escape sequences, otherwise keep escape codes in the output
+     */
+    fun startProcess(processColors: Boolean): ProcessHandler {
+        val commandLine = cargo().toColoredCommandLine(environment.project, prepareCommandLine())
+        val handler = if (processColors) {
+            RsKillableColoredProcessHandler(commandLine)
+        } else {
+            KillableProcessHandler(commandLine)
         }
-        val handler = RsKillableColoredProcessHandler(commandLine)
         ProcessTerminatedListener.attach(handler) // shows exit code upon termination
         return handler
     }

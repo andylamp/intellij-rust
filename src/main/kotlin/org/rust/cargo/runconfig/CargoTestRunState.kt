@@ -9,7 +9,6 @@ import com.google.common.annotations.VisibleForTesting
 import com.intellij.execution.DefaultExecutionResult
 import com.intellij.execution.ExecutionResult
 import com.intellij.execution.Executor
-import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.runners.ProgramRunner
 import com.intellij.execution.testframework.autotest.ToggleAutoTestAction
@@ -19,7 +18,7 @@ import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.console.CargoTestConsoleBuilder
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.toolchain.RustcVersion
+import org.rust.cargo.toolchain.impl.RustcVersion
 import java.time.LocalDate
 
 class CargoTestRunState(
@@ -34,7 +33,7 @@ class CargoTestRunState(
     }
 
     init {
-        consoleBuilder = CargoTestConsoleBuilder(environment.runProfile as RunConfiguration, environment.executor)
+        consoleBuilder = CargoTestConsoleBuilder(environment.runProfile as CargoCommandConfiguration, environment.executor)
         commandLinePatches.add(cargoTestPatch)
         createFilters(cargoProject).forEach { consoleBuilder.addFilter(it) }
     }
@@ -64,7 +63,7 @@ class CargoTestRunState(
                 post.add("unstable-options")
             }
 
-            addFormatJsonOption(post, "--format")
+            addFormatJsonOption(post, "--format", "json")
 
             if (checkShowOutputSupport(rustcVer)) {
                 post.add("--show-output")

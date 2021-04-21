@@ -7,10 +7,9 @@ package org.rust.ide.refactoring
 
 import org.intellij.lang.annotations.Language
 import org.rust.RsTestBase
-import org.rust.ide.refactoring.convertStruct.RsConvertToTupleAction
+import org.rust.launchAction
 
 class ConvertToTupleRefactoringTest : RsTestBase() {
-
     fun `test simple`() = doAvailableTest("""
         struct Test{/*caret*/
             pub a:usize,
@@ -142,9 +141,37 @@ class ConvertToTupleRefactoringTest : RsTestBase() {
         }
     """)
 
+    fun `test where clause`() = doAvailableTest("""
+        trait Trait {}
+        struct Test<T> where T: Trait {/*caret*/
+            a: T,
+        }
+    """, """
+        trait Trait {}
+        struct Test<T>(T) where T: Trait;
+    """)
+
+    fun `test where clause (multiline)`() = doAvailableTest("""
+        trait Trait {}
+        struct Test<T1, T2>
+            where
+                T1: Trait,
+                T2: Trait,
+        {/*caret*/
+            a: T1,
+            b: T2,
+        }
+    """, """
+        trait Trait {}
+        struct Test<T1, T2>(T1, T2)
+            where
+                T1: Trait,
+                T2: Trait;
+    """)
+
     private fun doAvailableTest(@Language("Rust") before: String, @Language("Rust") after: String) {
         InlineFile(before.trimIndent()).withCaret()
-        myFixture.testAction(RsConvertToTupleAction())
+        myFixture.launchAction("Rust.RsConvertToTuple")
         myFixture.checkResult(replaceCaretMarker(after.trimIndent()))
     }
 }

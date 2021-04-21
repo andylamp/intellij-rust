@@ -12,7 +12,6 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.Experiments
-import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.ex.ApplicationUtil
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Document
@@ -45,7 +44,6 @@ import com.intellij.psi.stubs.StubIndex
 import com.intellij.psi.stubs.StubIndexKey
 import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
-import com.intellij.reference.SoftReference
 import com.intellij.util.CachedValueImpl
 import org.jdom.Element
 import org.jdom.input.SAXBuilder
@@ -58,7 +56,7 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.reflect.KProperty
 
 fun <T> Project.runWriteCommandAction(command: () -> T): T {
-    return WriteCommandAction.runWriteCommandAction(this, Computable<T> { command() })
+    return WriteCommandAction.runWriteCommandAction(this, Computable { command() })
 }
 
 val Project.modules: Collection<Module>
@@ -156,7 +154,8 @@ inline fun <Key, reified Psi : PsiElement> getElements(
 
 
 fun Element.toXmlString() = JDOMUtil.writeElement(this)
-fun elementFromXmlString(xml: String): org.jdom.Element =
+
+fun elementFromXmlString(xml: String): Element =
     SAXBuilder().build(xml.byteInputStream()).rootElement
 
 class CachedVirtualFile(private val url: String?) {
@@ -200,6 +199,7 @@ private fun FileDocumentManager.stripDocumentLater(document: Document): Boolean 
     if (this !is FileDocumentManagerImpl) return false
     val trailingSpacesStripper = trailingSpacesStripperField
         ?.get(this) as? TrailingSpacesStripper ?: return false
+
     @Suppress("UNCHECKED_CAST")
     val documentsToStripLater = documentsToStripLaterField
         ?.get(trailingSpacesStripper) as? MutableSet<Document> ?: return false
@@ -250,20 +250,12 @@ fun Project.runWithCancelableProgress(title: String, process: () -> Unit): Boole
     return ProgressManager.getInstance().runProcessWithProgressSynchronously(process, title, true, this)
 }
 
-inline fun <T> UserDataHolderEx.getOrPut(key: Key<T>, defaultValue: () -> T): T =
+inline fun <T : Any> UserDataHolderEx.getOrPut(key: Key<T>, defaultValue: () -> T): T =
     getUserData(key) ?: putUserDataIfAbsent(key, defaultValue())
-
-inline fun <T> UserDataHolderEx.getOrPutSoft(key: Key<SoftReference<T>>, defaultValue: () -> T): T =
-    getUserData(key)?.get() ?: run {
-        val value = defaultValue()
-        putUserDataIfAbsent(key, SoftReference(value)).get() ?: value
-    }
 
 const val PLUGIN_ID: String = "org.rust.lang"
 
 fun plugin(): IdeaPluginDescriptor = PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))!!
-
-fun pluginDirInSystem(): Path = Paths.get(PathManager.getSystemPath()).resolve("intellij-rust")
 
 val String.escaped: String get() = StringUtil.escapeXmlEntities(this)
 
@@ -276,13 +268,17 @@ fun <T> runReadActionInSmartMode(dumbService: DumbService, action: () -> T): T {
     })
 }
 
-fun <T : Any> executeUnderProgressWithWriteActionPriorityWithRetries(indicator: ProgressIndicator, action: () -> T): T {
+fun <T : Any> executeUnderProgressWithWriteActionPriorityWithRetries(
+    indicator: ProgressIndicator,
+    action: (ProgressIndicator) -> T
+): T {
     checkReadAccessNotAllowed()
     indicator.checkCanceled()
     var result: T? = null
     do {
-        val success = runWithWriteActionPriority(SensitiveProgressWrapper(indicator)) {
-            result = action()
+        val wrappedIndicator = SensitiveProgressWrapper(indicator)
+        val success = runWithWriteActionPriority(wrappedIndicator) {
+            result = action(wrappedIndicator)
         }
         if (!success) {
             indicator.checkCanceled()
@@ -295,6 +291,18 @@ fun <T : Any> executeUnderProgressWithWriteActionPriorityWithRetries(indicator: 
 
 fun runWithWriteActionPriority(indicator: ProgressIndicator, action: () -> Unit): Boolean =
     ProgressIndicatorUtils.runWithWriteActionPriority(action, indicator)
+
+fun runInReadActionWithWriteActionPriority(indicator: ProgressIndicator, action: () -> Unit): Boolean =
+    ProgressIndicatorUtils.runInReadActionWithWriteActionPriority(action, indicator)
+
+fun <T : Any> computeInReadActionWithWriteActionPriority(indicator: ProgressIndicator, action: () -> T): T {
+    lateinit var result: T
+    val success = runInReadActionWithWriteActionPriority(indicator) {
+        result = action()
+    }
+    if (!success) throw ProcessCanceledException()
+    return result
+}
 
 fun <T> executeUnderProgress(indicator: ProgressIndicator, action: () -> T): T {
     var result: T? = null
@@ -326,13 +334,13 @@ val DataContext.elementUnderCaretInEditor: PsiElement?
 fun isFeatureEnabled(featureId: String): Boolean = Experiments.getInstance().isFeatureEnabled(featureId)
 fun setFeatureEnabled(featureId: String, enabled: Boolean) = Experiments.getInstance().setFeatureEnabled(featureId, enabled)
 
-fun runWithEnabledFeature(featureId: String, action: () -> Unit) {
-    val currentValue = isFeatureEnabled(featureId)
-    setFeatureEnabled(featureId, true)
-    try {
+fun <T> runWithEnabledFeatures(vararg featureIds: String, action: () -> T): T {
+    val currentValues = featureIds.map { it to isFeatureEnabled(it) }
+    featureIds.forEach { setFeatureEnabled(it, true) }
+    return try {
         action()
     } finally {
-        setFeatureEnabled(featureId, currentValue)
+        currentValues.forEach { (featureId, currentValue) -> setFeatureEnabled(featureId, currentValue) }
     }
 }
 
@@ -343,6 +351,3 @@ class CachedValueDelegate<T>(provider: () -> CachedValueProvider.Result<T>) {
         return cachedValue.value
     }
 }
-
-// BACKCOMPAT: 2020.1
-val BUILD_202 = BuildNumber.fromString("202")!!

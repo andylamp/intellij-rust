@@ -1,8 +1,10 @@
+import groovy.json.JsonSlurper
 import org.apache.tools.ant.taskdefs.condition.Os.*
-import org.gradle.api.JavaVersion.VERSION_11
+import org.gradle.api.JavaVersion.VERSION_1_8
 import org.gradle.api.internal.HasConvention
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
+import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 import org.jetbrains.grammarkit.tasks.GenerateLexer
 import org.jetbrains.grammarkit.tasks.GenerateParser
 import org.jetbrains.intellij.tasks.PatchPluginXmlTask
@@ -16,11 +18,11 @@ import java.io.Writer
 import java.net.URL
 import kotlin.concurrent.thread
 
-// The same as `--full-stacktrace` param
-gradle.startParameter.showStacktrace = ShowStacktrace.ALWAYS_FULL
+// The same as `--stacktrace` param
+gradle.startParameter.showStacktrace = ShowStacktrace.ALWAYS
 
-val CI = System.getenv("CI") != null
-val TEAMCITY = System.getenv("TEAMCITY_VERSION") != null
+val isCI = System.getenv("CI") != null
+val isTeamcity = System.getenv("TEAMCITY_VERSION") != null
 
 val channel = prop("publishChannel")
 val platformVersion = prop("platformVersion").toInt()
@@ -34,21 +36,31 @@ val baseVersion = when (baseIDE) {
 }
 
 val nativeDebugPlugin = "com.intellij.nativeDebug:${prop("nativeDebugPluginVersion")}"
-val graziePlugin = if (baseIDE == "idea") "grazie" else "tanvd.grazi:${prop("graziePluginVersion")}"
+val graziePlugin = if (baseIDE == "idea") "tanvd.grazi" else "tanvd.grazi:${prop("graziePluginVersion")}"
 val psiViewerPlugin = "PsiViewer:${prop("psiViewerPluginVersion")}"
+val intelliLangPlugin = "org.intellij.intelliLang"
+val copyrightPlugin = "com.intellij.copyright"
+val javaPlugin = "com.intellij.java"
+val javaIdePlugin = "com.intellij.java.ide"
+val javaScriptPlugin = "JavaScript"
+val clionPlugins = listOf("com.intellij.cidr.base", "com.intellij.clion")
+val mlCompletionPlugin = "com.intellij.completion.ml.ranking"
+
+val compileNativeCodeTaskName = "compileNativeCode"
 
 plugins {
     idea
-    kotlin("jvm") version "1.4.0"
-    id("org.jetbrains.intellij") version "0.4.21"
-    id("org.jetbrains.grammarkit") version "2020.2.1"
-    id("net.saliman.properties") version "1.4.6"
+    kotlin("jvm") version "1.4.10"
+    id("org.jetbrains.intellij") version "0.7.2"
+    id("org.jetbrains.grammarkit") version "2020.3.2"
+    id("net.saliman.properties") version "1.5.1"
+    id("org.gradle.test-retry") version "1.2.0"
 }
 
 idea {
     module {
         // https://github.com/gradle/kotlin-dsl/issues/537/
-        excludeDirs = excludeDirs + file("testData") + file("deps")
+        excludeDirs = excludeDirs + file("testData") + file("deps") + file("bin") + file("build-cache")
     }
 }
 
@@ -58,12 +70,13 @@ allprojects {
         plugin("kotlin")
         plugin("org.jetbrains.grammarkit")
         plugin("org.jetbrains.intellij")
+        plugin("org.gradle.test-retry")
     }
 
     repositories {
         mavenCentral()
         jcenter()
-        maven("https://dl.bintray.com/jetbrains/markdown")
+        maven("https://cache-redirector.jetbrains.com/intellij-dependencies")
     }
 
     idea {
@@ -74,7 +87,7 @@ allprojects {
 
     intellij {
         version = baseVersion
-        downloadSources = !CI
+        downloadSources = !isCI
         updateSinceUntilBuild = true
         instrumentCode = false
         ideaDependencyCachePath = dependencyCachePath
@@ -84,9 +97,9 @@ allprojects {
     tasks {
         withType<KotlinCompile> {
             kotlinOptions {
-                jvmTarget = "11"
+                jvmTarget = "1.8"
                 languageVersion = "1.4"
-                apiVersion = "1.3"
+                apiVersion = "1.4"
                 freeCompilerArgs = listOf("-Xjvm-default=enable")
             }
         }
@@ -103,12 +116,41 @@ allprojects {
 
         test {
             testLogging.showStandardStreams = prop("showStandardStreams").toBoolean()
+            if (isCI) {
+                retry {
+                    maxRetries.set(3)
+                    maxFailures.set(5)
+                }
+            }
+        }
+
+        // It makes sense to copy native binaries only for root ("intellij-rust") and "plugin" projects because:
+        // - `intellij-rust` is supposed to provide all necessary functionality related to procedural macro expander.
+        //   So the binaries are required for the corresponding tests.
+        // - `plugin` is root project to build plugin artifact and exactly its sandbox is included into the plugin artifact
+        if (project.name in listOf("intellij-rust", "plugin")) {
+            task<Exec>(compileNativeCodeTaskName) {
+                workingDir = rootDir.resolve("native-helper")
+                executable = "cargo"
+                // Hack to use unstable `--out-dir` option work for stable toolchain
+                // https://doc.rust-lang.org/cargo/commands/cargo-build.html#output-options
+                environment("RUSTC_BOOTSTRAP", "1")
+
+                val hostPlatform = DefaultNativePlatform.host()
+                val outDir = "${rootDir}/bin/${hostPlatform.operatingSystem.toFamilyName()}/${hostPlatform.architecture.name}"
+                args("build", "--release", "-Z", "unstable-options", "--out-dir", outDir)
+
+                // It may be useful to disable compilation of native code.
+                // For example, CI builds native code for each platform in separate tasks and puts it into `bin` dir manually
+                // so there is no need to do it again.
+                enabled = prop("compileNativeCode").toBoolean()
+            }
         }
     }
 
     configure<JavaPluginConvention> {
-        sourceCompatibility = VERSION_11
-        targetCompatibility = VERSION_11
+        sourceCompatibility = VERSION_1_8
+        targetCompatibility = VERSION_1_8
     }
 
     sourceSets {
@@ -132,8 +174,8 @@ allprojects {
             testLogging {
                 if (hasProp("showTestStatus") && prop("showTestStatus").toBoolean()) {
                     events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
-                    exceptionFormat = TestExceptionFormat.FULL
                 }
+                exceptionFormat = TestExceptionFormat.FULL
             }
         }
 
@@ -143,7 +185,7 @@ allprojects {
             // because otherwise it can lead to compatibility issues.
             // Also note that IDEA does the same thing at startup, and not only for tests.
             systemProperty("jna.nosys", "true")
-            if (TEAMCITY) {
+            if (isTeamcity) {
                 // Make teamcity builds green if only muted tests fail
                 // https://youtrack.jetbrains.com/issue/TW-16784
                 ignoreFailures = true
@@ -179,14 +221,16 @@ project(":plugin") {
         pluginName = "intellij-rust"
         val plugins = mutableListOf(
             project(":intellij-toml"),
-            "IntelliLang",
+            intelliLangPlugin,
             graziePlugin,
-            psiViewerPlugin
+            psiViewerPlugin,
+            javaScriptPlugin,
+            mlCompletionPlugin
         )
         if (baseIDE == "idea") {
             plugins += listOf(
-                "copyright",
-                "java",
+                copyrightPlugin,
+                javaPlugin,
                 nativeDebugPlugin
             )
         }
@@ -204,6 +248,8 @@ project(":plugin") {
         implementation(project(":intelliLang"))
         implementation(project(":duplicates"))
         implementation(project(":grazie"))
+        implementation(project(":js"))
+        implementation(project(":ml-completion"))
     }
 
     tasks {
@@ -214,6 +260,14 @@ project(":plugin") {
         }
 
         withType<PrepareSandboxTask> {
+            dependsOn(named(compileNativeCodeTaskName))
+
+            // Copy native binaries
+            from("${rootDir}/bin") {
+                into("intellij-rust/bin")
+                include("**")
+            }
+            // Copy pretty printers
             from("$rootDir/prettyPrinters") {
                 into("${intellij.pluginName}/prettyPrinters")
                 include("*.py")
@@ -223,8 +277,10 @@ project(":plugin") {
         withType<RunIdeTask> {
             // Default args for IDEA installation
             jvmArgs("-Xmx768m", "-XX:+UseConcMarkSweepGC", "-XX:SoftRefLRUPolicyMSPerMB=50")
-            // Disable auto plugin resloading. See `com.intellij.ide.plugins.DynamicPluginVfsListener`
+            // Disable plugin auto reloading. See `com.intellij.ide.plugins.DynamicPluginVfsListener`
             jvmArgs("-Didea.auto.reload.plugins=false")
+            // Don't show "Tip of the Day" at startup
+            jvmArgs("-Dide.show.tips.on.startup.default.value=false")
             // uncomment if `unexpected exception ProcessCanceledException` prevents you from debugging a running IDE
             // jvmArgs("-Didea.ProcessCanceledException=disabled")
         }
@@ -251,15 +307,25 @@ project(":") {
         }
     }
 
+    intellij {
+        // BACKCOMPAT: 2020.3
+        // TODO: drop it when CLion move `navigation.class.hierarchy` property from c-plugin to CLion resources
+        if (baseIDE == "clion" && platformVersion == 203) {
+            setPlugins("c-plugin")
+        }
+    }
+
     val testOutput = configurations.create("testOutput")
 
     dependencies {
         implementation(project(":common"))
-        implementation("org.jetbrains:markdown:0.1.30") {
+        implementation("org.jetbrains:markdown:0.2.0") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
+            exclude(module = "kotlin-stdlib-common")
         }
         testImplementation(project(":common", "testOutput"))
+        testImplementation("com.squareup.okhttp3:mockwebserver:4.9.0")
         testOutput(sourceSets.getByName("test").output.classesDirs)
     }
 
@@ -285,16 +351,41 @@ project(":") {
         purgeOldFiles = true
     }
 
-    tasks.withType<KotlinCompile> {
-        dependsOn(
-            generateRustLexer, generateRustDocHighlightingLexer,
-            generateRustParser
-        )
-    }
+    tasks {
+        withType<KotlinCompile> {
+            dependsOn(
+                generateRustLexer, generateRustDocHighlightingLexer,
+                generateRustParser
+            )
 
-    tasks.withType<Test> {
-        testLogging {
-            exceptionFormat = TestExceptionFormat.FULL
+            doFirst {
+                // Since 2021.1 the platform contains markdown-0.1.41.jar as a dependency
+                // that conflicts with the corresponding project dependency
+                // TODO: find out a better way to avoid wrong dependency during compilation
+                classpath = classpath.filter { it.name != "markdown-0.1.41.jar" }
+            }
+        }
+
+        withType<Test> {
+            doFirst {
+                // Since 2021.1 the platform contains markdown-0.1.41.jar as a dependency
+                // that conflicts with the corresponding project dependency
+                // TODO: find out a better way to avoid wrong dependency during test execution
+                classpath = classpath.filter { it.name != "markdown-0.1.41.jar" }
+            }
+        }
+
+        // In tests `resources` directory is used instead of `sandbox`
+        processTestResources {
+            dependsOn(named(compileNativeCodeTaskName))
+            from("${rootDir}/bin") {
+                into("bin")
+                include("**")
+            }
+        }
+
+        clean {
+            delete(*(File("${rootDir}/build-cache").listFiles() ?: emptyArray()))
         }
     }
 
@@ -311,7 +402,11 @@ project(":") {
 project(":idea") {
     intellij {
         version = ideaVersion
-        setPlugins("java")
+        setPlugins(
+            javaPlugin,
+            // this plugin registers `com.intellij.ide.projectView.impl.ProjectViewPane` for IDEA that we use in tests
+            javaIdePlugin
+        )
     }
     dependencies {
         implementation(project(":"))
@@ -324,6 +419,7 @@ project(":idea") {
 project(":clion") {
     intellij {
         version = clionVersion
+        setPlugins(*clionPlugins.toTypedArray())
     }
     dependencies {
         implementation(project(":"))
@@ -340,6 +436,7 @@ project(":debugger") {
             setPlugins(nativeDebugPlugin)
         } else {
             version = clionVersion
+            setPlugins(*clionPlugins.toTypedArray())
         }
     }
     dependencies {
@@ -352,11 +449,19 @@ project(":debugger") {
 
 project(":toml") {
     intellij {
-        setPlugins(project(":intellij-toml"))
+        val plugins = mutableListOf<Any>(project(":intellij-toml"))
+        // BACKCOMPAT: 2020.3
+        // TODO: drop it when CLion move `navigation.class.hierarchy` property from c-plugin to CLion resources
+        if (baseIDE == "clion" && platformVersion == 203) {
+            plugins += "c-plugin"
+        }
+        setPlugins(*plugins.toTypedArray())
     }
     dependencies {
         implementation(project(":"))
         implementation(project(":common"))
+        implementation("org.eclipse.jgit:org.eclipse.jgit:5.9.0.202009080501-r") { exclude("org.slf4j") }
+        implementation("com.vdurmont:semver4j:3.1.0")
         testImplementation(project(":", "testOutput"))
         testImplementation(project(":common", "testOutput"))
     }
@@ -364,7 +469,7 @@ project(":toml") {
 
 project(":intelliLang") {
     intellij {
-        setPlugins("IntelliLang")
+        setPlugins(intelliLangPlugin)
     }
     dependencies {
         implementation(project(":"))
@@ -377,7 +482,7 @@ project(":intelliLang") {
 project(":copyright") {
     intellij {
         version = ideaVersion
-        setPlugins("copyright")
+        setPlugins(copyrightPlugin)
     }
     dependencies {
         implementation(project(":"))
@@ -417,8 +522,46 @@ project(":grazie") {
     }
 }
 
+project(":js") {
+    intellij {
+        setPlugins(javaScriptPlugin)
+    }
+    dependencies {
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
+    }
+}
+
+project(":ml-completion") {
+    intellij {
+        val plugins = mutableListOf<Any>(mlCompletionPlugin)
+        // BACKCOMPAT: 2020.3
+        // TODO: drop it when CLion move `navigation.class.hierarchy` property from c-plugin to CLion resources
+        if (baseIDE == "clion" && platformVersion == 203) {
+            plugins += "c-plugin"
+        }
+        setPlugins(*plugins.toTypedArray())
+    }
+    dependencies {
+        implementation("org.jetbrains.intellij.deps.completion:completion-ranking-rust:0.0.4")
+        implementation(project(":"))
+        implementation(project(":common"))
+        testImplementation(project(":", "testOutput"))
+        testImplementation(project(":common", "testOutput"))
+    }
+}
+
 project(":intellij-toml") {
     version = "0.2.$patchVersion.${prop("buildNumber")}$versionSuffix"
+    intellij {
+        // BACKCOMPAT: 2020.3
+        // TODO: drop it when CLion move `navigation.class.hierarchy` property from c-plugin to CLion resources
+        if (baseIDE == "clion" && platformVersion == 203) {
+            setPlugins("c-plugin")
+        }
+    }
 
     dependencies {
         implementation(project(":common"))
@@ -461,11 +604,10 @@ project(":common") {
 
 task("runPrettyPrintersTests") {
     doLast {
-        val pythonVersion = if (platformVersion < 203) "3.6" else "3.8"
         val lldbPath = when {
             // TODO: Use `lldb` Python module from CLion distribution
             isFamily(FAMILY_MAC) -> "/Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Resources/Python"
-            isFamily(FAMILY_UNIX) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/lldb/linux/lib/python$pythonVersion/site-packages"
+            isFamily(FAMILY_UNIX) -> "$projectDir/deps/${clionVersion.replaceFirst("CL", "clion")}/bin/lldb/linux/lib/python3.8/site-packages"
             else -> error("Unsupported OS")
         }
         "cargo run --package pretty_printers_test --bin pretty_printers_test -- lldb $lldbPath".execute("pretty_printers_tests")
@@ -523,6 +665,52 @@ task("updateCargoOptions") {
             """.trimIndent())
             it.writeCargoOptions("https://doc.rust-lang.org/cargo/commands")
         }
+    }
+}
+
+task("updateLints") {
+    doLast {
+        val lints = JsonSlurper().parseText("python3 fetch_lints.py".execute("scripts", print = false)) as List<Map<String, *>>
+
+        fun Map<String, *>.isGroup(): Boolean = get("group") as Boolean
+        fun Map<String, *>.isRustcLint(): Boolean = get("rustc") as Boolean
+        fun Map<String, *>.getName(): String = get("name") as String
+
+        fun writeLints(path: String, lints: List<Map<String, *>>, variableName: String) {
+            val file = File(path)
+            val items = lints.sortedWith(compareBy({ !it.isGroup() }, { it.getName() })).joinToString(
+                separator = ",\n    "
+            ) {
+                val name = it.getName()
+                val isGroup = it.isGroup()
+                "Lint(\"$name\", $isGroup)"
+            }
+            file.bufferedWriter().use {
+                it.writeln("""
+/*
+ * Use of this source code is governed by the MIT license that can be
+ * found in the LICENSE file.
+ */
+
+package org.rust.lang.core.completion.lint
+
+val $variableName: List<Lint> = listOf(
+    $items
+)
+""".trim())
+            }
+        }
+
+        writeLints(
+            "src/main/kotlin/org/rust/lang/core/completion/lint/RustcLints.kt",
+            lints.filter { it.isRustcLint() },
+            "RUSTC_LINTS"
+        )
+        writeLints(
+            "src/main/kotlin/org/rust/lang/core/completion/lint/ClippyLints.kt",
+            lints.filter { !it.isRustcLint() },
+            "CLIPPY_LINTS"
+        )
     }
 }
 
@@ -637,10 +825,10 @@ fun SourceSet.kotlin(action: SourceDirectorySet.() -> Unit) =
     kotlin.action()
 
 
-fun String.execute(wd: String? = null, ignoreExitCode: Boolean = false): String =
-    split(" ").execute(wd, ignoreExitCode)
+fun String.execute(wd: String? = null, ignoreExitCode: Boolean = false, print: Boolean = true): String =
+    split(" ").execute(wd, ignoreExitCode, print)
 
-fun List<String>.execute(wd: String? = null, ignoreExitCode: Boolean = false): String {
+fun List<String>.execute(wd: String? = null, ignoreExitCode: Boolean = false, print: Boolean = true): String {
     val process = ProcessBuilder(this)
         .also { pb -> wd?.let { pb.directory(File(it)) } }
         .start()
@@ -648,7 +836,9 @@ fun List<String>.execute(wd: String? = null, ignoreExitCode: Boolean = false): S
     val errReader = thread { process.errorStream.bufferedReader().forEachLine { println(it) } }
     val outReader = thread {
         process.inputStream.bufferedReader().forEachLine { line ->
-            println(line)
+            if (print) {
+                println(line)
+            }
             result += line
         }
     }

@@ -8,6 +8,8 @@ package org.rust.lang.core.resolve
 import org.rust.MockEdition
 import org.rust.MockRustcVersion
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.ignoreInNewResolve
+import org.rust.lang.core.psi.RsImplItem
 import org.rust.lang.core.psi.ext.RsFieldDecl
 
 class RsResolveTest : RsResolveTestBase() {
@@ -628,6 +630,18 @@ class RsResolveTest : RsResolveTestBase() {
                                         //^
     """)
 
+    fun `test enum Self in impl block for invalid self-containing struct`() = checkByCodeGeneric<RsImplItem>("""
+        struct E {
+            value: Self
+        }
+        impl E {
+           //X
+            fn new() -> Self {
+                Self
+            } //^
+        }
+    """)
+
     fun `test enum variant 2`() = checkByCode("""
         enum E { X, Y(X) }
                     //^ unresolved
@@ -675,7 +689,7 @@ class RsResolveTest : RsResolveTestBase() {
     """)
 
     fun `test struct field positional`() = checkByCodeGeneric<RsFieldDecl>("""
-        struct S(i32, i32)
+        struct S(i32, i32);
                      //X
         fn main() {
             let _ = S { 1: 92 };
@@ -690,6 +704,14 @@ class RsResolveTest : RsResolveTestBase() {
         fn main() {
             let _ = T2 { foo: 92 };
         }              //^
+    """)
+
+    fun `test unknown struct field shorthand`() = checkByCode("""
+        fn main() {
+            let foo = 62;
+              //X
+            let _ = UnknownStruct { foo };
+        }                          //^
     """)
 
     fun `test cyclic type aliases`() = checkByCode("""
@@ -1128,6 +1150,38 @@ class RsResolveTest : RsResolveTestBase() {
         ) {}
     """)
 
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetime resolve in impl`() = checkByCode("""
+        #![feature(in_band_lifetimes)]
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl T<'a>
+              //X
+        for S<'a> {}
+             //^
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetime resolve in impl (where)`() = checkByCode("""
+        #![feature(in_band_lifetimes)]
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl T<'a>
+              //X
+        for S<'a>
+        where 'a: 'static {}
+             //^
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetime resolve in impl and explicit lifetimes`() = checkByCode("""
+        #![feature(in_band_lifetimes)]
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl <'b> T<'a> for S<'a> {}
+                             //^ unresolved
+    """)
+
     fun `test loop label`() = checkByCode("""
         fn foo() {
             'a: loop {
@@ -1344,6 +1398,20 @@ class RsResolveTest : RsResolveTestBase() {
         }
     """)
 
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test 'pub (in incomplete_path)'`() = checkByCode("""
+        mod foo {
+            mod bar {
+                pub(in foo::) fn baz() {}
+                               //X
+                fn main() {
+                    // here we just check that incomplete path doesn't cause exceptions
+                    baz();
+                } //^
+            }
+        }
+    """)
+
     fun `test 'pub (self)'`() = checkByCode("""
         mod bar {
           //X
@@ -1385,7 +1453,7 @@ class RsResolveTest : RsResolveTestBase() {
 
         use self::Foo;
                 //^
-    """, ItemResolutionTestmarks.externCrateSelfWithoutAlias)
+    """, ItemResolutionTestmarks.externCrateSelfWithoutAlias.ignoreInNewResolve(project))
 
     fun `test const generic in fn`() = checkByCode("""
         fn f<const AAA: usize>() {
@@ -1416,6 +1484,27 @@ class RsResolveTest : RsResolveTestBase() {
                     //X
             V([usize; AAA]),
                      //^
+        }
+    """)
+
+    fun `test Self with nested impls`() = checkByCodeGeneric<RsImplItem>("""
+        struct A;
+
+        impl A {
+            fn foo() {
+                struct E {
+                    value: i32
+                }
+                impl E {
+                //X
+                    fn new() -> Self {
+                                //^
+                        Self {
+                            value: h
+                        }
+                    }
+                }
+            }
         }
     """)
 }

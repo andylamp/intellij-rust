@@ -1,29 +1,19 @@
-import gdb
+from gdb import Type
+from gdb import TYPE_CODE_STRUCT, TYPE_CODE_UNION, TYPE_CODE_INT
 
 from gdb_providers import *
 from rust_types import *
+
 
 def register_printers(objfile):
     objfile.pretty_printers.append(lookup)
 
 
-# BACKCOMPAT: rust 1.35
-def is_hashbrown_hashmap(hash_map):
-    return len(hash_map.type.fields()) == 1
-
-
-def classify_rust_type(type):
-    type_class = type.code
-    if type_class == gdb.TYPE_CODE_STRUCT:
-        return classify_struct(type.tag, type.fields())
-    if type_class == gdb.TYPE_CODE_UNION:
-        return classify_union(type.fields())
-
-    return RustType.OTHER
-
-
-def check_enum_discriminant(valobj):
+# Enum representation in gdb <= 9.1
+def is_old_enum(valobj):
     content = valobj[valobj.type.fields()[0]]
+    if content.type.code != TYPE_CODE_UNION:
+        return False
     fields = content.type.fields()
     if len(fields) > 1:
         discriminant = int(content[fields[0]]) + 1
@@ -33,7 +23,32 @@ def check_enum_discriminant(valobj):
     return True
 
 
+# Enum representation in gdb >= 10.1
+# Introduced in https://github.com/bminor/binutils-gdb/commit/9c6a1327ad9a92b8584f0501dd25bf8ba9e84ac6
+def is_new_enum(type):
+    fields = type.fields()
+    if len(fields) > 1:
+        field0 = fields[0]
+        if field0.artificial and field0.name is None and field0.type.code == TYPE_CODE_INT:
+            return True
+    return False
+
+
+def classify_rust_type(type):
+    # type: (Type) -> RustType
+    type_class = type.code
+    if type_class == TYPE_CODE_STRUCT:
+        if is_new_enum(type):
+            return RustType.ENUM
+        return classify_struct(type.tag, type.fields())
+    if type_class == TYPE_CODE_UNION:
+        return classify_union(type.fields())
+
+    return RustType.OTHER
+
+
 def lookup(valobj):
+    # type: (Value) -> object
     rust_type = classify_rust_type(valobj.type)
 
     if rust_type == RustType.STRUCT:
@@ -41,8 +56,10 @@ def lookup(valobj):
     if rust_type == RustType.TUPLE:
         return TupleProvider(valobj)
     if rust_type == RustType.ENUM:
-        if check_enum_discriminant(valobj):
-            return EnumProvider(valobj)
+        if is_old_enum(valobj):
+            return OldEnumProvider(valobj)
+        elif is_new_enum(valobj.type):
+            return NewEnumProvider(valobj)
 
     if rust_type == RustType.STD_STRING:
         return StdStringProvider(valobj)
@@ -60,17 +77,9 @@ def lookup(valobj):
     if rust_type == RustType.STD_BTREE_MAP:
         return StdBTreeMapProvider(valobj)
     if rust_type == RustType.STD_HASH_MAP:
-        if is_hashbrown_hashmap(valobj):
-            return StdHashMapProvider(valobj)
-        else:
-            return StdOldHashMapProvider(valobj)
+        return StdHashMapProvider(valobj)
     if rust_type == RustType.STD_HASH_SET:
-        hash_map = valobj["map"]
-        if is_hashbrown_hashmap(hash_map):
-            return StdHashMapProvider(hash_map, show_values=False)
-        else:
-            return StdOldHashMapProvider(hash_map, show_values=False)
-
+        return StdHashMapProvider(valobj, show_values=False)
     if rust_type == RustType.STD_RC:
         return StdRcProvider(valobj)
     if rust_type == RustType.STD_ARC:

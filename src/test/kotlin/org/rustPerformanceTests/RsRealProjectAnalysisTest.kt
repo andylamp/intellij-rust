@@ -9,13 +9,16 @@ import com.intellij.codeInspection.ex.InspectionToolRegistrar
 import com.intellij.ide.annotator.AnnotatorBase
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.vfs.VfsUtil
 import org.rust.ide.annotator.RsErrorAnnotator
+import org.rust.ide.experiments.RsExperiments
 import org.rust.ide.inspections.RsLocalInspectionTool
 import org.rust.ide.inspections.RsUnresolvedReferenceInspection
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.MacroExpansionScope
 import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.RsFile
+import org.rust.openapiext.runWithEnabledFeatures
 import org.rust.openapiext.toPsiFile
 
 open class RsRealProjectAnalysisTest : RsRealProjectTestBase() {
@@ -37,7 +40,9 @@ open class RsRealProjectAnalysisTest : RsRealProjectTestBase() {
 
     protected fun doTest(info: RealProjectInfo, failOnFirstFileWithErrors: Boolean = false) {
         val errorConsumer = if (failOnFirstFileWithErrors) FAIL_FAST else COLLECT_ALL_EXCEPTIONS
-        doTest(info, errorConsumer)
+        runWithEnabledFeatures(RsExperiments.EVALUATE_BUILD_SCRIPTS, RsExperiments.PROC_MACROS) {
+            doTest(info, errorConsumer)
+        }
     }
 
     protected fun doTest(info: RealProjectInfo, consumer: AnnotationConsumer) {
@@ -60,14 +65,21 @@ open class RsRealProjectAnalysisTest : RsRealProjectTestBase() {
         val base = openRealProject(info) ?: return
 
         println("Collecting files to analyze")
-        val filesToCheck = base.findDescendants {
+
+        val baseDirToCheck = if (info.name == STDLIB) rustupFixture.stdlib!! else base
+
+        val filesToCheck = baseDirToCheck.findDescendants {
             it.fileType == RsFileType && run {
                 val file = it.toPsiFile(project)
                 file is RsFile && file.crateRoot != null && file.cargoWorkspace != null
             }
         }
         for (file in filesToCheck) {
-            val path = file.path.substring(base.path.length + 1)
+            val path = if (VfsUtil.isAncestor(base, file, true)) {
+                file.path.substring(base.path.length + 1)
+            } else {
+                file.path
+            }
             println("Analyzing $path")
             myFixture.openFileInEditor(file)
             val infos = myFixture.doHighlighting(HighlightSeverity.ERROR)
@@ -76,8 +88,9 @@ open class RsRealProjectAnalysisTest : RsRealProjectTestBase() {
                 val position = myFixture.editor.offsetToLogicalPosition(highlightInfo.startOffset)
                 val annotation = Annotation(
                     path,
-                    position.line,
-                    position.column,
+                    // Use 1-based indexing to be compatible with editor UI and `Go to Line/Column` action
+                    position.line + 1,
+                    position.column + 1,
                     text.substring(highlightInfo.startOffset, highlightInfo.endOffset),
                     highlightInfo.description,
                     highlightInfo.inspectionToolId
@@ -100,6 +113,8 @@ open class RsRealProjectAnalysisTest : RsRealProjectTestBase() {
     }
 
     companion object {
+
+        private const val STDLIB = "stdlib"
 
         val FAIL_FAST = object : AnnotationConsumer {
             override fun consumeAnnotation(annotation: Annotation) {

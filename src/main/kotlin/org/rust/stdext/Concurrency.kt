@@ -6,9 +6,14 @@
 package org.rust.stdext
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.util.ProgressIndicatorUtils
 import java.util.*
 import java.util.concurrent.*
+import java.util.concurrent.locks.Condition
+import java.util.concurrent.locks.Lock
 import kotlin.reflect.KProperty
 
 
@@ -39,7 +44,10 @@ class AsyncValue<T>(initial: T) {
                         this.current = next
                         result.complete(next)
                     } else {
-                        LOG.error(err)
+                        // Do not log `ProcessCanceledException`
+                        if (!(err is ProcessCanceledException || err is CompletionException && err.cause is ProcessCanceledException)) {
+                            LOG.error(err)
+                        }
                         result.completeExceptionally(err)
                     }
                     Unit
@@ -71,7 +79,7 @@ class AsyncValue<T>(initial: T) {
     }
 
     companion object {
-        private val LOG = Logger.getInstance(AsyncValue::class.java)
+        private val LOG: Logger = logger<AsyncValue<*>>()
     }
 }
 
@@ -87,43 +95,28 @@ class ThreadLocalDelegate<T>(initializer: () -> T) {
     }
 }
 
-fun <V> Future<V>.waitForWithCheckCanceled(): V {
+@Throws(TimeoutException::class, ExecutionException::class, InterruptedException::class)
+fun <V> Future<V>.getWithCheckCanceled(timeoutMillis: Long): V {
+    val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
     while (true) {
         try {
             return get(10, TimeUnit.MILLISECONDS)
-        } catch (ignored: TimeoutException) {
+        } catch (e: TimeoutException) {
             ProgressManager.checkCanceled()
+            if (System.nanoTime() >= deadline) {
+                throw e
+            }
         }
     }
 }
 
-/**
- * Asynchronously applies [action] to each element of [elements] list on [executor].
- * This function submits next tasks to the [executor] only when previous tasks is finished, so
- * it is usable when we need to execute a LARGE task on a low-latency executor (e.g. EDT)
- */
-fun <R, T> executeSequentially(
-    executor: Executor,
-    elements: List<T>,
-    action: (T) -> R
-): CompletableFuture<List<R>> {
-    if (elements.isEmpty()) return CompletableFuture.completedFuture(emptyList())
-    val src = elements.asReversed().toMutableList()
-    val dst = mutableListOf<R>()
-    val future = CompletableFuture<List<R>>()
-    fun go() {
-        try {
-            dst.add(action(src.last()))
-            src.removeLast()
-            if (src.isNotEmpty()) {
-                executor.execute(::go)
-            } else {
-                future.complete(dst)
-            }
-        } catch (t: Throwable) {
-            future.completeExceptionally(t)
-        }
+fun <T> Lock.withLockAndCheckingCancelled(action: () -> T): T =
+    ProgressIndicatorUtils.computeWithLockAndCheckingCanceled<T, Exception>(this, 10, TimeUnit.MILLISECONDS, action)
+
+fun Condition.awaitWithCheckCancelled() {
+    // BACKCOMPAT: 2020.3. Use com.intellij.openapi.progress.util.ProgressIndicatorUtils#awaitWithCheckCanceled(java.util.concurrent.locks.Condition)
+    while (!await(10, TimeUnit.MILLISECONDS)) {
+        ProgressManager.checkCanceled()
     }
-    executor.execute(::go)
-    return future
 }
+

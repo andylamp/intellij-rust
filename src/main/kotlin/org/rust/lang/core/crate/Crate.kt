@@ -5,13 +5,16 @@
 
 package org.rust.lang.core.crate
 
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.CargoWorkspaceData
+import org.rust.cargo.project.workspace.FeatureState
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.ide.experiments.RsExperiments
 import org.rust.lang.core.psi.RsFile
-import java.util.*
 
 /**
  * An immutable object describes a *crate* from the *rustc* point of view.
@@ -33,7 +36,14 @@ interface Crate {
     val origin: PackageOrigin
 
     val cfgOptions: CfgOptions
-    val features: Collection<CargoWorkspace.Feature>
+    val features: Map<String, FeatureState>
+
+    /**
+     * `true` if there isn't a custom build script (`build.rs`) in the package or if the build script is
+     * successfully evaluated (hence [cfgOptions] is filled). The value affects `#[cfg()]` and `#[cfg_attr()]`
+     * attributes evaluation.
+     */
+    val evaluateUnknownCfgToFalse: Boolean
 
     /** A map of compile-time environment variables, needed for `env!("FOO")` macros expansion */
     val env: Map<String, String>
@@ -79,6 +89,16 @@ interface Crate {
      */
     val normName: String
 
+    @JvmDefault
+    val project: Project get() = cargoProject.project
+
+    /**
+     * A procedural macro compiler artifact (compiled binary).
+     * Non-null only if this crate is a procedural macro, the crate is successfully compiled during
+     * the Cargo sync phase and [RsExperiments.EVALUATE_BUILD_SCRIPTS] experimental feature is enabled.
+     */
+    val procMacroArtifact: CargoWorkspaceData.ProcMacroArtifact?
+
     data class Dependency(
         /** A name of the dependency that can be used in `extern crate name;` or in absolute paths */
         val normName: String,
@@ -89,6 +109,3 @@ interface Crate {
 
 fun Crate.findDependency(normName: String): Crate? =
     dependencies.find { it.normName == normName }?.crate
-
-fun Crate.hasDirectDependency(other: Crate): Boolean =
-    dependencies.any { it.crate == other }

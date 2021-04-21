@@ -6,11 +6,12 @@
 package org.rust.lang.core.stubs
 
 import com.intellij.util.BitUtil
-import org.rust.lang.core.psi.ext.QueryAttributes
-import org.rust.lang.core.psi.ext.RsDocAndAttributeOwner
-import org.rust.lang.core.psi.ext.name
-import org.rust.lang.core.psi.ext.queryAttributes
-import org.rust.stdext.makeBitMask
+import org.rust.lang.core.psi.RsMetaItem
+import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.KNOWN_DERIVABLE_TRAITS
+import org.rust.lang.core.stubs.common.RsAttributeOwnerPsiOrStub
+import org.rust.stdext.BitFlagsBuilder
+import org.rust.stdext.HashCode
 
 interface RsNamedStub {
     val name: String?
@@ -20,42 +21,107 @@ interface RsNamedStub {
  * These properties are stored in stubs for performance reasons: it's much cheaper to check
  * a flag in a stub then traverse a PSI
  */
-interface RsAttributeOwnerStub {
+interface RsAttributeOwnerStub : RsAttributeOwnerPsiOrStub<RsMetaItemStub> {
     val hasAttrs: Boolean
 
     // #[cfg()]
-    val hasCfg: Boolean
+    val mayHaveCfg: Boolean
+
+    // #[cfg_attr()]
+    val hasCfgAttr: Boolean
 
     // #[macro_use]
-    val hasMacroUse: Boolean
+    val mayHaveMacroUse: Boolean
 
-    companion object {
-        val ATTRS_MASK: Int = makeBitMask(0)
-        val CFG_MASK: Int = makeBitMask(1)
-        val HAS_MACRO_USE_MASK: Int = makeBitMask(2)
-        const val USED_BITS: Int = 3
+    // #[derive(FooBar)]
+    val mayHaveCustomDerive: Boolean
+
+    companion object : BitFlagsBuilder(Limit.BYTE) {
+        val ATTRS_MASK: Int = nextBitMask()
+        val CFG_MASK: Int = nextBitMask()
+        val CFG_ATTR_MASK: Int = nextBitMask()
+        val HAS_MACRO_USE_MASK: Int = nextBitMask()
+        val HAS_CUSTOM_DERIVE: Int = nextBitMask()
 
         fun extractFlags(element: RsDocAndAttributeOwner): Int =
-            extractFlags(element.queryAttributes)
+            extractFlags(element.getTraversedRawAttributes(withCfgAttrAttribute = true))
 
-        fun extractFlags(attrs: QueryAttributes): Int {
+        fun extractFlags(attrs: QueryAttributes<*>): Int {
             var hasAttrs = false
             var hasCfg = false
+            var hasCfgAttr = false
             var hasMacroUse = false
+            var hasCustomDerive = false
             for (meta in attrs.metaItems) {
                 hasAttrs = true
                 when (meta.name) {
                     "cfg" -> hasCfg = true
+                    "cfg_attr" -> hasCfgAttr = true
                     "macro_use" -> hasMacroUse = true
-                    // TODO cfg_attr
+                    "derive" -> {
+                        hasCustomDerive = hasCustomDerive || meta.metaItemArgs?.metaItemList.orEmpty()
+                            .any { KNOWN_DERIVABLE_TRAITS[it.name]?.isStd != true }
+                    }
                 }
-                if (hasCfg && hasMacroUse) break
             }
             var flags = 0
             flags = BitUtil.set(flags, ATTRS_MASK, hasAttrs)
             flags = BitUtil.set(flags, CFG_MASK, hasCfg)
+            flags = BitUtil.set(flags, CFG_ATTR_MASK, hasCfgAttr)
             flags = BitUtil.set(flags, HAS_MACRO_USE_MASK, hasMacroUse)
+            flags = BitUtil.set(flags, HAS_CUSTOM_DERIVE, hasCustomDerive)
             return flags
+        }
+    }
+}
+
+/**
+ * A common interface for stub for elements that can hold attribute or derive procedural macro attributes
+ */
+interface RsAttrProcMacroOwnerStub : RsAttributeOwnerStub {
+    /**
+     * A text of the item ([com.intellij.psi.PsiElement.getText]). Used for proc macro expansion.
+     * Non-null if [mayHaveCustomDerive] is `true`
+     */
+    val stubbedText: String?
+
+    /**
+     * A [HashCode] of [stubbedText]. Non-null if [stubbedText] is not `null` and [hasCfgAttr] is `false`.
+     * @see RsMetaItem.bodyHash
+     */
+    val bodyHash: HashCode?
+
+    /**
+     * Text offset in parent ([com.intellij.psi.PsiElement.getStartOffsetInParent]) of the first keyword
+     * after outer attributes. `0` if [stubbedText] is `null`.
+     *
+     * ```
+     *     #[foobar]
+     *     // comment
+     *     /// docs
+     *     #[baz]
+     *     pub const fn a(){}
+     *   //^ this offset
+     * ```
+     */
+    val endOfAttrsOffset: Int
+
+    companion object {
+        fun extractTextAndOffset(flags: Int, psi: RsStructOrEnumItemElement): Triple<String?, HashCode?, Int> {
+            val isProcMacro = BitUtil.isSet(flags, RsAttributeOwnerStub.HAS_CUSTOM_DERIVE)
+            return if (isProcMacro) {
+                val stubbedText = psi.stubbedText
+                val hash = if (stubbedText != null && !BitUtil.isSet(flags, RsAttributeOwnerStub.CFG_ATTR_MASK)) {
+                    HashCode.compute(stubbedText)
+                } else {
+                    // We can calculate the hash during stub building only if the item does not contains
+                    // `cfg_attr` attributes. Otherwise the hash depends on cfg configuration.
+                    null
+                }
+                Triple(stubbedText, hash, psi.endOfAttrsOffset)
+            } else {
+                Triple(null, null, 0)
+            }
         }
     }
 }

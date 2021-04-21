@@ -5,10 +5,7 @@
 
 package org.toml.lang.psi
 
-import com.intellij.psi.ContributedReferenceHost
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiLanguageInjectionHost
-import com.intellij.psi.PsiReferenceContributor
+import com.intellij.psi.*
 
 interface TomlElement : PsiElement
 
@@ -33,9 +30,13 @@ interface TomlKeyValue : TomlElement {
 
 /**
  * It's possible to use [PsiReferenceContributor] to inject references
- * into [TomlKey] from third-party plugins.
+ * into [TomlKeySegment] from third-party plugins.
  */
-interface TomlKey : TomlElement, ContributedReferenceHost
+interface TomlKeySegment : TomlElement, ContributedReferenceHost, PsiNamedElement, NavigatablePsiElement
+
+interface TomlKey : TomlElement {
+    val segments: List<TomlKeySegment>
+}
 
 /**
  * It's possible to use [PsiReferenceContributor] to inject references
@@ -52,6 +53,6 @@ interface TomlArrayTable : TomlKeyValueOwner, TomlHeaderOwner
 interface TomlInlineTable : TomlKeyValueOwner, TomlValue
 
 interface TomlTableHeader : TomlElement {
-    val names: List<TomlKey>
+    val key: TomlKey?
 }
 

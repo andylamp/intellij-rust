@@ -5,7 +5,6 @@
 
 package org.rust.lang.core.psi.ext
 
-import com.intellij.openapi.util.Condition
 import com.intellij.psi.PsiElement
 import com.intellij.util.EmptyQuery
 import com.intellij.util.Query
@@ -14,7 +13,7 @@ import org.rust.lang.core.psi.*
 import org.rust.openapiext.filterQuery
 import org.rust.openapiext.mapQuery
 
-interface RsAbstractable : RsNameIdentifierOwner, RsExpandedElement, RsVisible {
+interface RsAbstractable : RsNameIdentifierOwner, RsExpandedElement, RsVisible, RsDocAndAttributeOwner {
     val isAbstract: Boolean
 }
 
@@ -68,10 +67,10 @@ fun RsAbstractable.searchForImplementations(): Query<RsAbstractable> {
     val traitImpls = traitItem.searchForImplementations()
 
     val query: Query<RsAbstractable> = when (this) {
-        is RsConstant -> traitImpls.mapQuery { it.expandedMembers.constants.find { it.name == this.name } }
-        is RsFunction -> traitImpls.mapQuery { it.expandedMembers.functions.find { it.name == this.name } }
-        is RsTypeAlias -> traitImpls.mapQuery { it.expandedMembers.types.find { it.name == this.name } }
+        is RsConstant -> traitImpls.mapQuery { impl -> impl.expandedMembers.constants.find { it.name == this.name } }
+        is RsFunction -> traitImpls.mapQuery { impl -> impl.expandedMembers.functions.find { it.name == this.name } }
+        is RsTypeAlias -> traitImpls.mapQuery { impl -> impl.expandedMembers.types.find { it.name == this.name } }
         else -> EmptyQuery()
     }
-    return query.filterQuery(Condition { it != null })
+    return query.filterQuery { it != null }
 }

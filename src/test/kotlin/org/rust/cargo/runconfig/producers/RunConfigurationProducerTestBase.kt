@@ -11,8 +11,6 @@ import com.intellij.execution.actions.RunConfigurationProducer
 import com.intellij.execution.impl.RunnerAndConfigurationSettingsImpl
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.LangDataKeys.PSI_ELEMENT_ARRAY
-import com.intellij.openapi.application.WriteAction
-import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -67,9 +65,10 @@ abstract class RunConfigurationProducerTestBase : RsTestBase() {
     }
 
     protected inline fun <reified T : PsiElement> checkOnElement() {
-        val configurationContext = ConfigurationContext(
-            myFixture.file.findElementAt(myFixture.caretOffset)?.ancestorOrSelf<T>()
-        )
+        val element = myFixture.file.findElementAt(myFixture.caretOffset)
+            ?.ancestorOrSelf<T>()
+            ?: error("Failed to find element of `${T::class.simpleName}` class at caret")
+        val configurationContext = ConfigurationContext(element)
         check(configurationContext)
     }
 
@@ -198,19 +197,22 @@ abstract class RunConfigurationProducerTestBase : RsTestBase() {
                                     it.name,
                                     it.kind,
                                     it.edition,
-                                    doctest = true
+                                    doctest = true,
+                                    requiredFeatures = emptyList()
                                 )
                             },
                             source = null,
                             origin = PackageOrigin.WORKSPACE,
                             edition = Edition.EDITION_2015,
-                            features = emptyList(),
+                            features = emptyMap(),
+                            enabledFeatures = emptySet(),
                             cfgOptions = CfgOptions.EMPTY,
                             env = emptyMap(),
                             outDirUrl = null
                         )
                     ),
-                    dependencies = emptyMap()
+                    dependencies = emptyMap(),
+                    rawDependencies = emptyMap()
                 ),
                 CfgOptions.DEFAULT
             )

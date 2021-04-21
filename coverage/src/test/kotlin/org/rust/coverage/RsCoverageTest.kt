@@ -11,7 +11,6 @@ import com.intellij.coverage.CoverageRunnerData
 import com.intellij.execution.ExecutorRegistry
 import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.runners.ExecutionEnvironmentBuilder
-import com.intellij.execution.runners.ProgramRunner
 import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.SystemInfo
@@ -22,6 +21,7 @@ import com.intellij.rt.coverage.data.ProjectData
 import org.rust.FileTreeBuilder
 import org.rust.cargo.RustupTestFixture
 import org.rust.cargo.toolchain.RustChannel
+import org.rust.cargo.toolchain.tools.rustc
 import org.rust.lang.core.psi.isRustFile
 import org.rust.openapiext.toPsiFile
 import org.rustSlowTests.cargo.runconfig.RunConfigurationTestBase
@@ -182,7 +182,7 @@ class RsCoverageTest : RunConfigurationTestBase() {
                 name = "hello"
                 version = "0.1.0"
                 authors = []
-                
+
                 [lib]
                 proc-macro = true
             """)
@@ -238,10 +238,7 @@ class RsCoverageTest : RunConfigurationTestBase() {
             true
         }
 
-        val configuration = createConfiguration()
-        if (runTests) {
-            configuration.command = "test"
-        }
+        val configuration = createConfiguration(if (runTests) "test" else "run")
 
         executeWithCoverage(configuration)
         runWithInvocationEventsDispatching("Failed to fetch coverage data", retries = 10000) { coverageData != null }
@@ -262,7 +259,7 @@ class RsCoverageTest : RunConfigurationTestBase() {
         val environment = ExecutionEnvironmentBuilder
             .create(executor, configuration)
             .runnerSettings(CoverageRunnerData())
-            .build(ProgramRunner.Callback { future.complete(it) })
+            .build { future.complete(it) }
         environment.runner.execute(environment)
         return future.get(10, TimeUnit.SECONDS)!!
     }
@@ -302,7 +299,7 @@ class RsCoverageTest : RunConfigurationTestBase() {
             get() = super.skipTestReason ?: checkNightlyToolchain()
 
         private fun checkNightlyToolchain(): String? {
-            val channel = toolchain?.queryVersions()?.rustc?.channel
+            val channel = toolchain?.rustc()?.queryVersion()?.channel
             return if (channel != RustChannel.NIGHTLY) "Coverage works with nightly toolchain only" else null
         }
     }

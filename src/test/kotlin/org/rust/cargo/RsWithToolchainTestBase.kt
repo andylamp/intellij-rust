@@ -5,11 +5,21 @@
 
 package org.rust.cargo
 
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.RecursionManager
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
+import com.intellij.testFramework.builders.ModuleFixtureBuilder
+import com.intellij.testFramework.fixtures.CodeInsightFixtureTestCase
+import com.intellij.util.ThrowableRunnable
 import com.intellij.util.ui.UIUtil
 import org.rust.*
 import org.rust.cargo.project.model.impl.testCargoProjects
+import org.rust.cargo.toolchain.tools.rustc
+import org.rust.ide.experiments.RsExperiments
+import org.rust.lang.core.macros.macroExpansionManager
+import org.rust.openapiext.pathAsPath
 
 /**
  * This class allows executing real Cargo during the tests.
@@ -17,18 +27,26 @@ import org.rust.cargo.project.model.impl.testCargoProjects
  * Unlike [org.rust.RsTestBase] it does not use in-memory temporary VFS
  * and instead copies real files.
  */
-abstract class RsWithToolchainTestBase : RsWithToolchainPlatformTestBase() {
+abstract class RsWithToolchainTestBase : CodeInsightFixtureTestCase<ModuleFixtureBuilder<*>>() {
 
-    private lateinit var rustupFixture: RustupTestFixture
+    protected lateinit var rustupFixture: RustupTestFixture
 
     open val dataPath: String = ""
 
     open val disableMissedCacheAssertions: Boolean get() = true
+    protected open val fetchActualStdlibMetadata: Boolean get() = false
 
     protected val cargoProjectDirectory: VirtualFile get() = myFixture.findFileInTempDir(".")
 
+    private val earlyTestRootDisposable = Disposer.newDisposable()
+
     protected fun FileTree.create(): TestProject =
         create(project, cargoProjectDirectory).apply {
+            rustupFixture.toolchain
+                ?.rustc()
+                ?.getStdlibPathFromSysroot(cargoProjectDirectory.pathAsPath)
+                ?.let { VfsRootAccess.allowRootAccess(testRootDisposable, it) }
+
             refreshWorkspace()
         }
 
@@ -36,7 +54,7 @@ abstract class RsWithToolchainTestBase : RsWithToolchainPlatformTestBase() {
         project.testCargoProjects.discoverAndRefreshSync()
     }
 
-    override fun runTestInternal(context: TestContext) {
+    override fun runTestRunnable(testRunnable: ThrowableRunnable<Throwable>) {
         val skipReason = rustupFixture.skipTestReason
         if (skipReason != null) {
             System.err.println("SKIP \"$name\": $skipReason")
@@ -45,7 +63,7 @@ abstract class RsWithToolchainTestBase : RsWithToolchainPlatformTestBase() {
         val minRustVersion = findAnnotationInstance<MinRustcVersion>()
         if (minRustVersion != null) {
             val requiredVersion = minRustVersion.semver
-            val rustcVersion = rustupFixture.toolchain!!.queryVersions().rustc
+            val rustcVersion = rustupFixture.toolchain!!.rustc().queryVersion()
             if (rustcVersion == null) {
                 System.err.println("SKIP \"$name\": failed to query Rust version")
                 return
@@ -56,7 +74,7 @@ abstract class RsWithToolchainTestBase : RsWithToolchainPlatformTestBase() {
                 return
             }
         }
-        super.runTestInternal(context)
+        super.runTestRunnable(testRunnable)
     }
 
     override fun setUp() {
@@ -66,15 +84,32 @@ abstract class RsWithToolchainTestBase : RsWithToolchainPlatformTestBase() {
         if (disableMissedCacheAssertions) {
             RecursionManager.disableMissedCacheAssertions(testRootDisposable)
         }
+        setupResolveEngine(project, testRootDisposable)
+        findAnnotationInstance<ExpandMacros>()?.let { ann ->
+            Disposer.register(
+                earlyTestRootDisposable,
+                project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(
+                    ann.mode,
+                    ann.cache.takeIf { it.isNotEmpty() } ?: name
+                )
+            )
+        }
+        // RsExperiments.FETCH_ACTUAL_STDLIB_METADATA significantly slows down tests
+        setExperimentalFeatureEnabled(RsExperiments.FETCH_ACTUAL_STDLIB_METADATA, fetchActualStdlibMetadata, testRootDisposable)
     }
 
     override fun tearDown() {
+        Disposer.dispose(earlyTestRootDisposable)
         rustupFixture.tearDown()
         super.tearDown()
         checkMacroExpansionFileSystemAfterTest()
     }
 
     protected open fun createRustupFixture(): RustupTestFixture = RustupTestFixture(project)
+
+    override fun getTestRootDisposable(): Disposable {
+        return if (myFixture != null) myFixture.testRootDisposable else super.getTestRootDisposable()
+    }
 
     protected fun buildProject(builder: FileTreeBuilder.() -> Unit): TestProject =
         fileTree { builder() }.create()

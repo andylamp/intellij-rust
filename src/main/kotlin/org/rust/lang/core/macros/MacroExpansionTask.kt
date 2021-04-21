@@ -24,15 +24,13 @@ import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.util.containers.ContainerUtil
 import com.intellij.util.io.storage.HeavyProcessLatch
 import org.rust.RsTask
-import org.rust.lang.core.psi.RsMacroCall
-import org.rust.lang.core.psi.RsMembers
-import org.rust.lang.core.psi.ext.RsMod
-import org.rust.lang.core.psi.ext.bodyHash
-import org.rust.lang.core.psi.ext.macroBody
-import org.rust.lang.core.psi.ext.resolveToMacro
+import org.rust.ide.utils.isEnabledByCfg
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.DEFAULT_RECURSION_LIMIT
 import org.rust.lang.core.resolve.ref.RsMacroPathReferenceImpl
 import org.rust.lang.core.resolve.ref.RsResolveCache
+import org.rust.lang.core.resolve2.RESOLVE_LOG
+import org.rust.lang.core.resolve2.updateDefMapForAllCrates
 import org.rust.openapiext.*
 import org.rust.stdext.HashCode
 import org.rust.stdext.getLeading64bits
@@ -57,7 +55,7 @@ abstract class MacroExpansionTaskBase(
     private val resolveCache = RsResolveCache.getInstance(project)
     private val dumbService = DumbService.getInstance(project)
     private val macroExpansionManager = project.macroExpansionManager
-    private val expander = MacroExpander(project)
+    private val expander = FunctionLikeMacroExpander.new(project)
     private val sync = CountDownLatch(1)
     private val estimateStages = AtomicInteger()
     private val doneStages = AtomicInteger()
@@ -66,6 +64,7 @@ abstract class MacroExpansionTaskBase(
     private lateinit var realTaskIndicator: ProgressIndicator
     private lateinit var subTaskIndicator: ProgressIndicator
     private lateinit var expansionSteps: Iterator<List<Extractable>>
+
     @Volatile
     private var heavyProcessRequested = false
 
@@ -78,8 +77,6 @@ abstract class MacroExpansionTaskBase(
         indicator.isIndeterminate = false
         realTaskIndicator = indicator
 
-        expansionSteps = getMacrosToExpand(dumbService).iterator()
-
         if (indicator is ProgressIndicatorEx) {
             // [indicator] can be an instance of [BackgroundableProcessIndicator] class, which is thread
             // sensitive and its `checkCanceled` method should be used only from a single thread
@@ -91,6 +88,18 @@ abstract class MacroExpansionTaskBase(
         } else {
             subTaskIndicator = indicator
         }
+
+        try {
+            realTaskIndicator.text = "Preparing resolve data"
+            updateDefMapForAllCrates(project, pool, subTaskIndicator)
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            // Exceptions in new resolve should not break macro expansion
+            RESOLVE_LOG.error(e)
+        }
+
+        expansionSteps = getMacrosToExpand(dumbService).iterator()
 
         indicator.checkCanceled()
         var heavyProcessToken: AccessToken? = null
@@ -131,13 +140,14 @@ abstract class MacroExpansionTaskBase(
                 // Restart `DaemonCodeAnalyzer` after releasing `HeavyProcessLatch`. Used instead of
                 // `DaemonCodeAnalyzer.restart()` to do restart more gracefully, i.e. don't invalidate
                 // highlights if nothing actually changed
-                WriteAction.runAndWait<Throwable> {  }
+                WriteAction.runAndWait<Throwable> { }
             }
+            MacroExpansionSharedCache.getInstance().flush()
         }
     }
 
     private fun calcProgress(step: Int, progress: Double): Double =
-        (1 until step).map { stepProgress(it) }.sum() + stepProgress(step) * progress
+        (1 until step).sumByDouble { stepProgress(it) } + stepProgress(step) * progress
 
     // It's impossible to know total quantity of macros, so we guess these values
     // (obtained empirically on some large projects)
@@ -280,12 +290,10 @@ abstract class MacroExpansionTaskBase(
                 }
                 sync.countDown()
             }
-            Unit
         }.exceptionally {
             // Handle exceptions that may be thrown by `handle` body
             sync.countDown()
             MACRO_LOG.error("Error during macro expansion", it)
-            Unit
         }
     }
 
@@ -314,16 +322,9 @@ abstract class MacroExpansionTaskBase(
 
     override val waitForSmartMode: Boolean
         get() = true
-
-    companion object {
-        /**
-         * Higher values leads to better throughput (overall expansion time), but worse latency (UI freezes)
-         */
-        private const val VFS_BATCH_SIZE = 200
-    }
 }
 
-class Extractable(val sf: SourceFile, private val workspaceOnly: Boolean, private val calls: List<RsMacroCall>?) {
+class Extractable(val sf: SourceFile, private val workspaceOnly: Boolean, private val calls: List<RsPossibleMacroCall>?) {
     fun extract(): List<Pipeline.Stage1ResolveAndExpand>? {
         return sf.extract(workspaceOnly, calls)
     }
@@ -334,7 +335,7 @@ object Pipeline {
 
     interface Stage1ResolveAndExpand {
         /** must be a pure function */
-        fun expand(project: Project, expander: MacroExpander): Stage2WriteToFs
+        fun expand(project: Project, expander: FunctionLikeMacroExpander): Stage2WriteToFs
     }
 
     interface Stage2WriteToFs {
@@ -353,7 +354,7 @@ object EmptyPipeline : Pipeline.Stage2WriteToFs, Pipeline.Stage3SaveToStorage {
 
 object InvalidationPipeline {
     class Stage1(val info: ExpandedMacroInfo) : Pipeline.Stage1ResolveAndExpand {
-        override fun expand(project: Project, expander: MacroExpander): Pipeline.Stage2WriteToFs = Stage2(info)
+        override fun expand(project: Project, expander: FunctionLikeMacroExpander): Pipeline.Stage2WriteToFs = Stage2(info)
     }
 
     class Stage2(val info: ExpandedMacroInfo) : Pipeline.Stage2WriteToFs {
@@ -378,7 +379,7 @@ class RemoveSourceFileIfEmptyPipeline(private val sf: SourceFile) : Pipeline.Sta
                                                                     Pipeline.Stage2WriteToFs,
                                                                     Pipeline.Stage3SaveToStorage {
 
-    override fun expand(project: Project, expander: MacroExpander): Pipeline.Stage2WriteToFs = this
+    override fun expand(project: Project, expander: FunctionLikeMacroExpander): Pipeline.Stage2WriteToFs = this
     override fun writeExpansionToFs(batch: MacroExpansionVfsBatch, stepNumber: Int): Pipeline.Stage3SaveToStorage = this
     override fun save(storage: ExpandedMacroStorage) {
         checkWriteAccessAllowed()
@@ -388,10 +389,10 @@ class RemoveSourceFileIfEmptyPipeline(private val sf: SourceFile) : Pipeline.Sta
 
 object ExpansionPipeline {
     class Stage1(
-        val call: RsMacroCall,
+        val call: RsPossibleMacroCall,
         val info: ExpandedMacroInfo
     ) : Pipeline.Stage1ResolveAndExpand {
-        override fun expand(project: Project, expander: MacroExpander): Pipeline.Stage2WriteToFs {
+        override fun expand(project: Project, expander: FunctionLikeMacroExpander): Pipeline.Stage2WriteToFs {
             checkReadAccessAllowed() // Needed to access PSI (including resolve & expansion)
             checkIsSmartMode(project) // Needed to resolve macros
             if (!call.isValid) {
@@ -402,7 +403,9 @@ object ExpansionPipeline {
 
             if (oldExpansionFile != null && !oldExpansionFile.isValid) throw CorruptedExpansionStorageException()
 
-            val def = RsMacroPathReferenceImpl.resolveInBatchMode { call.resolveToMacro() }
+            if (!call.isEnabledByCfg || call.shouldSkipMacroExpansion) return nextStageFail(callHash, null)
+
+            val def = RsMacroPathReferenceImpl.resolveInBatchMode { call.resolveToMacroWithoutPsi() }
                 ?: return if (oldExpansionFile == null) EmptyPipeline else nextStageFail(callHash, null)
 
             val defHash = def.bodyHash
@@ -411,14 +414,17 @@ object ExpansionPipeline {
                 return EmptyPipeline // old expansion is up-to-date
             }
 
-            val expansion = expander.expandMacroAsText(def, call)
+            val callData = RsMacroCallData.fromPsi(call)
+            val mixHash = def.mixHash(RsMacroCallDataWithHash(callData, call.bodyHash))
+                ?: return nextStageFail(callHash, defHash)
+            val expansion = MacroExpansionSharedCache.getInstance().cachedExpand(expander, def.data, callData, mixHash)
             if (expansion == null) {
-                MACRO_LOG.debug("Failed to expand macro: `${call.path.referenceName}!(${call.macroBody})`")
+                MACRO_LOG.debug("Failed to expand macro: `${call.path?.referenceName.orEmpty()}!(${call.macroBody})`")
                 return nextStageFail(callHash, defHash)
             }
 
-            val expansionBytes = expansion.first.toString().toByteArray()
-            val ranges = expansion.second
+            val expansionBytes = expansion.text.toByteArray()
+            val ranges = expansion.ranges
 
             val expansionBytesHash = VfsInternals.calculateContentHash(expansionBytes).getLeading64bits()
 
@@ -431,24 +437,25 @@ object ExpansionPipeline {
                 if (expansionBytes.contentEquals(oldExpansionBytes)) {
                     // Expansion text isn't changed, but [callHash] or [defHash] or [ranges]
                     // are changed and should be updated
-                    return Stage2OkRangesOnly(info, callHash, defHash, oldExpansionFile, ranges, expansionBytesHash)
+                    return Stage2OkRangesOnly(info, callHash, defHash, mixHash, oldExpansionFile, ranges, expansionBytesHash)
                 }
             }
 
-            return Stage2Ok(info, callHash, defHash, expansionBytes, ranges, expansionBytesHash)
+            return Stage2Ok(info, callHash, defHash, mixHash, expansionBytes, ranges, expansionBytesHash)
         }
 
         private fun nextStageFail(callHash: HashCode?, defHash: HashCode?): Pipeline.Stage2WriteToFs =
             Stage2Fail(info, callHash, defHash)
 
         override fun toString(): String =
-            "ExpansionPipeline.Stage1(call=${call.path.referenceName}!(${call.macroBody}))"
+            "ExpansionPipeline.Stage1(call=${call.path?.referenceName.orEmpty()}!(${call.macroBody}))"
     }
 
     class Stage2Ok(
         private val info: ExpandedMacroInfo,
         private val callHash: HashCode?,
         private val defHash: HashCode?,
+        private val mixHash: HashCode,
         private val expansionBytes: ByteArray,
         private val ranges: RangeMap,
         private val expansionBytesHash: Long
@@ -461,7 +468,7 @@ object ExpansionPipeline {
             } else {
                 batch.createFileWithContent(expansionBytes, stepNumber)
             }
-            return Stage3(info, callHash, defHash, file, ranges, expansionBytesHash)
+            return Stage3(info, callHash, defHash, mixHash, file, ranges, expansionBytesHash)
         }
     }
 
@@ -469,13 +476,14 @@ object ExpansionPipeline {
         private val info: ExpandedMacroInfo,
         private val callHash: HashCode?,
         private val defHash: HashCode?,
+        private val mixHash: HashCode,
         private val oldExpansionFile: VirtualFile,
         private val ranges: RangeMap,
         private val expansionBytesHash: Long
     ) : Pipeline.Stage2WriteToFs {
         override fun writeExpansionToFs(batch: MacroExpansionVfsBatch, stepNumber: Int): Pipeline.Stage3SaveToStorage {
             val file = batch.resolve(oldExpansionFile)
-            return Stage3(info, callHash, defHash, file, ranges, expansionBytesHash)
+            return Stage3(info, callHash, defHash, mixHash, file, ranges, expansionBytesHash)
         }
     }
 
@@ -489,7 +497,7 @@ object ExpansionPipeline {
             if (oldExpansionFile != null && oldExpansionFile.isValid) {
                 batch.deleteFile(oldExpansionFile)
             }
-            return Stage3(info, callHash, defHash, null, null, 0)
+            return Stage3(info, callHash, defHash, null, null, null, 0)
         }
     }
 
@@ -497,6 +505,7 @@ object ExpansionPipeline {
         private val info: ExpandedMacroInfo,
         private val callHash: HashCode?,
         private val defHash: HashCode?,
+        private val mixHash: HashCode?,
         private val expansionFile: MacroExpansionVfsBatch.Path?,
         private val ranges: RangeMap?,
         private val expansionBytesHash: Long
@@ -506,7 +515,7 @@ object ExpansionPipeline {
             val virtualFile = expansionFile?.toVirtualFile()
                 // Optimization: skip charset guessing in `VirtualFileImpl.contentToByteArray()`
                 ?.also { it.setCharset(Charsets.UTF_8, null, false) }
-            storage.addExpandedMacro(info, callHash, defHash, virtualFile, ranges, expansionBytesHash)
+            storage.addExpandedMacro(info, callHash, defHash, mixHash, virtualFile, ranges, expansionBytesHash)
             // If a document exists for expansion file (e.g. when AST tree is loaded), the changes in
             // a virtual file will not be committed to the PSI immediately. We have to commit it manually
             // to see the changes (or somehow wait for DocumentCommitThread, but it isn't possible for now)
@@ -520,10 +529,7 @@ object ExpansionPipeline {
     }
 }
 
-private class CorruptedExpansionStorageException: RuntimeException {
-    constructor(): super()
-    constructor(cause: Exception): super(cause)
+private class CorruptedExpansionStorageException : RuntimeException {
+    constructor() : super()
+    constructor(cause: Exception) : super(cause)
 }
-
-val RsMacroCall.isTopLevelExpansion: Boolean
-    get() = parent is RsMod || parent is RsMembers

@@ -15,23 +15,23 @@ import com.intellij.util.ProcessingContext
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.lang.core.psi.RsFile
 import org.rust.openapiext.toPsiFile
-import org.toml.lang.psi.TomlKey
+import org.toml.lang.psi.TomlKeySegment
 
 class CargoDependencyReferenceProvider : PsiReferenceProvider() {
 
     override fun getReferencesByElement(element: PsiElement, context: ProcessingContext): Array<PsiReference> {
-        if (element !is TomlKey) return emptyArray()
+        if (element !is TomlKeySegment) return emptyArray()
         return arrayOf(CargoDependencyReferenceImpl(element))
     }
 }
 
-private class CargoDependencyReferenceImpl(key: TomlKey) : PsiReferenceBase<TomlKey>(key) {
+private class CargoDependencyReferenceImpl(key: TomlKeySegment) : PsiReferenceBase<TomlKeySegment>(key) {
 
     override fun resolve(): PsiElement? {
         val project = element.project
         val file = element.containingFile?.virtualFile ?: return null
         val cargoProject = project.cargoProjects.findProjectForFile(file) ?: return null
-        val crateRoot = cargoProject.workspace?.findPackage(element.text)?.libTarget?.crateRoot ?: return null
+        val crateRoot = cargoProject.workspace?.findPackageByName(element.text)?.libTarget?.crateRoot ?: return null
         return crateRoot.toPsiFile(project) as? RsFile
     }
 

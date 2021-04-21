@@ -7,7 +7,7 @@ package org.rust.cargo
 
 import org.jetbrains.annotations.TestOnly
 
-class CfgOptions(
+data class CfgOptions(
     val keyValueOptions: Map<String, Set<String>>,
     val nameOptions: Set<String>
 ) {
@@ -16,6 +16,9 @@ class CfgOptions(
 
     fun isNameValueEnabled(name: String, value: String): Boolean =
         keyValueOptions[name]?.contains(value) ?: false
+
+    operator fun plus(other: CfgOptions): CfgOptions =
+        CfgOptions(keyValueOptions + other.keyValueOptions, nameOptions + other.nameOptions)
 
     companion object {
         fun parse(rawCfgOptions: List<String>): CfgOptions {
@@ -54,8 +57,5 @@ class CfgOptions(
 
             nameOptions = hashSetOf("debug_assertions", "unix")
         )
-
-        @TestOnly
-        const val TEST: String = "intellij_rust"
     }
 }

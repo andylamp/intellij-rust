@@ -6,6 +6,7 @@
 package org.rust.cargo.project.toolwindow
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.ui.treeStructure.SimpleTree
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.toolwindow.CargoProjectTreeStructure.CargoSimpleNode
@@ -13,6 +14,7 @@ import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.toolchain.CargoCommandLine
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.SwingUtilities
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeSelectionModel
 
@@ -32,7 +34,7 @@ class CargoProjectsTree : SimpleTree() {
         selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount < 2) return
+                if (e.clickCount < 2 || !SwingUtilities.isLeftMouseButton(e)) return
                 val tree = e.source as? CargoProjectsTree ?: return
                 val node = tree.selectionModel.selectionPath
                     ?.lastPathComponent as? DefaultMutableTreeNode ?: return
@@ -49,7 +51,7 @@ class CargoProjectsTree : SimpleTree() {
     }
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(CargoProjectsTree::class.java)
+        private val LOG: Logger = logger<CargoProjectsTree>()
     }
 }
 

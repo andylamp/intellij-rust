@@ -9,20 +9,25 @@ import com.intellij.patterns.PsiElementPattern
 import com.intellij.patterns.StandardPatterns
 import com.intellij.patterns.VirtualFilePattern
 import com.intellij.psi.PsiElement
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.CargoConstants
+import org.rust.lang.core.or
 import org.rust.lang.core.psiElement
 import org.rust.lang.core.with
 import org.toml.lang.psi.*
+import org.toml.lang.psi.ext.TomlLiteralKind
+import org.toml.lang.psi.ext.kind
+import org.toml.lang.psi.ext.name
 
 object CargoTomlPsiPattern {
     private const val TOML_KEY_CONTEXT_NAME = "key"
     private const val TOML_KEY_VALUE_CONTEXT_NAME = "keyValue"
+    private val PACKAGE_URL_ATTRIBUTES = setOf("homepage", "repository", "documentation")
 
     private inline fun <reified I : PsiElement> cargoTomlPsiElement(): PsiElementPattern.Capture<I> {
         return psiElement<I>().inVirtualFile(
             StandardPatterns.or(
-                VirtualFilePattern().withName(RustToolchain.CARGO_TOML),
-                VirtualFilePattern().withName(RustToolchain.XARGO_TOML)
+                VirtualFilePattern().withName(CargoConstants.MANIFEST_FILE),
+                VirtualFilePattern().withName(CargoConstants.XARGO_MANIFEST_FILE)
             )
         )
     }
@@ -37,7 +42,7 @@ object CargoTomlPsiPattern {
     /** Any element inside any TomlKey in Cargo.toml */
     val inKey: PsiElementPattern.Capture<PsiElement> =
         cargoTomlPsiElement<PsiElement>()
-            .withParent(TomlKey::class.java)
+            .withParent(TomlKeySegment::class.java)
 
     fun inValueWithKey(key: String): PsiElementPattern.Capture<PsiElement> {
         return cargoTomlPsiElement<PsiElement>().inside(tomlKeyValue(key))
@@ -60,10 +65,10 @@ object CargoTomlPsiPattern {
      *   ^
      * ```
      */
-    val onDependencyKey: PsiElementPattern.Capture<TomlKey> =
-        cargoTomlPsiElement<TomlKey>()
+    val onDependencyKey: PsiElementPattern.Capture<TomlKeySegment> =
+        cargoTomlPsiElement<TomlKeySegment>()
             .withSuperParent(
-                2,
+                3,
                 onDependencyTable
             )
 
@@ -72,8 +77,7 @@ object CargoTomlPsiPattern {
             .withChild(
                 psiElement<TomlTableHeader>()
                     .with("specificDependencyCondition") { header, _ ->
-                        val names = header.names
-                        names.getOrNull(names.size - 2)?.isDependencyKey == true
+                        header.isSpecificDependencyTableHeader
                     }
             )
 
@@ -83,13 +87,14 @@ object CargoTomlPsiPattern {
      *                 ^
      * ```
      */
-    val onSpecificDependencyHeaderKey: PsiElementPattern.Capture<TomlKey> =
-        cargoTomlPsiElement<TomlKey>(TOML_KEY_CONTEXT_NAME)
-            .withParent(
+    val onSpecificDependencyHeaderKey: PsiElementPattern.Capture<TomlKeySegment> =
+        cargoTomlPsiElement<TomlKeySegment>(TOML_KEY_CONTEXT_NAME)
+            .withSuperParent(
+                2,
                 psiElement<TomlTableHeader>()
                     .with("specificDependencyCondition") { header, context ->
                         val key = context?.get(TOML_KEY_CONTEXT_NAME) ?: return@with false
-                        val names = header.names
+                        val names = header.key?.segments.orEmpty()
                         names.getOrNull(names.size - 2)?.isDependencyKey == true && names.lastOrNull() == key
                     }
             )
@@ -187,7 +192,7 @@ object CargoTomlPsiPattern {
      *             #^
      * ```
      */
-    val path: PsiElementPattern.Capture<TomlLiteral> = cargoTomlPsiElement<TomlLiteral>()
+    val path: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral()
         .withParent(tomlKeyValue("path"))
 
     /**
@@ -197,9 +202,105 @@ object CargoTomlPsiPattern {
      *           #^
      * ```
      */
-    val buildPath: PsiElementPattern.Capture<TomlLiteral> = cargoTomlPsiElement<TomlLiteral>().withParent(
+    val buildPath: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral().withParent(
         tomlKeyValue("build").withParent(tomlTable("package"))
     )
+
+    /**
+     * ```
+     * [features]
+     * foo = []
+     *      #^
+     * ```
+     */
+    private val onFeatureDependencyArray: PsiElementPattern.Capture<TomlArray> = psiElement<TomlArray>()
+        .withSuperParent(1, psiElement<TomlKeyValue>())
+        .withSuperParent(2, tomlTable("features"))
+
+    val inFeatureDependencyArray: PsiElementPattern.Capture<PsiElement> = cargoTomlPsiElement<PsiElement>()
+        .inside(onFeatureDependencyArray)
+
+    /**
+     * ```
+     * [features]
+     * foo = []
+     * bar = [ "foo" ]
+     *         #^
+     * ```
+     */
+    val onFeatureDependencyLiteral: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral()
+        .withParent(onFeatureDependencyArray)
+
+
+    /**
+     * ```
+     * [dependencies]
+     * foo = { bar = [] }
+     *         #^
+     * ```
+     *
+     * ```
+     * [dependencies.foo]
+     * bar = []
+     * #^
+     * ```
+     */
+    fun dependencyProperty(name: String): PsiElementPattern.Capture<TomlKeyValue> = psiElement<TomlKeyValue>()
+        .with("name") { e, _ -> e.key.name == name }
+        .withParent(
+            psiElement<TomlInlineTable>().withSuperParent(2, onDependencyTable)
+                or onSpecificDependencyTable
+        )
+
+    /**
+     * ```
+     * [dependencies]
+     * foo = { version = "*", features = [] }
+     *                                  #^
+     * ```
+     *
+     * ```
+     * [dependencies.foo]
+     * features = []
+     *           #^
+     * ```
+     */
+    private val onDependencyPackageFeatureArray = psiElement<TomlArray>()
+        .withParent(dependencyProperty("features"))
+
+    val inDependencyPackageFeatureArray: PsiElementPattern.Capture<PsiElement> = cargoTomlPsiElement<PsiElement>()
+        .inside(onDependencyPackageFeatureArray)
+
+    /**
+     * ```
+     * [dependencies]
+     * foo = { version = "*", features = ["bar"] }
+     *                                    #^
+     * ```
+     *
+     * ```
+     * [dependencies.foo]
+     * features = ["bar"]
+     *             #^
+     * ```
+     */
+    val onDependencyPackageFeature: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral()
+        .withParent(
+            onDependencyPackageFeatureArray
+        )
+
+    val dependencyGitUrl: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral()
+        .withParent(dependencyProperty("git"))
+
+    val packageUrl: PsiElementPattern.Capture<TomlLiteral> = cargoTomlStringLiteral()
+        .withParent(
+            psiElement<TomlKeyValue>()
+                .withParent(tomlTable("package"))
+                .with("name") { e, _ -> e.key.name in PACKAGE_URL_ATTRIBUTES }
+        )
+
+    private fun cargoTomlStringLiteral() = cargoTomlPsiElement<TomlLiteral>()
+        .with("stringLiteral") { e, _ -> e.kind is TomlLiteralKind.String }
 
     private fun tomlKeyValue(key: String): PsiElementPattern.Capture<TomlKeyValue> =
         psiElement<TomlKeyValue>().withChild(
@@ -208,7 +309,7 @@ object CargoTomlPsiPattern {
 
     private fun tomlTable(key: String): PsiElementPattern.Capture<TomlTable> {
         return psiElement<TomlTable>().with("WithName ($key)") { e ->
-            val names = e.header.names
+            val names = e.header.key?.segments.orEmpty()
             names.singleOrNull()?.textMatches(key) == true
         }
     }

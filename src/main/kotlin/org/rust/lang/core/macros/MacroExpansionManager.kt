@@ -5,6 +5,7 @@
 
 package org.rust.lang.core.macros
 
+import com.google.common.annotations.VisibleForTesting
 import com.intellij.codeInsight.template.TemplateManager
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.*
@@ -17,7 +18,6 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ContentIterator
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.util.*
 import com.intellij.openapi.util.io.BufferExposingByteArrayOutputStream
@@ -31,8 +31,6 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.GlobalSearchScopes
 import com.intellij.psi.util.CachedValueProvider
-import com.intellij.util.indexing.FileBasedIndex
-import com.intellij.util.indexing.IndexableFileSet
 import com.intellij.util.io.DataOutputStream
 import com.intellij.util.io.createDirectories
 import com.intellij.util.io.delete
@@ -44,6 +42,7 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.RsTask
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.rustSettings
@@ -52,9 +51,12 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsPsiTreeChangeEvent.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.indexes.RsMacroCallIndex
+import org.rust.lang.core.resolve2.defMapService
+import org.rust.lang.core.resolve2.resolveToMacroWithoutPsi
 import org.rust.openapiext.*
 import org.rust.stdext.*
 import org.rust.taskQueue
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -66,10 +68,10 @@ import kotlin.system.measureTimeMillis
 
 interface MacroExpansionManager {
     val indexableDirectory: VirtualFile?
-    fun getExpansionFor(call: RsMacroCall): CachedValueProvider.Result<MacroExpansion?>
-    fun getExpandedFrom(element: RsExpandedElement): RsMacroCall?
+    fun getExpansionFor(call: RsPossibleMacroCall): CachedValueProvider.Result<MacroExpansion?>
+    fun getExpandedFrom(element: RsExpandedElement): RsPossibleMacroCall?
     /** Optimized equivalent for `getExpandedFrom(element)?.context` */
-    fun getContextOfMacroCallExpandedFrom(element: RsExpandedElement, stubParent: PsiElement?): PsiElement?
+    fun getContextOfMacroCallExpandedFrom(stubParent: RsFile): PsiElement?
     fun isExpansionFileOfCurrentProject(file: VirtualFile): Boolean
     fun reexpand()
 
@@ -97,6 +99,17 @@ interface MacroExpansionManager {
                 Files.createFile(this)
             }
         }
+
+        @Synchronized
+        fun checkInvalidatedStorage() {
+            if (getCorruptionMarkerFile().exists()) {
+                try {
+                    getBaseMacroDir().cleanDirectory()
+                } catch (e: IOException) {
+                    MACRO_LOG.warn(e)
+                }
+            }
+        }
     }
 }
 
@@ -113,13 +126,15 @@ inline fun <T> MacroExpansionManager.withExpansionState(
     }
 }
 
-val MACRO_LOG = Logger.getInstance("org.rust.macros")
+@JvmField
+val MACRO_LOG: Logger = Logger.getInstance("org.rust.macros")
+
 // The path is visible in indexation progress
 const val MACRO_EXPANSION_VFS_ROOT = "rust_expanded_macros"
 private const val CORRUPTION_MARKER_NAME = "corruption.marker"
 
 fun getBaseMacroDir(): Path =
-    pluginDirInSystem().resolve("macros")
+    RsPathManager.pluginDirInSystem().resolve("macros")
 
 private fun getCorruptionMarkerFile(): Path =
     getBaseMacroDir().resolve(CORRUPTION_MARKER_NAME)
@@ -192,12 +207,12 @@ class MacroExpansionManagerImpl(
     override val indexableDirectory: VirtualFile?
         get() = inner?.expansionsDirVi
 
-    override fun getExpansionFor(call: RsMacroCall): CachedValueProvider.Result<MacroExpansion?> {
+    override fun getExpansionFor(call: RsPossibleMacroCall): CachedValueProvider.Result<MacroExpansion?> {
         val impl = inner
         return when {
-            call.macroName == "include" -> expandIncludeMacroCall(call)
+            call is RsMacroCall && call.macroName == "include" -> expandIncludeMacroCall(call)
             impl != null -> impl.getExpansionFor(call)
-            isUnitTestMode -> expandMacroOld(call)
+            isUnitTestMode && call is RsMacroCall -> expandMacroOld(call)
             else -> CachedValueProvider.Result.create(null, project.rustStructureModificationTracker)
         }
     }
@@ -211,7 +226,7 @@ class MacroExpansionManagerImpl(
         return CachedValueProvider.Result.create(expansion, call.rustStructureOrAnyPsiModificationTracker)
     }
 
-    override fun getExpandedFrom(element: RsExpandedElement): RsMacroCall? {
+    override fun getExpandedFrom(element: RsExpandedElement): RsPossibleMacroCall? {
         // For in-memory expansions
         element.getUserData(RS_EXPANSION_MACRO_CALL)?.let { return it }
 
@@ -223,13 +238,10 @@ class MacroExpansionManagerImpl(
         }
     }
 
-    override fun getContextOfMacroCallExpandedFrom(element: RsExpandedElement, stubParent: PsiElement?): PsiElement? {
-        // For in-memory expansions
-        element.getUserData(RS_EXPANSION_MACRO_CALL)?.let { return it.context }
-
+    override fun getContextOfMacroCallExpandedFrom(stubParent: RsFile): PsiElement? {
         val inner = inner
         return if (inner != null && inner.isExpansionModeNew) {
-            inner.getContextOfMacroCallExpandedFrom(element, stubParent)
+            inner.getContextOfMacroCallExpandedFrom(stubParent)
         } else {
             null
         }
@@ -260,10 +272,10 @@ class MacroExpansionManagerImpl(
         impl.macroExpansionMode = mode
         val saveCacheOnDispose = cacheDirectory.isNotEmpty()
         val disposable = impl.setupForUnitTests(saveCacheOnDispose)
-        Disposer.register(disposable, Disposable {
+        Disposer.register(disposable) {
             this.inner = null
             this.dirs = null
-        })
+        }
         return disposable
     }
 
@@ -307,7 +319,7 @@ private class MacroExpansionServiceBuilder private constructor(
     private val dirs: Dirs,
     private val serStorage: SerializedExpandedMacroStorage?,
     private val expansionsDirVi: VirtualFile
-){
+) {
     fun buildInReadAction(project: Project): MacroExpansionServiceImplInner {
         val storage = serStorage?.deserializeInReadAction(project) ?: ExpandedMacroStorage(project)
         return MacroExpansionServiceImplInner(project, dirs, storage, expansionsDirVi)
@@ -316,7 +328,7 @@ private class MacroExpansionServiceBuilder private constructor(
     companion object {
         fun prepare(dirs: Dirs): MacroExpansionServiceBuilder {
             val dataFile = dirs.dataFile
-            checkInvalidatedStorage()
+            MacroExpansionManager.checkInvalidatedStorage()
             MacroExpansionFileSystemRootsLoader.loadProjectDirs()
             val loaded = load(dataFile)
 
@@ -341,7 +353,8 @@ private class MacroExpansionServiceBuilder private constructor(
             return try {
                 dataFile.newInflaterDataInputStream().use { data ->
                     val sems = SerializedExpandedMacroStorage.load(data) ?: return null
-                    val fs = MacroExpansionFileSystem.readFSItem(data, null) as? MacroExpansionFileSystem.FSItem.FSDir ?: return null
+                    val fs = MacroExpansionFileSystem.readFSItem(data, null) as? MacroExpansionFileSystem.FSItem.FSDir
+                        ?: return null
                     sems to fs
                 }
             } catch (e: java.nio.file.NoSuchFileException) {
@@ -349,12 +362,6 @@ private class MacroExpansionServiceBuilder private constructor(
             } catch (e: Exception) {
                 MACRO_LOG.warn(e)
                 null
-            }
-        }
-
-        private fun checkInvalidatedStorage() {
-            if (getCorruptionMarkerFile().exists()) {
-                getBaseMacroDir().cleanDirectory()
             }
         }
     }
@@ -444,11 +451,12 @@ private class MacroExpansionServiceImplInner(
     suspend fun save() {
         if (lastSavedStorageModCount == storage.modificationTracker.modificationCount) return
 
+        @Suppress("BlockingMethodInNonBlockingContext")
         withContext(Dispatchers.IO) { // ensure dispatcher knows we are doing blocking IO
             // Using a buffer to avoid IO in the read action
             // BACKCOMPAT: 2020.1 use async read action and extract `runReadAction` from `withContext`
             val (buffer, modCount) = runReadAction {
-                val buffer = BufferExposingByteArrayOutputStream(1024*1024) // average stdlib storage size
+                val buffer = BufferExposingByteArrayOutputStream(1024 * 1024) // average stdlib storage size
                 DataOutputStream(buffer).use { data ->
                     ExpandedMacroStorage.saveStorage(storage, data)
                     val dirToSave = MacroExpansionFileSystem.getInstance().getDirectory(dirs.expansionDirPath) ?: run {
@@ -509,7 +517,7 @@ private class MacroExpansionServiceImplInner(
         performConsistencyCheckBeforeTask = false
         submitTask(object : Task.Backgroundable(project, "Cleaning outdated macros", false), RsTask {
             override fun run(indicator: ProgressIndicator) {
-                checkReadAccessNotAllowed()
+                if (!isUnitTestMode) checkReadAccessNotAllowed()
                 val vfs = MacroExpansionFileSystem.getInstance()
                 vfs.cleanDirectoryIfExists(dirs.expansionDirPath)
                 vfs.createDirectoryIfNotExistsOrDummy(dirs.expansionDirPath)
@@ -522,6 +530,9 @@ private class MacroExpansionServiceImplInner(
                     }
                 }
             }
+
+            override val runSyncInUnitTests: Boolean
+                get() = true
 
             override val taskType: RsTask.TaskType
                 get() = RsTask.TaskType.MACROS_CLEAR
@@ -551,12 +562,12 @@ private class MacroExpansionServiceImplInner(
             private fun findAndDeleteLeakedExpansionFiles() {
                 val toDelete = mutableListOf<VirtualFile>()
                 runReadAction {
-                    VfsUtil.iterateChildrenRecursively(expansionsDirVi, null, ContentIterator { file ->
+                    VfsUtil.iterateChildrenRecursively(expansionsDirVi, null) { file ->
                         if (!file.isValidExpansionFile()) {
                             toDelete += file
                         }
                         true
-                    })
+                    }
                 }
                 if (toDelete.isNotEmpty()) {
                     val batch = VfsBatch()
@@ -650,17 +661,10 @@ private class MacroExpansionServiceImplInner(
         PsiManager.getInstance(project).addPsiTreeChangeListener(treeChangeListener, disposable)
         ApplicationManager.getApplication().addApplicationListener(treeChangeListener, disposable)
 
-        // BACKCOMPAT: 2020.1
-        if (ApplicationInfo.getInstance().build < BUILD_202) {
-            registerIndexableSet(disposable)
-        }
-
         val connect = project.messageBus.connect(disposable)
 
-        connect.subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-            override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                settingsChanged()
-            }
+        connect.subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+            settingsChanged()
         })
 
         connect.subscribe(RustProjectSettingsService.RUST_SETTINGS_TOPIC, object : RustProjectSettingsService.RustSettingsListener {
@@ -674,40 +678,6 @@ private class MacroExpansionServiceImplInner(
         })
 
         project.rustPsiManager.subscribeRustPsiChange(connect, treeChangeListener)
-    }
-
-    /**
-     * Work together with [RsIndexableSetContributor]. Really looks
-     * like a platform bug that [RsIndexableSetContributor] is not enough.
-     */
-    // BACKCOMPAT: 2020.1
-    private fun registerIndexableSet(disposable: Disposable) {
-        FileBasedIndex.getInstance().registerIndexableSet(object : IndexableFileSet {
-            override fun isInSet(file: VirtualFile): Boolean =
-                isExpansionFileOfCurrentProject(file)
-
-            override fun iterateIndexableFilesIn(file: VirtualFile, iterator: ContentIterator) {
-                VfsUtilCore.visitChildrenRecursively(file, object : VirtualFileVisitor<Any>() {
-                    override fun visitFile(file: VirtualFile): Boolean {
-                        if (!isInSet(file)) {
-                            return false
-                        }
-
-                        if (!file.isDirectory) {
-                            iterator.processFile(file)
-                        }
-
-                        return true
-                    }
-                })
-            }
-        }, disposable)
-    }
-
-    // BACKCOMPAT: 2020.1
-    private fun FileBasedIndex.registerIndexableSet(indexableSet: IndexableFileSet, disposable: Disposable) {
-        registerIndexableSet(indexableSet, project)
-        Disposer.register(disposable, Disposable { removeIndexableSet(indexableSet) })
     }
 
     // Previous plugin versions stored expansion to this directory
@@ -761,7 +731,10 @@ private class MacroExpansionServiceImplInner(
                 else -> return
             }
 
-            val macroCalls = element.descendantsOfTypeOrSelf<RsMacroCall>()
+            // Handle attribute rename `#[foo]` -> `#[bar]`
+            val parentOrSelf = element.ancestorOrSelf<RsMetaItem>() ?: element
+
+            val macroCalls = parentOrSelf.descendantsOfTypeOrSelf<RsPossibleMacroCall>()
             if (macroCalls.isNotEmpty()) {
                 val sf = storage.getOrCreateSourceFile(virtualFile) ?: return
                 sf.newMacroCallsAdded(macroCalls)
@@ -774,11 +747,13 @@ private class MacroExpansionServiceImplInner(
         override fun rustPsiChanged(file: PsiFile, element: PsiElement, isStructureModification: Boolean) {
             if (!isExpansionModeNew) return
             val shouldScheduleUpdate =
-                (isStructureModification || element.ancestorOrSelf<RsMacroCall>()?.isTopLevelExpansion == true) &&
+                (isStructureModification || element.ancestorOrSelf<RsPossibleMacroCall>()?.isTopLevelExpansion == true
+                    || RsProcMacroPsiUtil.canBeInProcMacroCallBody(element)) &&
                     file.virtualFile?.let { MacroExpansionManager.isExpansionFile(it) } == false
             if (shouldScheduleUpdate && file is RsFile) {
                 val isWorkspace = file.isWorkspaceMember()
                 scheduleChangedMacrosUpdate(isWorkspace)
+                project.defMapService.onFileChanged(file)
             }
         }
 
@@ -875,7 +850,7 @@ private class MacroExpansionServiceImplInner(
         // Fixes inplace rename when the renamed element is referenced from a macro call body
         if (isTemplateActiveInAnyEditor()) return
 
-        class ProcessModifiedMacrosTask(private val workspaceOnly: Boolean) : MacroExpansionTaskBase(
+        class ProcessModifiedMacrosTask : MacroExpansionTaskBase(
             project,
             storage,
             pool,
@@ -893,7 +868,7 @@ private class MacroExpansionServiceImplInner(
             override val progressBarShowDelay: Int get() = 2000
         }
 
-        val task = ProcessModifiedMacrosTask(workspaceOnly)
+        val task = ProcessModifiedMacrosTask()
 
         submitTask(task)
     }
@@ -907,12 +882,12 @@ private class MacroExpansionServiceImplInner(
         return false
     }
 
-    fun getExpansionFor(call: RsMacroCall): CachedValueProvider.Result<MacroExpansion?> {
-        checkReadAccessAllowed()
+    fun getExpansionFor(call: RsPossibleMacroCall): CachedValueProvider.Result<MacroExpansion?> {
         val expansionState = expansionState
 
         if (expansionMode == MacroExpansionMode.OLD) {
             if (expansionState != null) return nullResult()
+            if (call !is RsMacroCall) return nullResult()
             return expandMacroOld(call)
         }
 
@@ -920,6 +895,7 @@ private class MacroExpansionServiceImplInner(
 
         if (!call.isTopLevelExpansion || containingFile?.fileSystem?.isSupportedFs != true) {
             if (expansionState != null) return nullResult()
+            if (call !is RsMacroCall) return nullResult()
             return expandMacroToMemoryFile(call, storeRangeMap = true)
         }
 
@@ -929,13 +905,17 @@ private class MacroExpansionServiceImplInner(
         }
 
         val expansion = storage.getInfoForCall(call)?.getExpansion()
-        return CachedValueProvider.Result.create(expansion, storage.modificationTracker, call.modificationTracker)
+        return if (call is RsMacroCall) {
+            CachedValueProvider.Result.create(expansion, storage.modificationTracker, call.modificationTracker)
+        } else {
+            CachedValueProvider.Result.create(expansion, call.rustStructureOrAnyPsiModificationTracker)
+        }
     }
 
     private fun nullResult(): CachedValueProvider.Result<MacroExpansion?> =
         CachedValueProvider.Result.create(null, ModificationTracker.EVER_CHANGED)
 
-    fun getExpandedFrom(element: RsExpandedElement): RsMacroCall? {
+    fun getExpandedFrom(element: RsExpandedElement): RsPossibleMacroCall? {
         checkReadAccessAllowed()
         val parent = element.stubParent
         if (parent is RsFile) {
@@ -949,9 +929,9 @@ private class MacroExpansionServiceImplInner(
     }
 
     /** Optimized equivalent for `getExpandedFrom(element)?.context` */
-    fun getContextOfMacroCallExpandedFrom(element: RsExpandedElement, stubParent: PsiElement?): PsiElement? {
+    fun getContextOfMacroCallExpandedFrom(stubParent: RsFile): PsiElement? {
         checkReadAccessAllowed()
-        var parentVirtualFile = (stubParent as? RsFile)?.virtualFile ?: return null
+        var parentVirtualFile = stubParent.virtualFile ?: return null
         if (parentVirtualFile !is VirtualFileWithId) return null
         while (true) {
             val info = storage.getInfoForExpandedFile(parentVirtualFile) ?: return null
@@ -1012,6 +992,14 @@ private class MacroExpansionServiceImplInner(
 
         project.taskQueue.cancelTasks(RsTask.TaskType.MACROS_CLEAR)
 
+        val taskQueue = project.taskQueue
+        if (!taskQueue.isEmpty) {
+            while (!taskQueue.isEmpty && !project.isDisposed) {
+                LaterInvocator.dispatchPendingFlushes()
+                Thread.sleep(10)
+            }
+        }
+
         if (saveCacheOnDispose) {
             runBlocking {
                 save()
@@ -1020,9 +1008,10 @@ private class MacroExpansionServiceImplInner(
             dirs.dataFile.delete()
         }
 
-        releaseExpansionDirectory()
         pool.shutdownNow()
         pool.awaitTermination(5, TimeUnit.SECONDS)
+
+        releaseExpansionDirectory()
     }
 }
 
@@ -1031,7 +1020,7 @@ private class MacroExpansionServiceImplInner(
  * [MacroExpansionManager] should be loaded in order to add expansion directory to the index via
  * [RsIndexableSetContributor]
  */
-class MacroExpansionManagerWaker : CargoProjectsService.CargoProjectsListener {
+class MacroExpansionManagerWaker : CargoProjectsListener {
     override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
         if (projects.isNotEmpty()) {
             service.project.macroExpansionManager
@@ -1053,14 +1042,15 @@ private fun expandMacroOld(call: RsMacroCall): CachedValueProvider.Result<MacroE
 
 private fun expandMacroToMemoryFile(call: RsMacroCall, storeRangeMap: Boolean): CachedValueProvider.Result<MacroExpansion?> {
     val context = call.context as? RsElement ?: return nullExpansionResult(call)
-    val def = call.resolveToMacro() ?: return nullExpansionResult(call)
+    val def = call.resolveToMacroWithoutPsi() ?: return nullExpansionResult(call)
+    val defData = def.data
     val project = call.project
-    val result = MacroExpander(project).expandMacro(
-        def,
+    val result = FunctionLikeMacroExpander.new(project).expandMacro(
+        defData,
         call,
         RsPsiFactory(project, markGenerated = false),
         storeRangeMap
-    )
+    ).ok()
     result?.elements?.forEach {
         it.setContext(context)
         it.setExpandedFrom(call)
@@ -1078,7 +1068,8 @@ private fun nullExpansionResult(call: RsMacroCall): CachedValueProvider.Result<M
 
 private val RS_EXPANSION_MACRO_CALL = Key.create<RsMacroCall>("org.rust.lang.core.psi.RS_EXPANSION_MACRO_CALL")
 
-private fun RsExpandedElement.setExpandedFrom(call: RsMacroCall) {
+@VisibleForTesting
+fun RsExpandedElement.setExpandedFrom(call: RsMacroCall) {
     putUserData(RS_EXPANSION_MACRO_CALL, call)
 }
 
@@ -1095,9 +1086,14 @@ sealed class MacroExpansionMode {
     data class New(val scope: MacroExpansionScope) : MacroExpansionMode()
 
     companion object {
-        val DISABLED = MacroExpansionMode.Disabled
-        val OLD = MacroExpansionMode.Old
-        val NEW_ALL = New(MacroExpansionScope.ALL)
+        @JvmField
+        val DISABLED: Disabled = Disabled
+
+        @JvmField
+        val OLD: Old = Old
+
+        @JvmField
+        val NEW_ALL: New = New(MacroExpansionScope.ALL)
     }
 }
 

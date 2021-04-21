@@ -12,6 +12,11 @@ import org.rust.lang.core.types.BoundElement
 interface RsPathReference : RsReference {
     override fun getElement(): RsPath
 
+    @Suppress("unused")
+    fun resolveIfVisible(): RsElement? = multiResolveIfVisible().singleOrNull()
+
+    fun multiResolveIfVisible(): List<RsElement> = multiResolve()
+
     fun advancedResolve(): BoundElement<RsElement>? =
         resolve()?.let { BoundElement(it) }
 }

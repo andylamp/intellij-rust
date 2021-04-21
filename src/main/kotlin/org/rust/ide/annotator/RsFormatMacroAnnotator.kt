@@ -20,7 +20,6 @@ import org.rust.lang.core.macros.MacroExpansionMode
 import org.rust.lang.core.macros.macroExpansionManager
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.containingCrate
-import org.rust.lang.core.psi.ext.macroName
 import org.rust.lang.core.psi.ext.startOffset
 import org.rust.lang.core.psi.ext.withSubst
 import org.rust.lang.core.resolve.KnownItems
@@ -39,10 +38,7 @@ class RsFormatMacroAnnotator : AnnotatorBase() {
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
         val formatMacro = element as? RsMacroCall ?: return
 
-        val macroPos = macroToFormatPos(formatMacro.macroName) ?: return
-        val macroArgs = formatMacro.formatMacroArgument?.formatMacroArgList ?: return
-        val macro = formatMacro.path.reference?.resolve() as? RsMacro ?: return
-        if (macro.containingCrate?.origin != PackageOrigin.STDLIB) return
+        val (macroPos, macroArgs) = getFormatMacroCtx(formatMacro) ?: return
 
         val formatStr = macroArgs
             .getOrNull(macroPos)
@@ -119,6 +115,7 @@ private sealed class FormatParameter(val matchInfo: ParameterMatchInfo, val look
         : FormatParameter(matchInfo, lookup)
 }
 
+@Suppress("unused")
 private enum class FormatTraitType(
     private val resolver: (KnownItems) -> RsTraitItem?,
     vararg val names: String
@@ -158,7 +155,7 @@ private data class FormatContext(
         Pair(it, lookup)
     }.toSet()
 
-    val namedArguments: Map<String, RsFormatMacroArg> = arguments.filter { it.name() != null }.map { it.name()!! to it }.toMap()
+    val namedArguments: Map<String, RsFormatMacroArg> = arguments.mapNotNull { it.name()?.to(it) }.toMap()
 
     val knownItems: KnownItems = macro.knownItems
 }
@@ -171,7 +168,7 @@ private data class ParsedParameter(
     val range: IntRange = completeMatch.range
 }
 
-private data class ParseContext(val sourceMap: IntArray, val offset: Int, val parameters: List<ParsedParameter>) {
+private class ParseContext(val sourceMap: IntArray, val offset: Int, val parameters: List<ParsedParameter>) {
     fun toSourceRange(range: IntRange, additionalOffset: Int = 0): TextRange =
         TextRange(sourceMap[range.first + additionalOffset], sourceMap[range.last + additionalOffset] + 1)
             .shiftRight(offset)
@@ -493,18 +490,40 @@ private fun checkArguments(ctx: FormatContext): List<ErrorAnnotation> {
     return errors
 }
 
-// TODO: handle log, tracing
-private fun macroToFormatPos(macro: String): Int? = when (macro) {
-    "println",
-    "print",
-    "eprintln",
-    "eprint",
-    "format",
-    "format_args",
-    "format_args_nl" -> 0
-    "write",
-    "writeln" -> 1
-    else -> null
+private fun getFormatMacroCtx(formatMacro: RsMacroCall): Pair<Int, List<RsFormatMacroArg>>? {
+    val macro = formatMacro.path.reference?.resolve() as? RsMacro ?: return null
+    val macroName = macro.name ?: return null
+
+    val crate = macro.containingCrate ?: return null
+    val formatMacroArgs = formatMacro.formatMacroArgument?.formatMacroArgList
+    val logMacroArgs = formatMacro.logMacroArgument?.formatMacroArgList
+
+    val (macroPos, macroArgs) = when {
+        crate.origin == PackageOrigin.STDLIB && formatMacroArgs != null -> {
+            val position = when (macroName) {
+                "println",
+                "print",
+                "eprintln",
+                "eprint",
+                "format",
+                "format_args",
+                "format_args_nl" -> 0
+                // panic macro handle any literal (even with `{}`) if it's single argument
+                "panic" -> if (formatMacroArgs.size < 2) null else 0
+                "write",
+                "writeln" -> 1
+                else -> null
+            } ?: return null
+            Pair(position, formatMacroArgs)
+        }
+        crate.normName == "log" && logMacroArgs != null -> {
+            val index = if (macroName == "log") 1 else 0
+            Pair(index, logMacroArgs)
+        }
+        else -> return null
+    }
+
+    return Pair(macroPos, macroArgs)
 }
 
 private fun RsFormatMacroArg.name(): String? = this.identifier?.text

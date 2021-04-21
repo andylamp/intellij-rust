@@ -6,7 +6,6 @@
 package org.rust.lang.core.types.infer
 
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Computable
 import com.intellij.openapiext.Testmark
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.util.CachedValueProvider
@@ -31,7 +30,7 @@ fun inferTypesIn(element: RsInferenceContextOwner): RsInferenceResult {
     val items = element.knownItems
     val paramEnv = if (element is RsGenericDeclaration) ParamEnv.buildFor(element) else ParamEnv.EMPTY
     val lookup = ImplLookup(element.project, element.cargoProject, items, paramEnv)
-    return recursionGuard(element, Computable { lookup.ctx.infer(element) }, memoize = false)
+    return recursionGuard(element, { lookup.ctx.infer(element) }, memoize = false)
         ?: error("Can not run nested type inference")
 }
 
@@ -67,8 +66,8 @@ interface RsInferenceData {
  */
 class RsInferenceResult(
     val exprTypes: Map<RsExpr, Ty>,
-    val patTypes: MutableMap<RsPat, Ty>,
-    val patFieldTypes: MutableMap<RsPatField, Ty>,
+    val patTypes: Map<RsPat, Ty>,
+    val patFieldTypes: Map<RsPatField, Ty>,
     private val expectedExprTypes: Map<RsExpr, Ty>,
     private val resolvedPaths: Map<RsPathExpr, List<ResolvedPath>>,
     private val resolvedMethods: Map<RsMethodCall, List<MethodResolveVariant>>,
@@ -203,8 +202,10 @@ class RsInferenceContext(
                         }
                         null to element.expr
                     }
-                    else -> error("Type inference is not implemented for PSI element of type " +
-                        "`${element.javaClass}` that implement `RsInferenceContextOwner`")
+                    else -> error(
+                        "Type inference is not implemented for PSI element of type " +
+                            "`${element.javaClass}` that implement `RsInferenceContextOwner`"
+                    )
                 }
                 if (expr != null) {
                     RsTypeInferenceWalker(this, retTy ?: TyUnknown).inferLambdaBody(expr)
@@ -340,7 +341,7 @@ class RsInferenceContext(
         pathRefinements.add(Pair(path, traitRef))
     }
 
-    fun registerMethodRefinement(path: RsMethodCall, traitRef: TraitRef) {
+    private fun registerMethodRefinement(path: RsMethodCall, traitRef: TraitRef) {
         methodRefinements.add(Pair(path, traitRef))
     }
 
@@ -602,7 +603,7 @@ class RsInferenceContext(
      * Similar to [fullyResolve], but replaces unresolved [TyInfer.TyVar] to its [TyInfer.TyVar.origin]
      * instead of [TyUnknown]
      */
-    fun <T : TypeFoldable<T>> fullyResolveWithOrigins(value: T): T {
+    private fun <T : TypeFoldable<T>> fullyResolveWithOrigins(value: T): T {
         return value.foldWith(fullTypeWithOriginsResolver)
     }
 
@@ -967,7 +968,7 @@ fun <T> TyWithObligations<T>.withObligations(addObligations: List<Obligation>) =
 sealed class ResolvedPath {
     abstract val element: RsElement
 
-    class Item(override val element: RsElement) : ResolvedPath()
+    class Item(override val element: RsElement, val isVisible: Boolean) : ResolvedPath()
 
     class AssocItem(
         override val element: RsAbstractable,
@@ -975,11 +976,14 @@ sealed class ResolvedPath {
     ) : ResolvedPath()
 
     companion object {
-        fun from(entry: ScopeEntry): ResolvedPath? {
+        fun from(entry: ScopeEntry, context: RsElement): ResolvedPath? {
             return if (entry is AssocItemScopeEntry) {
                 AssocItem(entry.element, entry.source)
             } else {
-                entry.element?.let { Item(it) }
+                entry.element?.let {
+                    val isVisible = entry.isVisibleFrom(context.containingMod)
+                    Item(it, isVisible)
+                }
             }
         }
 

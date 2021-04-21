@@ -60,7 +60,7 @@ class RsInlayTypeHintsProvider : InlayHintsProvider<RsInlayTypeHintsProvider.Set
 
     override fun createSettings(): Settings = Settings()
 
-    override fun getCollectorFor(file: PsiFile, editor: Editor, settings: Settings, sink: InlayHintsSink): InlayHintsCollector? =
+    override fun getCollectorFor(file: PsiFile, editor: Editor, settings: Settings, sink: InlayHintsSink): InlayHintsCollector =
         object : FactoryInlayHintsCollector(editor) {
 
             val typeHintsFactory = RsTypeHintsPresentationFactory(factory, settings.showObviousTypes)
@@ -129,7 +129,7 @@ class RsInlayTypeHintsProvider : InlayHintsProvider<RsInlayTypeHintsProvider.Set
 
                     val presentation = typeHintsFactory.typeHint(type)
                     val finalPresentation = presentation.withDisableAction(declaration.project)
-                    sink.addInlineElement(typeElement.endOffset, false, finalPresentation)
+                    sink.addInlineElement(typeElement.endOffset, false, finalPresentation, false)
                 }
             }
 
@@ -166,7 +166,7 @@ class RsInlayTypeHintsProvider : InlayHintsProvider<RsInlayTypeHintsProvider.Set
                 val project = binding.project
                 val presentation = typeHintsFactory.typeHint(binding.type)
                 val finalPresentation = presentation.withDisableAction(project)
-                sink.addInlineElement(binding.endOffset, false, finalPresentation)
+                sink.addInlineElement(binding.endOffset, false, finalPresentation, false)
             }
         }
 

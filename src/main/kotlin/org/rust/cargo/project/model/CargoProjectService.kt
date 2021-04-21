@@ -17,10 +17,14 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
 import org.rust.cargo.CargoConstants
+import org.rust.cargo.project.model.impl.UserDisabledFeatures
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.workspace.CargoWorkspace
-import org.rust.cargo.toolchain.RustToolchain
-import org.rust.cargo.toolchain.RustcVersion
+import org.rust.cargo.project.workspace.FeatureState
+import org.rust.cargo.project.workspace.PackageFeature
+import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.impl.RustcVersion
+import org.rust.cargo.toolchain.tools.isRustupAvailable
 import org.rust.ide.notifications.showBalloon
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -50,6 +54,8 @@ interface CargoProjectsService {
     fun discoverAndRefresh(): CompletableFuture<out List<CargoProject>>
     fun suggestManifests(): Sequence<VirtualFile>
 
+    fun modifyFeatures(cargoProject: CargoProject, features: Set<PackageFeature>, newState: FeatureState)
+
     companion object {
         val CARGO_PROJECTS_TOPIC: Topic<CargoProjectsListener> = Topic(
             "cargo projects changes",
@@ -57,7 +63,7 @@ interface CargoProjectsService {
         )
     }
 
-    interface CargoProjectsListener {
+    fun interface CargoProjectsListener {
         fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>)
     }
 }
@@ -92,9 +98,12 @@ interface CargoProject : UserDataHolderEx {
     val stdlibStatus: UpdateStatus
     val rustcInfoStatus: UpdateStatus
 
-    val mergedStatus: UpdateStatus get() = workspaceStatus
-        .merge(stdlibStatus)
-        .merge(rustcInfoStatus)
+    val mergedStatus: UpdateStatus
+        get() = workspaceStatus
+            .merge(stdlibStatus)
+            .merge(rustcInfoStatus)
+
+    val userDisabledFeatures: UserDisabledFeatures
 
     sealed class UpdateStatus(private val priority: Int) {
         object UpToDate : UpdateStatus(0)
@@ -132,7 +141,7 @@ fun guessAndSetupRustProject(project: Project, explicitRequest: Boolean = false)
 }
 
 private fun discoverToolchain(project: Project) {
-    val toolchain = RustToolchain.suggest() ?: return
+    val toolchain = RsToolchain.suggest() ?: return
     invokeLater {
         if (project.isDisposed) return@invokeLater
 

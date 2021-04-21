@@ -16,11 +16,14 @@ import com.intellij.openapi.util.UserDataHolderEx
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.util.concurrency.FutureResult
 import org.rust.cargo.project.model.CargoProject
+import org.rust.cargo.runconfig.RsExecutableRunner.Companion.artifact
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.showBuildNotification
 import org.rust.cargo.runconfig.command.workingDirectory
+import org.rust.cargo.toolchain.impl.CompilerArtifactMessage
 import java.nio.file.Path
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class CargoBuildContext(
     val cargoProject: CargoProject,
@@ -39,15 +42,21 @@ class CargoBuildContext(
     private val buildSemaphore: Semaphore = project.getUserData(BUILD_SEMAPHORE_KEY)
         ?: (project as UserDataHolderEx).putUserDataIfAbsent(BUILD_SEMAPHORE_KEY, Semaphore(1))
 
+    @Volatile
     var indicator: ProgressIndicator? = null
+    @Volatile
     var processHandler: ProcessHandler? = null
 
     val started: Long = System.currentTimeMillis()
+    @Volatile
     var finished: Long = started
     private val duration: Long get() = finished - started
 
-    var errors: Int = 0
-    var warnings: Int = 0
+    val errors: AtomicInteger = AtomicInteger()
+    val warnings: AtomicInteger = AtomicInteger()
+
+    @Volatile
+    var artifact: CompilerArtifactMessage? = null
 
     fun waitAndStart(): Boolean {
         indicator?.pushState()
@@ -74,11 +83,16 @@ class CargoBuildContext(
     fun finished(isSuccess: Boolean) {
         val isCanceled = indicator?.isCanceled ?: false
 
+        environment.artifact = artifact.takeIf { isSuccess && !isCanceled }
+
         finished = System.currentTimeMillis()
         buildSemaphore.release()
 
         val finishMessage: String
         val finishDetails: String?
+
+        val errors = errors.get()
+        val warnings = warnings.get()
 
         // We report successful builds with errors or warnings correspondingly
         val messageType = if (isCanceled) {
@@ -124,8 +138,8 @@ class CargoBuildContext(
             canceled = true,
             started = started,
             duration = duration,
-            errors = errors,
-            warnings = warnings,
+            errors = errors.get(),
+            warnings = warnings.get(),
             message = "$taskName canceled"
         ))
 

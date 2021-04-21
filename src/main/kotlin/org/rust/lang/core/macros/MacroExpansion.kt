@@ -7,9 +7,13 @@ package org.rust.lang.core.macros
 
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFileWithId
+import org.rust.lang.core.macros.MacroExpansionAndParsingError.ExpansionError
+import org.rust.lang.core.macros.MacroExpansionAndParsingError.ParsingError
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.stubChildrenOfType
-import org.rust.lang.core.psi.ext.stubDescendantOfTypeOrStrict
+import org.rust.lang.core.psi.ext.*
+import org.rust.stdext.RsResult
+import org.rust.stdext.RsResult.Err
+import org.rust.stdext.RsResult.Ok
 
 enum class MacroExpansionContext {
     EXPR, PAT, TYPE, STMT, ITEM
@@ -22,6 +26,12 @@ val RsMacroCall.expansionContext: MacroExpansionContext
         is RsPatMacro -> MacroExpansionContext.PAT
         is RsMacroType -> MacroExpansionContext.TYPE
         else -> MacroExpansionContext.ITEM
+    }
+
+val RsPossibleMacroCall.expansionContext: MacroExpansionContext
+    get() = when (val kind = kind) {
+        is RsPossibleMacroCallKind.MacroCall -> kind.call.expansionContext
+        is RsPossibleMacroCallKind.MetaItem -> MacroExpansionContext.ITEM
     }
 
 val RsMacroCall.isExprOrStmtContext: Boolean
@@ -114,16 +124,21 @@ fun getExpansionFromExpandedFile(context: MacroExpansionContext, expandedFile: R
     }
 }
 
-fun MacroExpander.expandMacro(
-    def: RsMacro,
+fun <T : RsMacroData, E> MacroExpander<T, E>.expandMacro(
+    def: T,
     call: RsMacroCall,
     factory: RsPsiFactory,
     storeRangeMap: Boolean
-): MacroExpansion? {
-    val (expandedText, ranges) = expandMacroAsText(def, call) ?: return null
-    return parseExpandedTextWithContext(call.expansionContext, factory, expandedText)?.also {
-        if (storeRangeMap) it.file.putUserData(MACRO_RANGE_MAP_KEY, ranges)
+): RsResult<MacroExpansion, MacroExpansionAndParsingError<E>> {
+    val (expandedText, ranges) = expandMacroAsTextWithErr(def, RsMacroCallData.fromPsi(call))
+        .unwrapOrElse { return Err(ExpansionError(it)) }
+    val context = call.expansionContext
+    val expansion = parseExpandedTextWithContext(context, factory, expandedText)
+        ?: return Err(ParsingError(expandedText, context))
+    if (storeRangeMap) {
+        expansion.file.putUserData(MACRO_RANGE_MAP_KEY, ranges)
     }
+    return Ok(expansion)
 }
 
 private val MACRO_RANGE_MAP_KEY: Key<RangeMap> = Key.create("MACRO_RANGE_MAP_KEY")

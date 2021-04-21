@@ -11,7 +11,7 @@
     <!-- TODO: create normal change note list -->
     <change-notes><![CDATA[
         <ul>
-            <li>Initial formatting support.</li>
+            <li>Provide `Unresolved reference` inspection for references inside string literals</li>
         </ul>
     ]]>
     </change-notes>
@@ -24,7 +24,7 @@
                   implementationClass="org.toml.lang.psi.TomlFileType"
                   fieldName="INSTANCE"
                   extensions="toml"
-                  fileNames="Cargo.lock;Gopkg.lock;Pipfile"/>
+                  fileNames="Cargo.lock;Cargo.toml.orig;Gopkg.lock;Pipfile;poetry.lock"/>
         <lang.parserDefinition language="TOML" implementationClass="org.toml.lang.parse.TomlParserDefinition"/>
         <lang.ast.factory language="TOML" implementationClass="org.toml.lang.psi.impl.TomlASTFactory"/>
         <lang.syntaxHighlighter language="TOML" implementationClass="org.toml.ide.TomlHighlighter"/>
@@ -34,10 +34,15 @@
         <lang.elementManipulator forClass="org.toml.lang.psi.TomlLiteral"
                                  implementationClass="org.toml.lang.psi.TomlStringLiteralManipulator"/>
 
+        <lang.findUsagesProvider language="TOML" implementationClass="org.toml.ide.search.TomlFindUsagesProvider"/>
+
         <!-- Formatting -->
         <lang.formatter language="TOML" implementationClass="org.toml.ide.formatter.TomlFormattingModelBuilder"/>
         <langCodeStyleSettingsProvider
             implementation="org.toml.ide.formatter.settings.TomlLanguageCodeStyleSettingsProvider"/>
+
+        <!-- Folding -->
+        <lang.foldingBuilder language="TOML" implementationClass="org.toml.ide.folding.TomlFoldingBuilder"/>
 
         <colorSettingsPage implementation="org.toml.ide.colors.TomlColorSettingsPage"/>
         <indexPatternBuilder implementation="org.toml.ide.todo.TomlTodoIndexPatternBuilder"/>
@@ -45,5 +50,11 @@
         <annotator language="TOML" implementationClass="org.toml.ide.annotator.TomlAnnotator"/>
         <annotator language="TOML" implementationClass="org.toml.ide.annotator.TomlHighlightingAnnotator"/>
         <extendWordSelectionHandler implementation="org.toml.ide.wordSelection.TomlStringLiteralSelectionHandler"/>
+
+        <localInspection language="TOML"
+                         groupName="TOML"
+                         displayName="Unresolved reference"
+                         enabledByDefault="true" level="WARNING"
+                         implementationClass="org.toml.ide.inspections.TomlUnresolvedReferenceInspection"/>
     </extensions>
 </idea-plugin>

@@ -20,8 +20,11 @@ import com.intellij.util.BitUtil
 import org.rust.lang.core.parser.RustParserDefinition.Companion.EOL_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_BLOCK_DOC_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_EOL_DOC_COMMENT
-import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.MacroBraces
+import org.rust.lang.core.psi.RS_BLOCK_LIKE_EXPRESSIONS
+import org.rust.lang.core.psi.RS_KEYWORDS
 import org.rust.lang.core.psi.RsElementTypes.*
+import org.rust.lang.core.psi.tokenSetOf
 import org.rust.stdext.makeBitMask
 
 @Suppress("UNUSED_PARAMETER")
@@ -32,11 +35,13 @@ object RustParserUtil : GeneratedParserUtilBase() {
          * Should be used to parse references to values
          */
         VALUE,
+
         /**
          * Accepts paths like `Foo<i32>`, `Foo::<i32>`, Fn(i32) -> i32 and Fn::(i32) -> i32
          * Should be used to parse type and trait references
          */
         TYPE,
+
         /**
          * Accepts paths like `Foo`
          * Should be used to parse paths where type args cannot be specified: `use` items, macro calls, etc.
@@ -240,9 +245,9 @@ object RustParserUtil : GeneratedParserUtilBase() {
     @JvmStatic
     fun parseFloatLiteral(b: PsiBuilder, level: Int): Boolean {
         return when (b.tokenType) {
-            INTEGER_LITERAL -> when (b.rawLookup(1)) {
-                // Works with `0.0`, `0.`, but not `0.foo` (identifies is not accepted after `.`)
-                DOT -> {
+            INTEGER_LITERAL -> {
+                // Works with `0.0`, `0.`, but not `0.foo` (identifier is not accepted after `.`)
+                if (b.rawLookup(1) == DOT) {
                     val (collapse, size) = when (b.rawLookup(2)) {
                         INTEGER_LITERAL, FLOAT_LITERAL -> true to 3
                         IDENTIFIER -> false to 0
@@ -252,20 +257,19 @@ object RustParserUtil : GeneratedParserUtilBase() {
                         val marker = b.mark()
                         PsiBuilderUtil.advance(b, size)
                         marker.collapse(FLOAT_LITERAL)
+                        return true
                     }
-                    collapse
                 }
                 // Works with floats without `.` like `1f32`, `1e3`, `3e-4`
-                else -> {
-                    val text = b.tokenText
-                    val isFloat = text != null &&
-                        (text.contains("f") || text.contains("e", ignoreCase = true) && !text.endsWith("e"))
-                    if (isFloat) {
-                        b.remapCurrentToken(FLOAT_LITERAL)
-                        b.advanceLexer()
-                    }
-                    isFloat
+                val text = b.tokenText
+                val isFloat = text != null &&
+                    (text.contains("f") || text.contains("e", ignoreCase = true) && !text.endsWith("e"))
+                    && !text.startsWith("0x")
+                if (isFloat) {
+                    b.remapCurrentToken(FLOAT_LITERAL)
+                    b.advanceLexer()
                 }
+                isFloat
             }
             // Can be already remapped
             FLOAT_LITERAL -> {
@@ -288,8 +292,7 @@ object RustParserUtil : GeneratedParserUtilBase() {
             }
             else -> {
                 // error message
-                val consumed = consumeToken(b, IDENTIFIER) || consumeToken(b, SELF) ||
-                    consumeToken(b, SUPER) || consumeToken(b, CSELF) || consumeToken(b, CRATE)
+                val consumed = consumeToken(b, IDENTIFIER)
                 check(!consumed)
                 false
             }
@@ -337,39 +340,12 @@ object RustParserUtil : GeneratedParserUtilBase() {
     @JvmStatic
     fun macroIdentifier(b: PsiBuilder, level: Int): Boolean =
         when (b.tokenType) {
-            IDENTIFIER, in RS_KEYWORDS -> {
+            IDENTIFIER, in RS_KEYWORDS, BOOL_LITERAL -> {
                 b.advanceLexer()
                 true
             }
             else -> false
         }
-
-    @JvmStatic
-    fun tupleOrParenType(b: PsiBuilder, level: Int, typeReference: Parser, tupeTypeUpper: Parser): Boolean {
-        val tupleOrParens: PsiBuilder.Marker = enter_section_(b)
-
-        if (!consumeTokenSmart(b, LPAREN)) {
-            exit_section_(b, tupleOrParens, null, false)
-            return false
-        }
-
-        val firstType = enter_section_(b)
-
-        if (!typeReference.parse(b, level)) {
-            exit_section_(b, firstType, null, false)
-            exit_section_(b, tupleOrParens, null, false)
-            return false
-        }
-        if (consumeTokenFast(b, RPAREN)) {
-            exit_section_(b, firstType, null, true)
-            exit_section_(b, tupleOrParens, null, true)
-            return true
-        }
-        exit_section_(b, firstType, TYPE_REFERENCE, true)
-        val result = tupeTypeUpper.parse(b, level)
-        exit_section_(b, tupleOrParens, TUPLE_TYPE, result)
-        return result
-    }
 
     @JvmStatic
     fun baseOrTraitType(
@@ -429,10 +405,14 @@ object RustParserUtil : GeneratedParserUtilBase() {
         }
 
         put(RustParser::ExprMacroArgument, true, "try", "await", "dbg")
-        put(RustParser::FormatMacroArgument, true, "format", "format_args", "write", "writeln", "print", "println",
-            "eprint", "eprintln", "panic", "unimplemented", "unreachable", "todo")
-        put(RustParser::AssertMacroArgument, true, "assert", "debug_assert", "assert_eq", "assert_ne",
-            "debug_assert_eq", "debug_assert_ne")
+        put(
+            RustParser::FormatMacroArgument, true, "format", "format_args", "write", "writeln", "print", "println",
+            "eprint", "eprintln", "panic", "unimplemented", "unreachable", "todo"
+        )
+        put(
+            RustParser::AssertMacroArgument, true, "assert", "debug_assert", "assert_eq", "assert_ne",
+            "debug_assert_eq", "debug_assert_ne"
+        )
         put(RustParser::VecMacroArgument, true, "vec")
         put(RustParser::LogMacroArgument, true, "trace", "log", "warn", "debug", "error", "info")
         put(RustParser::IncludeMacroArgument, true, "include_str", "include_bytes")
@@ -606,19 +586,28 @@ object RustParserUtil : GeneratedParserUtilBase() {
                 AND -> ANDAND to 2
                 else -> null
             }
+            // See `parseFloatLiteral`
+            INTEGER_LITERAL -> when (b.rawLookup(1)) {
+                DOT -> when (b.rawLookup(2)) {
+                    INTEGER_LITERAL, FLOAT_LITERAL -> FLOAT_LITERAL to 3
+                    IDENTIFIER -> null
+                    else -> FLOAT_LITERAL to 2
+                }
+                else -> null
+            }
             else -> null
         }
     }
 
     private fun LighterASTNode.isBracedMacro(b: PsiBuilder): Boolean {
-        if (tokenType != RsElementTypes.MACRO_EXPR) return false
+        if (tokenType != MACRO_EXPR) return false
         val offset = b.offset
         val text = b.originalText.subSequence(startOffset - offset, endOffset - offset)
         return '}' == text.findLast { it == '}' || it == ']' || it == ')' }
     }
 
     /**
-     * Non-zero if [this] is created with `LighterLazyParseableNode` chameleon.
+     * Non-zero if [PsiBuilder] is created with `LighterLazyParseableNode` chameleon.
      * (Used this way in implementations of ILightLazyParseableElementType)
      */
     private val PsiBuilder.offset: Int

@@ -12,11 +12,12 @@ import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.xdebugger.XDebugProcess
+import com.intellij.xdebugger.XDebugProcessStarter
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerManager
-import com.intellij.xdebugger.impl.XDebugProcessConfiguratorStarter
-import com.intellij.xdebugger.impl.ui.XDebugSessionData
+import org.rust.cargo.runconfig.BuildResult
 import org.rust.cargo.runconfig.CargoRunStateBase
 import org.rust.debugger.RsDebuggerToolchainService
 import org.rust.debugger.settings.RsDebuggerSettings
@@ -30,19 +31,27 @@ object RsDebugRunnerUtils {
         state: CargoRunStateBase,
         environment: ExecutionEnvironment,
         runExecutable: GeneralCommandLine
-    ): RunContentDescriptor? {
+    ): RunContentDescriptor {
         val runParameters = RsDebugRunParameters(environment.project, runExecutable, state.cargoProject)
         return XDebuggerManager.getInstance(environment.project)
-            .startSession(environment, object : XDebugProcessConfiguratorStarter() {
+            .startSession(environment, object : XDebugProcessStarter() {
                 override fun start(session: XDebugSession): XDebugProcess =
                     RsLocalDebugProcess(runParameters, session, state.consoleBuilder).apply {
                         ProcessTerminatedListener.attach(processHandler, environment.project)
                         start()
                     }
-
-                override fun configure(data: XDebugSessionData?) {}
             })
             .runContentDescriptor
+    }
+
+    fun checkToolchainSupported(host: String): BuildResult.ToolchainError? {
+        if (SystemInfo.isWindows) {
+            val isGNURustToolchain = "gnu" in host
+            if (isGNURustToolchain) {
+                return BuildResult.ToolchainError.UnsupportedGNU
+            }
+        }
+        return null
     }
 
     fun checkToolchainConfigured(project: Project): Boolean {

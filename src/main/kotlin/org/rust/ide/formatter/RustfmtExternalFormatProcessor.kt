@@ -24,9 +24,9 @@ import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.workingDirectory
-import org.rust.cargo.toolchain.Rustfmt
-import org.rust.cargo.toolchain.Rustup.Companion.checkNeedInstallRustfmt
-import org.rust.ide.formatter.RustfmtExternalFormatProcessor.Companion.formatWithRustfmtOrBuiltinFormatter
+import org.rust.cargo.toolchain.tools.Rustfmt
+import org.rust.cargo.toolchain.tools.Rustup.Companion.checkNeedInstallRustfmt
+import org.rust.cargo.toolchain.tools.rustfmt
 import org.rust.ide.formatter.processors.RsPostFormatProcessor
 import org.rust.ide.formatter.processors.RsTrailingCommaFormatProcessor
 import org.rust.ide.notifications.showBalloon
@@ -60,7 +60,7 @@ import org.rust.openapiext.document
  * builtin formatter
  */
 @Suppress("UnstableApiUsage")
-class RustfmtExternalFormatProcessor : ExternalFormatProcessor {
+abstract class RustfmtExternalFormatProcessorBase : ExternalFormatProcessor {
 
     override fun getId(): String = "rustfmt"
 
@@ -68,15 +68,6 @@ class RustfmtExternalFormatProcessor : ExternalFormatProcessor {
 
     // Never used by the platform?
     override fun indent(source: PsiFile, lineStartOffset: Int): String? = null
-
-    override fun format(
-        source: PsiFile,
-        range: TextRange,
-        canChangeWhiteSpacesOnly: Boolean,
-        keepLineBreaks: Boolean // Always `false`?
-    ): TextRange? {
-        return formatWithRustfmtOrBuiltinFormatter(source, range, canChangeWhiteSpacesOnly)
-    }
 
     companion object {
         fun isActiveForFile(source: PsiFile): Boolean =
@@ -102,7 +93,7 @@ class RustfmtExternalFormatProcessor : ExternalFormatProcessor {
             source: PsiFile,
             range: TextRange,
             canChangeWhiteSpacesOnly: Boolean,
-        ): TextRange? {
+        ): TextRange {
             val tryRustfmt = !canChangeWhiteSpacesOnly
                 && source.textRange == range
                 && getFormattingReason() == FormattingReason.ReformatCode
@@ -117,7 +108,7 @@ class RustfmtExternalFormatProcessor : ExternalFormatProcessor {
             return formatWithBuiltin(source, range, canChangeWhiteSpacesOnly)
         }
 
-        private fun formatWithRustfmt(source: PsiFile, range: TextRange, context: RustfmtContext): TextRange? {
+        private fun formatWithRustfmt(source: PsiFile, range: TextRange, context: RustfmtContext): TextRange {
             Testmarks.rustfmtUsed.hit()
 
             val (rustfmt, cargoProject, document) = context
@@ -147,7 +138,7 @@ class RustfmtExternalFormatProcessor : ExternalFormatProcessor {
          * Mimics to [com.intellij.psi.impl.source.codeStyle.CodeStyleManagerImpl.reformatText] and
          * [com.intellij.psi.impl.source.codeStyle.CodeStyleManagerImpl.formatRanges]
          */
-        private fun formatWithBuiltin(source: PsiFile, range: TextRange, canChangeWhiteSpacesOnly: Boolean): TextRange? {
+        private fun formatWithBuiltin(source: PsiFile, range: TextRange, canChangeWhiteSpacesOnly: Boolean): TextRange {
             val start = source.findElementAt(range.startOffset)?.createSmartPointer()
             val end = source.findElementAt(range.endOffset)?.createSmartPointer()
             val atEnd = range.endOffset == source.endOffset

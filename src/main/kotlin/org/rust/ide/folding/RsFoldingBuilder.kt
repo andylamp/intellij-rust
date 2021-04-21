@@ -31,7 +31,6 @@ import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.openapiext.document
 import java.lang.Integer.max
-import java.util.*
 
 class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
     override fun getLanguagePlaceholderText(node: ASTNode, range: TextRange): String =
@@ -41,6 +40,7 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
             node.elementType == USE_ITEM -> "/* uses */"
             node.psi is RsModDeclItem -> "/* mods */"
             node.psi is RsExternCrateItem -> "/* crates */"
+            node.psi is RsWhereClause -> "/* where */"
             node.psi is PsiComment -> "/* ... */"
             node.psi is RsValueParameterList -> "(...)"
             else -> "{...}"
@@ -91,6 +91,8 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
 
         override fun visitUseGroup(o: RsUseGroup) = fold(o)
 
+        override fun visitWhereClause(o: RsWhereClause) = fold(o)
+
         override fun visitMembers(o: RsMembers) = foldBetween(o, o.lbrace, o.rbrace)
 
         override fun visitModItem(o: RsModItem) = foldBetween(o, o.lbrace, o.rbrace)
@@ -129,7 +131,7 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
         }
 
         private fun foldBetween(element: PsiElement, left: PsiElement?, right: PsiElement?) {
-            if (left != null && right != null) {
+            if (left != null && right != null && right.textLength > 0) {
                 val range = TextRange(left.textOffset, right.textOffset + 1)
                 descriptors += FoldingDescriptor(element.node, range)
             }
@@ -202,17 +204,22 @@ class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
         }
     }
 
-    override fun isCustomFoldingRoot(node: ASTNode) = node.elementType == RsElementTypes.BLOCK
+    override fun isCustomFoldingRoot(node: ASTNode) = node.elementType == BLOCK
 
     override fun isRegionCollapsedByDefault(node: ASTNode): Boolean =
         (RsCodeFoldingSettings.instance.collapsibleOneLineMethods && node.elementType in COLLAPSED_BY_DEFAULT)
-            || (CodeFoldingSettings.getInstance().COLLAPSE_DOC_COMMENTS && node.elementType in RS_DOC_COMMENTS)
+            || CodeFoldingSettings.getInstance().isDefaultCollapsedNode(node)
 
     private companion object {
         val COLLAPSED_BY_DEFAULT = TokenSet.create(LBRACE, RBRACE)
         const val ONE_LINER_PLACEHOLDERS_EXTRA_LENGTH = 4
     }
 }
+
+private fun CodeFoldingSettings.isDefaultCollapsedNode(node: ASTNode) =
+    (this.COLLAPSE_DOC_COMMENTS && node.elementType in RS_DOC_COMMENTS)
+        || (this.COLLAPSE_IMPORTS && node.elementType == USE_ITEM)
+        || (this.COLLAPSE_METHODS && node.elementType == BLOCK && node.psi.parent is RsFunction)
 
 private fun Document.areOnAdjacentLines(first: PsiElement, second: PsiElement): Boolean =
     getLineNumber(first.endOffset) + 1 == getLineNumber(second.startOffset)

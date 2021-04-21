@@ -29,7 +29,8 @@ abstract class NamingNotationTest : TestCase() {
     }
 
     private fun testResult(name: String, expOk: Boolean, expSuggestion: String?) {
-        val (isOk, suggestion) = inspection.checkName(name)
+        val suggestion = inspection.checkName(name)
+        val isOk = suggestion == null
         assertEquals("Name $name acceptance: expected $expOk, but was $isOk", expOk, isOk)
         assertEquals("Suggestion for name $name: expected $expSuggestion, but was $suggestion", expSuggestion, suggestion)
     }
@@ -52,6 +53,7 @@ class CamelCaseNotationTest : NamingNotationTest() {
         testOk("__CamelCaseName")
         testOk("CamelCaseName__")
         testOk("__Cam1elCa2seN3ame__")
+        testOk("测试驼峰")
     }
 
     fun testDefaultSuggestion() {
@@ -94,6 +96,7 @@ class SnakeCaseNotationTest : NamingNotationTest() {
         testOk("'__")
         testOk("'lifetime")
         testOk("'static_lifetime")
+        testOk("测试小写")
     }
 
     fun testDefaultSuggestion() {
@@ -134,6 +137,7 @@ class UpperCaseNotationTest : NamingNotationTest() {
         testOk("__UPPER_CASE_NAME")
         testOk("UPPER_CASE_NAME__")
         testOk("___UPPER___CA3E__2__NAME__")
+        testOk("测试大写")
     }
 
     fun testDefaultSuggestion() {

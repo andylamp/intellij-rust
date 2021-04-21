@@ -15,6 +15,10 @@ import org.rust.toml.CargoTomlPsiPattern.inKey
 import org.rust.toml.CargoTomlPsiPattern.inSpecificDependencyHeaderKey
 import org.rust.toml.CargoTomlPsiPattern.inSpecificDependencyKeyValue
 import org.rust.toml.CargoTomlPsiPattern.onDependencyKey
+import org.rust.toml.CargoTomlPsiPattern.onDependencyPackageFeature
+import org.rust.toml.CargoTomlPsiPattern.dependencyGitUrl
+import org.rust.toml.CargoTomlPsiPattern.onFeatureDependencyLiteral
+import org.rust.toml.CargoTomlPsiPattern.packageUrl
 import org.rust.toml.CargoTomlPsiPattern.onSpecificDependencyHeaderKey
 import org.rust.toml.CargoTomlPsiPattern.packageWorkspacePath
 import org.rust.toml.CargoTomlPsiPattern.path
@@ -164,6 +168,61 @@ class CargoTomlPsiPatternTest : RsTestBase() {
                   #^
     """)
 
+    fun `test feature dependency`() = testPattern(onFeatureDependencyLiteral, """
+        [features]
+        bar = [ "foo" ]
+                #^
+    """)
+
+    fun `test dependency package feature`() = testPattern(onDependencyPackageFeature, """
+        [dependencies]
+        foo = { version = "*", features = ["bar"] }
+                                          #^
+    """)
+
+    fun `test specific dependency package feature`() = testPattern(onDependencyPackageFeature, """
+        [dependencies.foo]
+        version = "*"
+        features = ["bar"]
+                    #^
+    """)
+
+    fun `test dependency key in inline table`() = testPattern(CargoTomlPsiPattern.dependencyProperty("features"), """
+        [dependencies]
+        foo = { features = [] }
+                        #^
+    """)
+
+    fun `test dependency key in specific dependency`() = testPattern(CargoTomlPsiPattern.dependencyProperty("features"), """
+        [dependencies.foo]
+        features = []
+                #^
+    """)
+
+    fun `test dependency git url link`() = testPattern(dependencyGitUrl, """
+        [dependencies]
+        foo = { git = "foo" }
+                       #^
+    """)
+
+    fun `test package homepage url link`() = testPattern(packageUrl, """
+        [package]
+        homepage = "foo"
+                    #^
+    """)
+
+    fun `test package repository url link`() = testPattern(packageUrl, """
+        [package]
+        repository = "foo"
+                      #^
+    """)
+
+    fun `test package documentation url link`() = testPattern(packageUrl, """
+        [package]
+        documentation = "foo"
+                         #^
+    """)
+
     private inline fun <reified T : PsiElement> testPattern(
         pattern: ElementPattern<T>,
         @Language("Toml") code: String,
@@ -174,9 +233,9 @@ class CargoTomlPsiPatternTest : RsTestBase() {
         assertTrue(pattern.accepts(element))
     }
 
-    private fun <T> testPatternNegative(pattern: ElementPattern<T>, @Language("Toml") code: String) {
+    private inline fun <reified T : PsiElement> testPatternNegative(pattern: ElementPattern<T>, @Language("Toml") code: String) {
         InlineFile(code, "Cargo.toml")
-        val element = findElementInEditor<PsiElement>()
+        val element = findElementInEditor<T>()
         assertFalse(pattern.accepts(element))
     }
 }

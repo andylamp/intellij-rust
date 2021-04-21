@@ -5,8 +5,6 @@
 
 package org.rust.cargo.runconfig.legacy
 
-import com.google.gson.JsonParser
-import com.google.gson.JsonSyntaxException
 import com.intellij.execution.DefaultExecutionResult
 import com.intellij.execution.RunContentExecutor
 import com.intellij.execution.configurations.GeneralCommandLine
@@ -16,7 +14,6 @@ import com.intellij.execution.configurations.RunnerSettings
 import com.intellij.execution.process.CapturingProcessAdapter
 import com.intellij.execution.process.CapturingProcessHandler
 import com.intellij.execution.process.ProcessOutput
-import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.AsyncProgramRunner
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.runners.showRunContent
@@ -33,11 +30,13 @@ import org.rust.cargo.runconfig.buildtool.CargoBuildManager.getBuildConfiguratio
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildConfiguration
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.isBuildToolWindowEnabled
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
-import org.rust.cargo.toolchain.Cargo
-import org.rust.cargo.toolchain.Cargo.Companion.cargoCommonPatch
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.toolchain.impl.CargoMetadata
+import org.rust.cargo.toolchain.impl.CompilerArtifactMessage
+import org.rust.cargo.toolchain.tools.Cargo.Companion.getCargoCommonPatch
+import org.rust.cargo.toolchain.tools.RsTool.Companion.createGeneralCommandLine
 import org.rust.cargo.util.CargoArgsParser.Companion.parseArgs
+import org.rust.openapiext.JsonUtils.tryParseJsonObject
 import org.rust.openapiext.saveAllDocuments
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -60,7 +59,9 @@ abstract class RsAsyncRunner(
     override fun execute(environment: ExecutionEnvironment, state: RunProfileState): Promise<RunContentDescriptor?> {
         saveAllDocuments()
 
-        val commandLine = (state as CargoRunStateBase).prepareCommandLine(cargoCommonPatch)
+        state as CargoRunStateBase
+
+        val commandLine = state.prepareCommandLine(getCargoCommonPatch(environment.project))
         val (commandArguments, executableArguments) = parseArgs(commandLine.command, commandLine.additionalArguments)
 
         val isTestRun = commandLine.command == "test"
@@ -73,9 +74,10 @@ abstract class RsAsyncRunner(
 
         val getRunCommand = { executablePath: Path ->
             with(commandLine) {
-                Cargo.createGeneralCommandLine(
+                createGeneralCommandLine(
                     executablePath,
                     workingDirectory,
+                    redirectInputFrom,
                     backtraceMode,
                     environmentVariables,
                     executableArguments,
@@ -101,25 +103,9 @@ abstract class RsAsyncRunner(
 
     private fun executeCommandLine(
         state: CargoRunStateBase,
-        cmd: GeneralCommandLine,
+        commandLine: GeneralCommandLine,
         environment: ExecutionEnvironment
-    ): DefaultExecutionResult {
-        val runConfiguration = state.runConfiguration
-        val context = ConfigurationExtensionContext()
-
-        val manager = RsRunConfigurationExtensionManager.getInstance()
-        manager.patchCommandLine(runConfiguration, environment, cmd, context)
-        manager.patchCommandLineState(runConfiguration, environment, state, context)
-
-        val handler = RsKillableColoredProcessHandler(cmd)
-        ProcessTerminatedListener.attach(handler) // shows exit code upon termination
-
-        manager.attachExtensionsToProcess(runConfiguration, handler, environment, context)
-
-        val console = state.consoleBuilder.console
-        console.attachToProcess(handler)
-        return DefaultExecutionResult(console, handler)
-    }
+    ): DefaultExecutionResult = state.executeCommandLine(commandLine, environment)
 
     open fun checkToolchainConfigured(project: Project): Boolean = true
 
@@ -167,7 +153,7 @@ abstract class RsAsyncRunner(
 
                         override fun run(indicator: ProgressIndicator) {
                             indicator.isIndeterminate = true
-                            val host = state.rustVersion().rustc?.host.orEmpty()
+                            val host = state.rustVersion()?.host.orEmpty()
                             result = checkToolchainSupported(host)
                             if (result != null) return
 
@@ -180,21 +166,10 @@ abstract class RsAsyncRunner(
                                 return
                             }
 
-                            result = output.stdoutLines
-                                .mapNotNull {
-                                    try {
-                                        val jsonElement = JsonParser.parseString(it)
-                                        val jsonObject = if (jsonElement.isJsonObject) {
-                                            jsonElement.asJsonObject
-                                        } else {
-                                            return@mapNotNull null
-                                        }
-                                        CargoMetadata.Artifact.fromJson(jsonObject)
-                                    } catch (e: JsonSyntaxException) {
-                                        null
-                                    }
-                                }
-                                .filter { (target, profile) ->
+                            result = output.stdoutLines.asSequence()
+                                .mapNotNull { tryParseJsonObject(it) }
+                                .mapNotNull { CompilerArtifactMessage.fromJson(it) }
+                                .filter { (_, target, profile) ->
                                     val isSuitableTarget = when (target.cleanKind) {
                                         CargoMetadata.TargetKind.BIN -> true
                                         CargoMetadata.TargetKind.EXAMPLE -> {
@@ -207,8 +182,8 @@ abstract class RsAsyncRunner(
                                     }
                                     isSuitableTarget && (!isTestBuild || profile.test)
                                 }
-                                .flatMap { it.executables }
-                                .let(BuildResult::Binaries)
+                                .flatMap { it.executables.asSequence() }
+                                .let { BuildResult.Binaries(it.toList()) }
                         }
 
                         override fun onSuccess() {
@@ -224,8 +199,10 @@ abstract class RsAsyncRunner(
                                             promise.setResult(null)
                                         }
                                         binaries.size > 1 -> {
-                                            project.showErrorDialog("More than one binary was produced. " +
-                                                "Please specify `--bin`, `--lib`, `--test` or `--example` flag explicitly.")
+                                            project.showErrorDialog(
+                                                "More than one binary was produced. " +
+                                                    "Please specify `--bin`, `--lib`, `--test` or `--example` flag explicitly."
+                                            )
                                             promise.setResult(null)
                                         }
                                         else -> promise.setResult(Binary(Paths.get(binaries.single())))

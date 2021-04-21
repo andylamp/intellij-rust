@@ -91,7 +91,7 @@ class AttachFileToModuleFix(
                 modules.addIfNotNull(findModule(file, project, directory.findFileByRelativePath(RsConstants.MOD_RS_FILE)))
 
                 // module file in parent directory
-                if (pkg.edition == CargoWorkspace.Edition.EDITION_2018) {
+                if (pkg.edition >= CargoWorkspace.Edition.EDITION_2018) {
                     modules.addIfNotNull(findModule(file, project, directory.parent?.findFileByRelativePath("${directory.name}.rs")))
                 }
 
@@ -127,7 +127,7 @@ private fun selectModule(file: RsFile, availableModules: List<RsFile>): RsFile? 
         }
     }
 
-    val dialog = dialog("Select a module", panel {
+    val dialog = dialog("Select a Module", panel {
         row { box(CCFlags.growX) }
     }, focusedComponent = box)
 

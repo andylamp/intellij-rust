@@ -9,6 +9,8 @@ import com.intellij.openapi.vfs.VirtualFile
 import org.rust.cargo.CfgOptions
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.CargoWorkspaceData
+import org.rust.cargo.project.workspace.FeatureState
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.crate.CratePersistentId
@@ -16,16 +18,16 @@ import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.rustFile
 import org.rust.openapiext.fileId
 import org.rust.openapiext.toPsiFile
-import java.util.*
 
 class CargoBasedCrate(
     override var cargoProject: CargoProject,
     override var cargoTarget: CargoWorkspace.Target,
     override val dependencies: Collection<Crate.Dependency>,
-    override val flatDependencies: LinkedHashSet<Crate>
+    override val flatDependencies: LinkedHashSet<Crate>,
+    override var procMacroArtifact: CargoWorkspaceData.ProcMacroArtifact? = null,
 ) : Crate {
     override val reverseDependencies = mutableListOf<CargoBasedCrate>()
-    override var features: Collection<CargoWorkspace.Feature> = cargoTarget.pkg.features
+    override var features: Map<String, FeatureState> = cargoTarget.pkg.featureState
 
     // These properties are fields (not just delegates to `cargoTarget`) because [Crate] must be immutable
     override val rootModFile: VirtualFile? = cargoTarget.crateRoot
@@ -46,7 +48,13 @@ class CargoBasedCrate(
     override val cargoWorkspace: CargoWorkspace get() = cargoTarget.pkg.workspace
     override val kind: CargoWorkspace.TargetKind get() = cargoTarget.kind
 
-    override val cfgOptions: CfgOptions get() = cargoTarget.pkg.cfgOptions
+    override val cfgOptions: CfgOptions get() = cargoTarget.cfgOptions
+
+    override val evaluateUnknownCfgToFalse: Boolean
+        get() = origin == PackageOrigin.STDLIB || // TODO: think about it more precisely
+            cargoTarget.pkg.cfgOptions != null || // `true` if there is `build.rs` and it is evaluated
+            !cargoTarget.pkg.hasCustomBuildScript // `true` if there isn't `build.rs`
+
     override val env: Map<String, String> get() = cargoTarget.pkg.env
     override val outDir: VirtualFile? get() = cargoTarget.pkg.outDir
 

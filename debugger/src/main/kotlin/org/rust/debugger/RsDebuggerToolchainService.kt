@@ -13,6 +13,7 @@ import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.SystemInfo
@@ -21,9 +22,11 @@ import com.intellij.openapi.util.io.FileUtil
 import com.intellij.util.download.DownloadableFileDescription
 import com.intellij.util.download.DownloadableFileService
 import com.intellij.util.io.Decompressor
+import com.intellij.util.io.exists
+import com.intellij.util.system.CpuArch
 import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBBinUrlProvider
 import org.rust.debugger.settings.RsDebuggerSettings
-import org.rust.openapiext.pluginDirInSystem
+import org.rust.openapiext.RsPathManager
 import java.io.File
 import java.io.IOException
 import java.net.URL
@@ -34,16 +37,25 @@ import java.util.*
 @Service
 class RsDebuggerToolchainService {
 
-    fun getLLDBStatus(lldbPath: String? = RsDebuggerSettings.getInstance().lldbPath): LLDBStatus {
+    fun getLLDBStatus(): LLDBStatus {
+        val status = getBundledLLDBStatus()
+        if (status is LLDBStatus.Binaries) return status
+
+        return getLLDBStatus(RsDebuggerSettings.getInstance().lldbPath)
+    }
+
+    fun getBundledLLDBStatus(): LLDBStatus {
+        val bundledPath = bundledLLDBDirPath()?.toString()
+        return getLLDBStatus(bundledPath, checkVersions = false)
+    }
+
+    fun getLLDBStatus(lldbPath: String?, checkVersions: Boolean = true): LLDBStatus {
         if (lldbPath.isNullOrEmpty()) return LLDBStatus.NeedToDownload
 
         val (frameworkPath, frontendPath) = when {
             SystemInfo.isMac -> "LLDB.framework" to "LLDBFrontend"
             SystemInfo.isUnix -> "lib/liblldb.so" to "bin/LLDBFrontend"
-            SystemInfo.isWindows -> {
-                val binaryDir = "${if (SystemInfo.is32Bit) "x86" else "x64"}/bin"
-                "$binaryDir/liblldb.dll" to "$binaryDir/LLDBFrontend.exe"
-            }
+            SystemInfo.isWindows -> "bin/liblldb.dll" to "bin/LLDBFrontend.exe"
             else -> return LLDBStatus.Unavailable
         }
 
@@ -51,14 +63,16 @@ class RsDebuggerToolchainService {
         val frontendFile = File(FileUtil.join(lldbPath, frontendPath))
         if (!frameworkFile.exists() || !frontendFile.exists()) return LLDBStatus.NeedToDownload
 
-        val versions = loadLLDBVersions()
-        val (lldbFrameworkUrl, lldbFrontendUrl) = lldbUrls ?: return LLDBStatus.Unavailable
+        if (checkVersions) {
+            val versions = loadLLDBVersions()
+            val (lldbFrameworkUrl, lldbFrontendUrl) = lldbUrls ?: return LLDBStatus.Unavailable
 
-        val lldbFrameworkVersion = fileNameWithoutExtension(lldbFrameworkUrl.toString())
-        val lldbFrontendVersion = fileNameWithoutExtension(lldbFrontendUrl.toString())
+            val lldbFrameworkVersion = fileNameWithoutExtension(lldbFrameworkUrl.toString())
+            val lldbFrontendVersion = fileNameWithoutExtension(lldbFrontendUrl.toString())
 
-        if (versions[LLDB_FRAMEWORK_PROPERTY_NAME] != lldbFrameworkVersion ||
-            versions[LLDB_FRONTEND_PROPERTY_NAME] != lldbFrontendVersion) return LLDBStatus.NeedToUpdate
+            if (versions[LLDB_FRAMEWORK_PROPERTY_NAME] != lldbFrameworkVersion ||
+                versions[LLDB_FRONTEND_PROPERTY_NAME] != lldbFrontendVersion) return LLDBStatus.NeedToUpdate
+        }
 
         return LLDBStatus.Binaries(frameworkFile, frontendFile)
     }
@@ -77,7 +91,7 @@ class RsDebuggerToolchainService {
                     NotificationType.INFORMATION
                 ))
             }
-            DownloadResult.Failed -> {
+            is DownloadResult.Failed -> {
                 Notifications.Bus.notify(Notification(
                     RUST_DEBUGGER_GROUP_ID,
                     "Debugger",
@@ -97,7 +111,7 @@ class RsDebuggerToolchainService {
             DownloadResult.Ok(lldbDir)
         } catch (e: IOException) {
             LOG.warn("Can't download debugger", e)
-            DownloadResult.Failed
+            DownloadResult.Failed(e.message)
         }
     }
 
@@ -107,7 +121,7 @@ class RsDebuggerToolchainService {
                 SystemInfo.isMac -> LLDBBinUrlProvider.lldb.macX64 to LLDBBinUrlProvider.lldbFrontend.macX64
                 SystemInfo.isLinux -> LLDBBinUrlProvider.lldb.linuxX64 to LLDBBinUrlProvider.lldbFrontend.linuxX64
                 SystemInfo.isWindows -> {
-                    if (SystemInfo.is64Bit) {
+                    if (isIntel64()) {
                         LLDBBinUrlProvider.lldb.winX64 to LLDBBinUrlProvider.lldbFrontend.winX64
                     } else {
                         LLDBBinUrlProvider.lldb.winX86 to LLDBBinUrlProvider.lldbFrontend.winX86
@@ -183,7 +197,7 @@ class RsDebuggerToolchainService {
     }
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(RsDebuggerToolchainService::class.java)
+        private val LOG: Logger = logger<RsDebuggerToolchainService>()
 
         private const val LLDB_VERSIONS: String = "versions.properties"
 
@@ -193,11 +207,28 @@ class RsDebuggerToolchainService {
         const val RUST_DEBUGGER_GROUP_ID = "Rust Debugger"
 
         private fun downloadPath(): Path = Paths.get(PathManager.getTempPath())
-        private fun lldbPath(): Path = pluginDirInSystem().resolve("lldb")
+        private fun lldbPath(): Path = RsPathManager.pluginDirInSystem().resolve("lldb")
+
+        // Rider provides bundled lldb binaries inside Native Debugging Support plugin directory
+        private fun bundledLLDBDirPath(): Path? {
+            val pluginPath = nativeDebuggingSupportPlugin()?.pluginPath ?: return null
+            val osSpecificPart = when {
+                SystemInfo.isMac -> "mac"
+                SystemInfo.isLinux -> "linux"
+                SystemInfo.isWindows -> if (isIntel64()) "win/x64" else "win/x86"
+                else -> return null
+            }
+
+            return pluginPath.resolve("bin/lldb/$osSpecificPart").takeIf { it.exists() }
+        }
+
+        // BACKCOMPAT: 2020.3. Use `CpuArch.isIntel64` instead
+        private fun isIntel64(): Boolean = CpuArch.CURRENT == CpuArch.X86_64
 
         fun getInstance(): RsDebuggerToolchainService = service()
     }
 
+    @Suppress("unused")
     private enum class Unarchiver {
         ZIP {
             override val extension: String = "zip"
@@ -224,7 +255,7 @@ class RsDebuggerToolchainService {
     sealed class DownloadResult {
         class Ok(val lldbDir: File) : DownloadResult()
         object NoUrls : DownloadResult()
-        object Failed : DownloadResult()
+        class Failed(val message: String?) : DownloadResult()
     }
 
     sealed class LLDBStatus {

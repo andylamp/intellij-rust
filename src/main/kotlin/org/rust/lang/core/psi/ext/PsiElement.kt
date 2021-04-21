@@ -11,13 +11,14 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.*
 import com.intellij.psi.impl.source.PsiFileImpl
+import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
 import com.intellij.psi.tree.IElementType
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.psi.util.PsiUtilCore
 import com.intellij.util.SmartList
-import org.rust.lang.core.psi.RsFile
-import org.rust.lang.core.psi.RsReplCodeFragment
+import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.stubs.RsFileStub
 import org.rust.openapiext.document
 import org.rust.openapiext.findDescendantsWithMacrosOfAnyType
@@ -39,11 +40,6 @@ val PsiElement.contexts: Sequence<PsiElement>
     get() = generateSequence(this) {
         if (it is PsiFile) null else it.context
     }
-
-fun PsiElement.superParent(level: Int): PsiElement? {
-    require(level > 0)
-    return ancestors.drop(level).firstOrNull()
-}
 
 val PsiElement.ancestorPairs: Sequence<Pair<PsiElement, PsiElement>>
     get() {
@@ -146,6 +142,7 @@ inline fun <reified T : PsiElement> PsiElement.stubDescendantsOfTypeOrSelf(): Co
 inline fun <reified T : PsiElement> PsiElement.stubDescendantOfTypeOrStrict(): T? =
     getStubDescendantOfType(this, true, T::class.java)
 
+@Suppress("unused")
 inline fun <reified T : PsiElement> PsiElement.stubDescendantOfTypeOrSelf(): T? =
     getStubDescendantOfType(this, false, T::class.java)
 
@@ -157,18 +154,17 @@ fun <T : PsiElement> getStubDescendantsOfType(
     if (element == null) return emptyList()
     val stub = (element as? PsiFileImpl)?.greenStub
         ?: (element as? StubBasedPsiElement<*>)?.greenStub
-        ?: return PsiTreeUtil.findChildrenOfAnyType<T>(element, strict, aClass)
+        ?: return PsiTreeUtil.findChildrenOfAnyType(element, strict, aClass)
 
     val result = SmartList<T>()
 
-    fun go(childrenStubs: List<StubElement<PsiElement>>) {
+    fun go(childrenStubs: List<StubElement<out PsiElement>>) {
         for (childStub in childrenStubs) {
             val child = childStub.psi
             if (aClass.isInstance(child)) {
                 result.add(aClass.cast(child))
-            } else {
-                go(childStub.childrenStubs)
             }
+            go(childStub.childrenStubs)
         }
 
     }
@@ -190,9 +186,9 @@ fun <T : PsiElement> getStubDescendantOfType(
     if (element == null) return null
     val stub = (element as? PsiFileImpl)?.greenStub
         ?: (element as? StubBasedPsiElement<*>)?.greenStub
-        ?: return PsiTreeUtil.findChildOfType<T>(element, aClass, strict)
+        ?: return PsiTreeUtil.findChildOfType(element, aClass, strict)
 
-    fun go(childrenStubs: List<StubElement<PsiElement>>): T? {
+    fun go(childrenStubs: List<StubElement<out PsiElement>>): T? {
         for (childStub in childrenStubs) {
             val child = childStub.psi
             if (aClass.isInstance(child)) {
@@ -214,6 +210,16 @@ fun <T : PsiElement> getStubDescendantOfType(
 
 inline fun <reified T : PsiElement> PsiElement.descendantsWithMacrosOfType(): Collection<T> =
     findDescendantsWithMacrosOfAnyType(this, true, T::class.java)
+
+fun PsiElement.stubChildOfElementType(elementType: IElementType): PsiElement? {
+    val stub = (this as? StubBasedPsiElement<*>)?.stub
+    return if (stub != null) {
+        @Suppress("UNCHECKED_CAST")
+        stub.findChildStubByType(elementType as IStubElementType<StubElement<PsiElement>, PsiElement>)?.psi
+    } else {
+        node.findChildByType(elementType)?.psi
+    }
+}
 
 /**
  * Same as [PsiElement.getContainingFile], but return a "fake" file. See [org.rust.lang.core.macros.RsExpandedElement].
@@ -256,23 +262,14 @@ val PsiElement.endOffset: Int
 val PsiElement.endOffsetInParent: Int
     get() = startOffsetInParent + textLength
 
-fun PsiElement.rangeWithPrevSpace(prev: PsiElement?) = when (prev) {
-    is PsiWhiteSpace -> textRange.union(prev.textRange)
-    else -> textRange
-}
+fun PsiElement.rangeWithPrevSpace(prev: PsiElement?): TextRange =
+    when (prev) {
+        is PsiWhiteSpace -> textRange.union(prev.textRange)
+        else -> textRange
+    }
 
 val PsiElement.rangeWithPrevSpace: TextRange
     get() = rangeWithPrevSpace(prevSibling)
-
-val PsiElement.rangeWithSurroundingLineBreaks: TextRange
-    get() {
-        val startOffset = textRange.startOffset
-        val endOffset = textRange.endOffset
-        val text = containingFile.text
-        val newLineBefore = text.lastIndexOf('\n', startOffset).takeIf { it >= 0 }?.let { it + 1 } ?: startOffset
-        val newLineAfter = text.indexOf('\n', endOffset).takeIf { it >= 0 }?.let { it + 1 } ?: endOffset
-        return TextRange(newLineBefore, newLineAfter)
-    }
 
 private fun PsiElement.getLineCount(): Int {
     val doc = containingFile?.document
@@ -295,3 +292,16 @@ fun PsiWhiteSpace.isMultiLine(): Boolean = getLineCount() > 1
 @Suppress("UNCHECKED_CAST")
 inline val <T : StubElement<*>> StubBasedPsiElement<T>.greenStub: T?
     get() = (this as? StubBasedPsiElementBase<T>)?.greenStub
+
+fun PsiElement.isKeywordLike(): Boolean {
+    return when (elementType) {
+        in RS_KEYWORDS,
+        RsElementTypes.BOOL_LITERAL -> true
+        RsElementTypes.IDENTIFIER -> {
+            val parent = parent as? RsFieldLookup ?: return false
+            if (parent.edition == CargoWorkspace.Edition.EDITION_2015) return false
+            text == "await"
+        }
+        else -> false
+    }
+}

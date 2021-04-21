@@ -27,7 +27,7 @@ data class VarValue<out V>(val value: V?, val rank: Int): NodeOrValue
  * associated with a value of type `V` and a rank. The rank is used
  * to keep the DAG relatively balanced, which helps keep the running
  * time of the algorithm under control. For more information, see
- * <http://en.wikipedia.org/wiki/Disjoint-set_data_structure>.
+ * [Disjoint-set data structure](https://en.wikipedia.org/wiki/Disjoint-set_data_structure).
  */
 @Suppress("UNCHECKED_CAST")
 class UnificationTable<K : Node, V> {
@@ -86,7 +86,7 @@ class UnificationTable<K : Node, V> {
 
     fun findValue(key: K): V? = get(key).value
 
-    fun unifyVarVar(key1: K, key2: K): K? {
+    fun unifyVarVar(key1: K, key2: K): K {
         val node1 = get(key1)
         val node2 = get(key2)
 

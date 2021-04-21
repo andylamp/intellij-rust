@@ -5,6 +5,7 @@
 
 package org.rust.cargo.project.model
 
+import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.PlatformDataKeys
@@ -14,6 +15,7 @@ import com.intellij.testFramework.fixtures.impl.TempDirTestFixtureImpl
 import com.intellij.util.ui.UIUtil
 import org.rust.FileTreeBuilder
 import org.rust.cargo.RsWithToolchainTestBase
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.toolwindow.CargoToolWindow
 import org.rust.fileTree
 import org.rust.ide.notifications.RsEditorNotificationPanel
@@ -57,7 +59,7 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("dir", cargoProjectSupplier)
         }
 
-        val rootDir = testProject.root.findChild("dir")!!
+        val rootDir = testProject.file("dir")
         testAction(ActionPlaces.PROJECT_VIEW_POPUP, true, contextFile = rootDir)
         val cargoProject = project.cargoProjects.allProjects.find { it.rootDir == rootDir }
         assertNotNull("Failed to attach project in `$rootDir`", cargoProject)
@@ -68,7 +70,7 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("dir", cargoProjectSupplier)
         }
 
-        val cargoToml = testProject.root.findFileByRelativePath("dir/Cargo.toml")!!
+        val cargoToml = testProject.file("dir/Cargo.toml")
         testAction(ActionPlaces.PROJECT_VIEW_POPUP, true, contextFile = cargoToml)
         val cargoProject = project.cargoProjects.allProjects.find { it.manifest == cargoToml.pathAsPath }
         assertNotNull("Failed to attach project via `$cargoToml` file", cargoProject)
@@ -76,7 +78,7 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
 
     fun `test no action for cargo toml of existing cargo project`() {
         val testProject = buildProject(cargoProjectSupplier)
-        val cargoToml = testProject.root.findFileByRelativePath("Cargo.toml")!!
+        val cargoToml = testProject.file("Cargo.toml")
         testAction(ActionPlaces.PROJECT_VIEW_POPUP, false, contextFile = cargoToml)
     }
 
@@ -90,13 +92,13 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("foo", cargoProjectSupplier)
         }
 
-        val cargoToml = testProject.root.findFileByRelativePath("foo/Cargo.toml")!!
+        val cargoToml = testProject.file("foo/Cargo.toml")
         testAction(ActionPlaces.PROJECT_VIEW_POPUP, false, contextFile = cargoToml)
     }
 
     fun `test no action for cargo toml outside of project`() {
         val libraryProject = fileTree(cargoProjectSupplier).create(project, tempDirFixture.getFile("")!!)
-        val cargoToml = libraryProject.root.findFileByRelativePath("Cargo.toml")!!
+        val cargoToml = libraryProject.file("Cargo.toml")
         testAction(ActionPlaces.PROJECT_VIEW_POPUP, false, contextFile = cargoToml)
     }
 
@@ -105,7 +107,7 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("dir", cargoProjectSupplier)
         }
 
-        val cargoToml = testProject.root.findFileByRelativePath("dir/Cargo.toml")!!
+        val cargoToml = testProject.file("dir/Cargo.toml")
         testAction(CargoToolWindow.CARGO_TOOLBAR_PLACE, true, contextFile = null, mockChosenFile = cargoToml)
         val cargoProject = project.cargoProjects.allProjects.find { it.manifest == cargoToml.pathAsPath }
         assertNotNull("Failed to attach project via `$cargoToml` file", cargoProject)
@@ -116,8 +118,8 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("dir", cargoProjectSupplier)
         }
 
-        val srcFile = testProject.root.findFileByRelativePath("dir/src/main.rs")!!
-        val cargoToml = testProject.root.findFileByRelativePath("dir/Cargo.toml")!!
+        val srcFile = testProject.file("dir/src/main.rs")
+        val cargoToml = testProject.file("dir/Cargo.toml")
         testAction(RsEditorNotificationPanel.NOTIFICATION_PANEL_PLACE, true, contextFile = srcFile, mockChosenFile = cargoToml)
         val cargoProject = project.cargoProjects.allProjects.find { it.manifest == cargoToml.pathAsPath }
         assertNotNull("Failed to attach project via `$srcFile` file", cargoProject)
@@ -128,7 +130,7 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             dir("dir", cargoProjectSupplier)
         }
 
-        val cargoToml = testProject.root.findFileByRelativePath("dir/Cargo.toml")!!
+        val cargoToml = testProject.file("dir/Cargo.toml")
         testAction(RsEditorNotificationPanel.NOTIFICATION_PANEL_PLACE, true, contextFile = cargoToml)
         val cargoProject = project.cargoProjects.allProjects.find { it.manifest == cargoToml.pathAsPath }
         assertNotNull("Failed to attach project via `$cargoToml` file", cargoProject)
@@ -141,15 +143,13 @@ class AttachCargoProjectActionTest : RsWithToolchainTestBase() {
             put(AttachCargoProjectAction.MOCK_CHOSEN_FILE_KEY, mockChosenFile)
         }
         val testEvent = TestActionEvent(context, place)
-        val action = AttachCargoProjectAction()
+        val action = ActionManager.getInstance().getAction("Cargo.AttachCargoProject")
         action.beforeActionPerformedUpdate(testEvent)
         assertEquals(shouldBeEnabled, testEvent.presentation.isEnabledAndVisible)
         if (shouldBeEnabled) {
             val latch = CountDownLatch(1)
-            project.messageBus.connect().subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                    latch.countDown()
-                }
+            project.messageBus.connect().subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+                latch.countDown()
             })
 
             action.actionPerformed(testEvent)

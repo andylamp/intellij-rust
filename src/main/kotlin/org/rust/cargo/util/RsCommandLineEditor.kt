@@ -11,14 +11,12 @@ import com.intellij.openapi.project.Project
 import com.intellij.ui.EditorTextField
 import com.intellij.ui.ExpandableEditorSupport
 import com.intellij.ui.TextAccessor
-import com.intellij.ui.components.fields.ExpandableSupport
 import com.intellij.util.Function
 import com.intellij.util.TextFieldCompletionProvider
 import com.intellij.util.textCompletion.TextFieldWithCompletion
 import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JComponent
-import javax.swing.JLabel
 import javax.swing.JPanel
 
 class RsCommandLineEditor(
@@ -27,7 +25,6 @@ class RsCommandLineEditor(
 ) : JPanel(BorderLayout()), TextAccessor {
 
     private val textField = createTextField("")
-    val preferredFocusedComponent: JComponent = textField
 
     init {
         ExpandableEditorSupportWithCustomPopup(textField, this::createTextField)
@@ -39,14 +36,6 @@ class RsCommandLineEditor(
     }
 
     override fun getText(): String = textField.text
-
-    fun setPreferredWidth(width: Int) {
-        textField.setPreferredWidth(width)
-    }
-
-    fun attachLabel(label: JLabel) {
-        label.labelFor = textField
-    }
 
     private fun createTextField(value: String): TextFieldWithCompletion =
         TextFieldWithCompletion(
@@ -63,6 +52,7 @@ private class ExpandableEditorSupportWithCustomPopup(
     field: EditorTextField,
     private val createPopup: (text: String) -> EditorTextField
 ) : ExpandableEditorSupport(field) {
+    @Suppress("UnstableApiUsage")
     override fun prepare(field: EditorTextField, onShow: Function<in String, String>): Content {
         val popup = createPopup(onShow.`fun`(field.text))
         val background = field.background
@@ -75,7 +65,7 @@ private class ExpandableEditorSupportWithCustomPopup(
             copyCaretPosition(editor, field.editor)
         }
 
-        return object : ExpandableSupport.Content {
+        return object : Content {
             override fun getContentComponent(): JComponent = popup
             override fun getFocusableComponent(): JComponent = popup
             override fun cancel(onHide: Function<in String, String>) {

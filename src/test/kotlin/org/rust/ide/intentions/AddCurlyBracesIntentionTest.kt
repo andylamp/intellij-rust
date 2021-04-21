@@ -45,4 +45,13 @@ class AddCurlyBracesIntentionTest : RsIntentionTestBase(AddCurlyBracesIntention:
     fun `test not available for star imports`() = doUnavailableTest("""
         use foo::*/*caret*/;
     """)
+
+    fun `test without last path segment`() = doAvailableTest(
+        "use std::/*caret*/;",
+        "use std::{/*caret*/};"
+    )
+
+    fun `test not available if already has braces`() = doUnavailableTest("""
+        use foo::{bar/*caret*/};
+    """)
 }

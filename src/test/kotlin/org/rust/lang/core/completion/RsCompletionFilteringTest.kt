@@ -5,8 +5,11 @@
 
 package org.rust.lang.core.completion
 
+import org.rust.MockEdition
 import org.rust.ProjectDescriptor
+import org.rust.UseNewResolve
 import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 
 class RsCompletionFilteringTest: RsCompletionTestBase() {
     fun `test unsatisfied bound filtered 1`() = doSingleCompletion("""
@@ -160,6 +163,63 @@ class RsCompletionFilteringTest: RsCompletionTestBase() {
         fn bar(s: S) {
             s.f/*caret*/
         }
+    """)
+
+    @UseNewResolve
+    @MockEdition(Edition.EDITION_2018)
+    fun `test public item reexported with restricted visibility 1`() = checkNoCompletion("""
+        pub mod inner1 {
+            pub mod inner2 {
+                pub fn foo() {}
+                pub(in crate::inner1) use foo as bar;
+            }
+        }
+        fn main() {
+            crate::inner1::inner2::ba/*caret*/
+        }
+    """)
+
+    @UseNewResolve
+    @MockEdition(Edition.EDITION_2018)
+    fun `test public item reexported with restricted visibility 2`() = checkContainsCompletion("bar2", """
+        pub mod inner1 {
+            pub mod inner2 {
+                pub fn bar1() {}
+                pub(in crate::inner1) use bar1 as bar2;
+            }
+            fn main() {
+                crate::inner1::inner2::ba/*caret*/
+            }
+        }
+    """)
+
+    @MockEdition(Edition.EDITION_2018)
+    fun `test private reexport of public function`() = checkNoCompletion("""
+        mod mod1 {
+            pub fn foo() {}
+        }
+        mod mod2 {
+            use crate::mod1::foo as bar;
+        }
+
+        fn main() {
+            mod2::b/*caret*/
+        }
+    """)
+
+    // there was error in new resolve when legacy textual macros are always completed
+    @MockEdition(Edition.EDITION_2018)
+    fun `test no completion on empty mod 1`() = checkNoCompletion("""
+        macro_rules! empty { () => {}; }
+        mod foo {}
+        pub use foo::empt/*caret*/
+    """)
+
+    @MockEdition(Edition.EDITION_2018)
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test no completion on empty mod 2`() = checkNoCompletion("""
+        mod foo {}
+        pub use foo::asser/*caret*/
     """)
 
     // Issue https://github.com/intellij-rust/intellij-rust/issues/3694

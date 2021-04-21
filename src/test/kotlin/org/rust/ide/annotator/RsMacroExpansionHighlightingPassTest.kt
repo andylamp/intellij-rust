@@ -16,7 +16,7 @@ import org.rust.ide.colors.RsColor
 class RsMacroExpansionHighlightingPassTest : RsAnnotationTestBase() {
 
     fun `test attributes inside macro call`() = checkHighlightingInsideMacro("""
-        <ATTRIBUTE>#</ATTRIBUTE><ATTRIBUTE>[cfg_attr(foo)]</ATTRIBUTE>
+        <ATTRIBUTE>#</ATTRIBUTE><ATTRIBUTE>[foo(foo)]</ATTRIBUTE>
         fn <FUNCTION>main</FUNCTION>() {
             <ATTRIBUTE>#![crate_type = <STRING>"lib"</STRING>]</ATTRIBUTE>
         }
@@ -27,8 +27,7 @@ class RsMacroExpansionHighlightingPassTest : RsAnnotationTestBase() {
         <CFG_DISABLED_CODE>#</CFG_DISABLED_CODE><CFG_DISABLED_CODE>[cfg(not(intellij_rust))]
         fn foo</CFG_DISABLED_CODE><CFG_DISABLED_CODE>() {
             let x = 1;
-        }
-        </CFG_DISABLED_CODE>
+        }</CFG_DISABLED_CODE>
     """)
 
     private fun checkHighlightingInsideMacro(@Language("Rust") text: String) {
@@ -47,7 +46,7 @@ class RsMacroExpansionHighlightingPassTest : RsAnnotationTestBase() {
         annotationFixture.registerSeverities(RsColor.values().map(RsColor::testSeverity))
     }
 
-    override fun createAnnotationFixture(): RsAnnotationTestFixture =
+    override fun createAnnotationFixture(): RsAnnotationTestFixture<Unit> =
         RsAnnotationTestFixture(
             this,
             myFixture,

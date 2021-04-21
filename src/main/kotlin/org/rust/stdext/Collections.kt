@@ -88,6 +88,9 @@ fun mapCapacity(expectedSize: Int): Int {
     return Int.MAX_VALUE // any large value
 }
 
+fun <K, V> newHashMapWithExpectedSize(size: Int): HashMap<K, V> =
+    HashMap<K, V>(mapCapacity(size))
+
 /* Copied from Kotlin's internal Iterables.kt */
 fun <T> Iterable<T>.collectionSizeOrDefault(default: Int): Int =
     if (this is Collection<*>) size else default
@@ -125,7 +128,7 @@ inline fun <T, R> Iterable<T>.mapToMutableList(transform: (T) -> R): MutableList
 inline fun <T, R> Iterable<T>.mapToSet(transform: (T) -> R): Set<R> =
     mapTo(HashSet(mapCapacity(collectionSizeOrDefault(10))), transform)
 
-inline fun <T, R: Any> Iterable<T>.mapNotNullToSet(transform: (T) -> R?): Set<R> =
+inline fun <T, R : Any> Iterable<T>.mapNotNullToSet(transform: (T) -> R?): Set<R> =
     mapNotNullTo(HashSet(mapCapacity(collectionSizeOrDefault(10))), transform)
 
 fun <T> Set<T>.intersects(other: Iterable<T>): Boolean =
@@ -155,12 +158,10 @@ fun <T : Any> Iterator<T>.nextOrNull(): T? =
 
 fun <T> MutableList<T>.removeLast(): T = removeAt(size - 1)
 
-fun <T> dequeOf(): Deque<T> = ArrayDeque<T>()
-
 fun <T> dequeOf(vararg elements: T): Deque<T> =
     ArrayDeque<T>().apply { addAll(elements) }
 
-inline fun <reified T: Enum<T>> enumSetOf(): EnumSet<T> = EnumSet.noneOf(T::class.java)
+inline fun <reified T : Enum<T>> enumSetOf(): EnumSet<T> = EnumSet.noneOf(T::class.java)
 
 typealias LookbackValue<T> = Pair<T, T?>
 
@@ -185,6 +186,28 @@ private class LookbackIterator<T>(private val iterator: Iterator<T>) : Iterator<
     }
 }
 
-fun <K, V> MutableMap<K, MutableList<V>>.putGrouped(key: K, value: V) {
-    getOrPut(key) { mutableListOf() }.add(value)
+typealias WithNextValue<T> = Pair<T, T?>
+
+fun <T : Any> Sequence<T>.withNext(): Sequence<WithNextValue<T>> = WithNextSequence(this)
+
+private class WithNextSequence<T : Any>(private val sequence: Sequence<T>) : Sequence<WithNextValue<T>> {
+
+    override fun iterator(): Iterator<WithNextValue<T>> = WithNextIterator(sequence.iterator())
+}
+
+private class WithNextIterator<T : Any>(private val iterator: Iterator<T>) : Iterator<WithNextValue<T>> {
+
+    private var next: T? = null
+
+    override fun hasNext() = next != null || iterator.hasNext()
+
+    override fun next(): WithNextValue<T> {
+        if (next == null) { // The first invocation (or illegal after-the-last invocation)
+            next = iterator.next()
+        }
+        val next = next ?: throw NoSuchElementException()
+        val nextNext = iterator.nextOrNull()
+        this.next = nextNext
+        return WithNextValue(next, nextNext)
+    }
 }

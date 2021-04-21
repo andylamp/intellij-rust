@@ -5,10 +5,7 @@
 
 package org.rust.lang.core.resolve
 
-import org.rust.MockEdition
-import org.rust.ProjectDescriptor
-import org.rust.WithDependencyRustProjectDescriptor
-import org.rust.WithStdlibAndDependencyRustProjectDescriptor
+import org.rust.*
 import org.rust.cargo.project.workspace.CargoWorkspace
 
 @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
@@ -74,6 +71,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
+    @UseOldResolve
     fun `test duplicated macro_export macro`() = stubOnlyResolve("""
     //- main.rs
         #[macro_use]
@@ -113,7 +111,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     //- lib.rs
         #[macro_export]
         macro_rules! foo_bar { () => {} }
-    """, NameResolutionTestmarks.missingMacroUse)
+    """, NameResolutionTestmarks.missingMacroUse.ignoreInNewResolve(project))
 
     fun `test macro rules in mod 1`() = stubOnlyResolve("""
     //- main.rs
@@ -228,6 +226,56 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro inside import 1`() = stubOnlyResolve("""
+    //- main.rs
+        use test_package::foo;
+                        //^ lib.rs
+    //- lib.rs
+        #[macro_export]
+        macro_rules! foo { () => {} }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro inside import 2`() = stubOnlyResolve("""
+    //- main.rs
+        use test_package::foo;
+                        //^ lib.rs
+    //- lib.rs
+        mod inner {
+            #[macro_export]
+            macro_rules! foo { () => {} }
+        }
+    """)
+
+    @UseNewResolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro inside import 3`() = stubOnlyResolve("""
+    //- main.rs
+        mod inner {
+            use test_package::foo;
+                            //^ lib.rs
+        }
+    //- lib.rs
+        #[macro_export]
+        macro_rules! foo { () => {} }
+    """)
+
+    @UseNewResolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro inside import 4`() = stubOnlyResolve("""
+    //- main.rs
+        mod inner1 {
+            use test_package::foo;
+                            //^ lib.rs
+        }
+    //- lib.rs
+        mod inner2 {
+            #[macro_export]
+            macro_rules! foo { () => {} }
+        }
+    """)
+
     fun `test import macro by use item`() = stubOnlyResolve("""
     //- lib.rs
         extern crate dep_lib_target;
@@ -240,7 +288,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         macro_rules! foo {
             () => {};
         }
-    """, NameResolutionTestmarks.missingMacroUse)
+    """, NameResolutionTestmarks.missingMacroUse.ignoreInNewResolve(project))
 
     fun `test import macro by use item wildcard`() = stubOnlyResolve("""
     //- lib.rs
@@ -254,7 +302,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         macro_rules! foo {
             () => {};
         }
-    """, NameResolutionTestmarks.missingMacroUse)
+    """, NameResolutionTestmarks.missingMacroUse.ignoreInNewResolve(project))
 
     fun `test import macro by use item without extern crate`() = stubOnlyResolve("""
     //- lib.rs
@@ -306,6 +354,19 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         macro_rules! foo {
             () => {};
         }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro with absolute path`() = stubOnlyResolve("""
+    //- main.rs
+        mod test_package {}
+        ::test_package::foo!();
+                      //^ lib.rs
+        fn main() {}
+    //- lib.rs
+        #[macro_export]
+        macro_rules! foo { () => {} }
+                   //X
     """)
 
     // Issue https://github.com/intellij-rust/intellij-rust/issues/3642
@@ -383,7 +444,18 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
-    fun `test import macro by qualified path without extern crate`() = stubOnlyResolve("""
+    fun `test import macro by qualified path without extern crate 1`() = stubOnlyResolve("""
+    //- lib.rs
+        dep_lib_target::foo!();
+                      //^ dep-lib/lib.rs
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    fun `test import macro by qualified path without extern crate 2`() = stubOnlyResolve("""
     //- lib.rs
         fn bar() {
             dep_lib_target::foo!();
@@ -395,21 +467,64 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
-    // TODO
-    fun `test import macro by qualified path with aliased extern crate`() = expect<IllegalStateException> {
-        stubOnlyResolve("""
-        //- lib.rs
-            extern crate dep_lib_target as aliased;
+    @UseNewResolve
+    fun `test import macro by multi-segment path without extern crate 1`() = stubOnlyResolve("""
+    //- lib.rs
+        use dep_lib_target;
+        mod inner {
+            crate::dep_lib_target::foo!();
+                                 //^ dep-lib/lib.rs
+        }
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    @UseNewResolve
+    fun `test import macro by multi-segment path without extern crate 2`() = stubOnlyResolve("""
+    //- lib.rs
+        use dep_lib_target;
+        mod inner {
             fn bar() {
-                aliased::foo!();
-            }          //^ dep-lib/lib.rs
-        //- dep-lib/lib.rs
-            #[macro_export]
-            macro_rules! foo {
-                () => {};
+                crate::dep_lib_target::foo!();
+                                     //^ dep-lib/lib.rs
             }
-        """)
-    }
+        }
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    @UseNewResolve
+    fun `test import macro by qualified path with aliased extern crate`() = stubOnlyResolve("""
+    //- lib.rs
+        extern crate dep_lib_target as aliased;
+        fn bar() {
+            aliased::foo!();
+        }          //^ dep-lib/lib.rs
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    @UseNewResolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test import macro 2 by qualified path`() = stubOnlyResolve("""
+    //- lib.rs
+        fn bar() {
+            dep_lib_target::foo!();
+        }                 //^ dep-lib/lib.rs
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo_ { () => {}; }
+        pub use foo_ as foo;
+    """)
 
     fun `test import from crate root without 'pub' vis`() = stubOnlyResolve("""
     //- lib.rs
@@ -640,6 +755,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         }
     """)
 
+    @UseOldResolve
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
     fun `test ambiguity of extern crate alias and other item with the same name`() {
         stubOnlyResolve("""
@@ -681,7 +797,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         use dep_lib_target;
         use dep_lib_target::Foo;
                           //^ dep-lib/lib.rs
-    """, ItemResolutionTestmarks.extraAtomUse)
+    """, ItemResolutionTestmarks.extraAtomUse.ignoreInNewResolve(project))
 
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
     fun `test "extra use of crate name 1" with alias`() = stubOnlyResolve("""
@@ -701,7 +817,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         use dep_lib_target::{self};
         use dep_lib_target::Foo;
                           //^ dep-lib/lib.rs
-    """, ItemResolutionTestmarks.extraAtomUse)
+    """, ItemResolutionTestmarks.extraAtomUse.ignoreInNewResolve(project))
 
     @MockEdition(CargoWorkspace.Edition.EDITION_2018)
     fun `test import the same name as a crate name`() = stubOnlyResolve("""

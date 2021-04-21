@@ -7,6 +7,7 @@ package org.rust.debugger.runconfig
 
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.util.text.StringUtil
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
@@ -17,6 +18,7 @@ import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBDriver
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.workingDirectory
+import org.rust.cargo.toolchain.tools.rustc
 import org.rust.debugger.*
 import org.rust.debugger.settings.RsDebuggerSettings
 import org.rust.ide.notifications.showBalloon
@@ -36,7 +38,7 @@ class RsDebugProcessConfigurationHelper(
     private val commitHash = cargoProject?.rustcInfo?.version?.commitHash
 
     private val sysroot: String? by lazy {
-        cargoProject?.workingDirectory?.let { toolchain?.getSysroot(it) }
+        cargoProject?.workingDirectory?.let { toolchain?.rustc()?.getSysroot(it) }
     }
 
     fun configure() {
@@ -65,6 +67,8 @@ class RsDebugProcessConfigurationHelper(
         val rustcHash = "/rustc/$commitHash/".systemDependentAndEscaped()
         val rustcSources = "$sysroot/lib/rustlib/src/rust/".systemDependentAndEscaped()
         val fullCommand = """$sourceMapCommand "$rustcHash" "$rustcSources" """
+        // BACKCOMPAT: 2020.3
+        @Suppress("UnstableApiUsage", "DEPRECATION")
         executeConsoleCommand(threadId, frameIndex, fullCommand)
     }
 
@@ -75,6 +79,8 @@ class RsDebugProcessConfigurationHelper(
         }
     }
 
+    // BACKCOMPAT: 2020.3
+    @Suppress("UnstableApiUsage", "DEPRECATION")
     private fun LLDBDriver.loadPrettyPrinters() {
         when (settings.lldbRenderers) {
             LLDBRenderers.COMPILER -> {
@@ -116,6 +122,8 @@ class RsDebugProcessConfigurationHelper(
                     """sys.path.insert(0, "$path"); """ +
                     """import gdb_rust_pretty_printing; """ +
                     """gdb_rust_pretty_printing.register_printers(gdb); """
+                // BACKCOMPAT: 2020.3
+                @Suppress("UnstableApiUsage", "DEPRECATION")
                 executeConsoleCommand(threadId, frameIndex, command)
             }
 
@@ -125,6 +133,8 @@ class RsDebugProcessConfigurationHelper(
                     """sys.path.insert(0, "$path"); """ +
                     """import $GDB_LOOKUP; """ +
                     """$GDB_LOOKUP.register_printers(gdb); """
+                // BACKCOMPAT: 2020.3
+                @Suppress("UnstableApiUsage", "DEPRECATION")
                 executeConsoleCommand(threadId, frameIndex, command)
             }
 
@@ -144,7 +154,7 @@ class RsDebugProcessConfigurationHelper(
         StringUtil.escapeStringCharacters(FileUtil.toSystemDependentName(this))
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(RsDebugProcessConfigurationHelper::class.java)
+        private val LOG: Logger = logger<RsDebugProcessConfigurationHelper>()
 
         /**
          * Should be synchronized with `rust_types.py`
@@ -169,7 +179,7 @@ class RsDebugProcessConfigurationHelper(
             "^(core::([a-z_]+::)+)Ref<.+>$",
             "^(core::([a-z_]+::)+)RefMut<.+>$",
             "^(core::([a-z_]+::)+)RefCell<.+>$",
-            "^core::num::NonZero.+$"
+            "^core::num::([a-z_]+::)*NonZero.+$"
         )
     }
 }

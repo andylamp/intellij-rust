@@ -40,9 +40,13 @@ class RsTrailingCommaFormatProcessorTest : RsFormatterTestBase() {
     """, """
         use foo::{bar, baz};
 
-        struct S1 { a: i32 }
+        struct S1 {
+            a: i32,
+        }
 
-        struct S2 { a: i32 }
+        struct S2 {
+            a: i32,
+        }
 
         enum E {
             V { a: i32 }
@@ -164,7 +168,7 @@ class RsTrailingCommaFormatProcessorTest : RsFormatterTestBase() {
         // `Rustfmt` will not be used because of range restriction
         myTextRange = RsPsiFactory(project).createFile(before).descendantOfTypeStrict<RsStructItem>()!!.textRange
 
-        RustfmtExternalFormatProcessor.Testmarks.builtinPostProcess.checkHit {
+        RustfmtExternalFormatProcessorBase.Testmarks.builtinPostProcess.checkHit {
             doTextTest(before, after)
         }
     }

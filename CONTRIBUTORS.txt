@@ -2,6 +2,8 @@
 # If you are wondering, how to sort lines in IDEA, then the answer is
 # https://plugins.jetbrains.com/plugin/2162
 
+abn
+akozlova
 alexeykudinkin
 alexpana
 allengeorge
@@ -54,6 +56,7 @@ JakubAdamWieczorek
 Jezza
 johnthagen
 jonas-schievink
+KarelPeeters
 Keats
 king6cong
 Kobzol
@@ -113,6 +116,7 @@ stigger
 Stzx
 t-kameyama
 tamird
+telezhnaya
 ThoseGrapefruits
 tov
 ttaomae
@@ -127,5 +131,6 @@ vlad20012
 vlad9486
 webdesus
 winger
+zeroeightysix
 zinoviy23
 zjhmale

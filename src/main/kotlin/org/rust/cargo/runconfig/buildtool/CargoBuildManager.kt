@@ -16,7 +16,6 @@ import com.intellij.execution.impl.RunManagerImpl
 import com.intellij.execution.impl.RunnerAndConfigurationSettingsImpl
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.runners.ProgramRunner
-import com.intellij.notification.NotificationGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.TransactionGuard
 import com.intellij.openapi.application.invokeLater
@@ -34,7 +33,6 @@ import com.intellij.openapiext.isHeadlessEnvironment
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.ui.SystemNotifications
 import com.intellij.ui.content.MessageView
-import com.intellij.util.EnvironmentUtil
 import com.intellij.util.concurrency.FutureResult
 import com.intellij.util.execution.ParametersListUtil
 import com.intellij.util.text.SemVer
@@ -48,36 +46,32 @@ import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.util.CargoArgsParser.Companion.parseArgs
 import org.rust.ide.experiments.RsExperiments
+import org.rust.ide.notifications.RsNotifications
 import org.rust.openapiext.isFeatureEnabled
 import org.rust.openapiext.saveAllDocuments
 import java.util.concurrent.Future
 
-@Suppress("UnstableApiUsage")
 object CargoBuildManager {
-    private val LOG_NOTIFICATION_GROUP: NotificationGroup = NotificationGroup.logOnlyGroup("Build Log")
-
     private val BUILDABLE_COMMANDS: List<String> = listOf("run", "test")
 
-    @JvmField
-    val CANCELED_BUILD_RESULT: Future<CargoBuildResult> =
+    private val CANCELED_BUILD_RESULT: Future<CargoBuildResult> =
         FutureResult(CargoBuildResult(succeeded = false, canceled = true, started = 0))
 
-    private val MIN_RUSTC_VERSION: SemVer = SemVer("1.32.0", 1, 32, 0)
+    private val MIN_RUSTC_VERSION: SemVer = SemVer.parseFromText("1.48.0")!!
 
     val Project.isBuildToolWindowEnabled: Boolean
         get() {
             if (!isFeatureEnabled(RsExperiments.BUILD_TOOL_WINDOW)) return false
-            val rustcVersion = cargoProjects
-                .allProjects
+            val minVersion = cargoProjects.allProjects
                 .mapNotNull { it.rustcInfo?.version?.semver }
-                .min()
-                ?: return false
-            return rustcVersion >= MIN_RUSTC_VERSION
+                .min() ?: return false
+            return minVersion >= MIN_RUSTC_VERSION
         }
 
     fun build(buildConfiguration: CargoBuildConfiguration): Future<CargoBuildResult> {
         val configuration = buildConfiguration.configuration
         val environment = buildConfiguration.environment
+        val project = environment.project
 
         environment.cargoPatches += cargoBuildPatch
         val state = CargoRunState(
@@ -89,10 +83,10 @@ object CargoBuildManager {
         val cargoProject = state.cargoProject ?: return CANCELED_BUILD_RESULT
 
         // Make sure build tool window is initialized:
-        ServiceManager.getService(cargoProject.project, BuildContentManager::class.java)
+        ServiceManager.getService(project, BuildContentManager::class.java)
 
         if (isUnitTestMode) {
-            lastBuildCommandLine = state.commandLine
+            lastBuildCommandLine = state.prepareCommandLine()
         }
 
         return execute(CargoBuildContext(
@@ -112,10 +106,12 @@ object CargoBuildManager {
                 @Suppress("UsePropertyAccessSyntax")
                 val buildToolWindow = BuildContentManager.getInstance(project).getOrCreateToolWindow()
                 buildToolWindow.setAvailable(true, null)
-                buildToolWindow.show(null)
+                if (environment.isActivateToolWindowBeforeRun) {
+                    buildToolWindow.activate(null)
+                }
             }
 
-            processHandler = state.startProcess(emulateTerminal = true)
+            processHandler = state.startProcess(processColors = false)
             processHandler?.addProcessListener(CargoBuildAdapter(this, buildProgressListener))
             processHandler?.startNotify()
         }
@@ -203,7 +199,7 @@ object CargoBuildManager {
     fun isBuildConfiguration(configuration: CargoCommandConfiguration): Boolean {
         val args = ParametersListUtil.parse(configuration.command)
         return when (val command = args.firstOrNull()) {
-            "build" -> true
+            "build", "check", "clippy" -> true
             "test" -> {
                 val additionalArguments = args.drop(1)
                 val (commandArguments, _) = parseArgs(command, additionalArguments)
@@ -235,14 +231,20 @@ object CargoBuildManager {
         return buildConfiguration
     }
 
-    fun createBuildEnvironment(buildConfiguration: CargoCommandConfiguration): ExecutionEnvironment? {
+    fun createBuildEnvironment(
+        buildConfiguration: CargoCommandConfiguration,
+        environment: ExecutionEnvironment? = null
+    ): ExecutionEnvironment? {
         require(isBuildConfiguration(buildConfiguration))
         val project = buildConfiguration.project
         val runManager = RunManager.getInstance(project) as? RunManagerImpl ?: return null
         val executor = ExecutorRegistry.getInstance().getExecutorById(DefaultRunExecutor.EXECUTOR_ID) ?: return null
         val runner = ProgramRunner.findRunnerById(CargoCommandRunner.RUNNER_ID) ?: return null
         val settings = RunnerAndConfigurationSettingsImpl(runManager, buildConfiguration)
-        return ExecutionEnvironment(executor, runner, settings, project)
+        settings.isActivateToolWindowBeforeRun = environment.isActivateToolWindowBeforeRun
+        val buildEnvironment = ExecutionEnvironment(executor, runner, settings, project)
+        environment?.copyUserDataTo(buildEnvironment)
+        return buildEnvironment
     }
 
     fun showBuildNotification(
@@ -253,7 +255,7 @@ object CargoBuildManager {
         time: Long = 0
     ) {
         val notificationContent = buildNotificationMessage(message, details, time)
-        val notification = LOG_NOTIFICATION_GROUP.createNotification(notificationContent, messageType)
+        val notification = RsNotifications.buildLogGroup().createNotification(notificationContent, messageType)
         notification.notify(project)
 
         if (messageType === MessageType.ERROR) {
@@ -278,15 +280,26 @@ object CargoBuildManager {
     }
 
     private val cargoBuildPatch: CargoPatch = { commandLine ->
-        val additionalArguments = commandLine.additionalArguments.toMutableList()
-        additionalArguments.remove("-q")
-        additionalArguments.remove("--quiet")
-        addFormatJsonOption(additionalArguments, "--message-format")
+        val additionalArguments = mutableListOf<String>().apply {
+            addAll(commandLine.additionalArguments)
+            remove("-q")
+            remove("--quiet")
+            // If `json-diagnostic-rendered-ansi` is used, `rendered` field of JSON messages contains
+            // embedded ANSI color codes for respecting rustc's default color scheme.
+            addFormatJsonOption(this, "--message-format", "json-diagnostic-rendered-ansi")
+        }
+
+        val oldVariables = commandLine.environmentVariables
         val environmentVariables = EnvironmentVariablesData.create(
-            EnvironmentUtil.getEnvironmentMap() +
-                commandLine.environmentVariables.envs - "CI" + ("TERM" to "ansi"),
-            false
+            // https://doc.rust-lang.org/cargo/reference/environment-variables.html#configuration-environment-variables
+            // These environment variables are needed to force progress bar to non-TTY output
+            oldVariables.envs + mapOf(
+                "CARGO_TERM_PROGRESS_WHEN" to "always",
+                "CARGO_TERM_PROGRESS_WIDTH" to "1000"
+            ),
+            oldVariables.isPassParentEnvs
         )
+
         commandLine.copy(additionalArguments = additionalArguments, environmentVariables = environmentVariables)
     }
 

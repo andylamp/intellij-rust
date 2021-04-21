@@ -388,6 +388,15 @@ class RsNonExhaustiveMatchInspectionTest : RsInspectionsTestBase(RsNonExhaustive
         }
     """)
 
+    fun `test empty enum`() = checkByText("""
+        enum E {}
+
+        fn foo(e: E) {
+            match e {
+            }
+        }
+    """)
+
     fun `test ignored fields 1`() = checkByText("""
         struct S { x: bool, y: i32 }
 
@@ -461,6 +470,13 @@ class RsNonExhaustiveMatchInspectionTest : RsInspectionsTestBase(RsNonExhaustive
                 A => {}
                 E::B => {}
             };
+        }
+    """)
+
+    fun `test no add _ pattern for empty match`() = checkFixIsUnavailable("Add _ pattern", """
+        fn main() {
+            let test = true;
+            <error descr="Match must be exhaustive [E0004]">match/*caret*/</error> test {}
         }
     """)
 

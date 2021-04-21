@@ -15,19 +15,19 @@ on:
 
 jobs:
     generate-build-number:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         outputs:
             build_number: ${{ steps.buildnumber.outputs.build_number }}
         steps:
             - name: Generate build number
-              uses: einaregilsson/build-number@v2
+              uses: einaregilsson/build-number@v3
               id: buildnumber
               with:
                   token: ${{ secrets.github_token }}
                   prefix: rust
 
     get-release-branch:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         outputs:
             release-branch: ${{ steps.get-release-branch.outputs.release-branch }}
         steps:
@@ -45,7 +45,7 @@ jobs:
                   echo "::set-output name=release-branch::$branch"
 
     update-changelog-link:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         steps:
             - name: Checkout
               uses: actions/checkout@v2
@@ -67,7 +67,7 @@ jobs:
               run: python scripts/update-changelog-link.py --token ${{ secrets.WORKFLOW_GITHUB_TOKEN }}
 
     get-channel:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         outputs:
             channel: ${{ steps.get-channel.outputs.channel }}
         steps:
@@ -81,7 +81,7 @@ jobs:
                 fi
 
     fetch-latest-changes:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         needs: [ get-release-branch, update-changelog-link, get-channel ]
         outputs:
             rust-commit: ${{ steps.fetch-commits.outputs.rust-commit }}
@@ -115,19 +115,70 @@ jobs:
                   echo "toml-commit: ${{ steps.fetch-commits.outputs.toml-commit }}"
                   echo "toml-release: ${{ steps.fetch-commits.outputs.toml-release }}"
 
-    build:
-        needs: [ generate-build-number, get-release-branch, update-changelog-link, get-channel, fetch-latest-changes ]
-        runs-on: ubuntu-latest
+    build-native-code:
+        if: needs.fetch-latest-changes.outputs.rust-commit != needs.fetch-latest-changes.outputs.rust-release
+        needs: [ fetch-latest-changes ]
         strategy:
             fail-fast: true
             matrix:
-                platform-version: [ 202, 203 ]
+                config:
+                    - name: linux
+                      arch: x86-64
+                      os: ubuntu-18.04
+                      target: x86_64-unknown-linux-gnu
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper
+                    - name: windows
+                      arch: x86-64
+                      os: windows-latest
+                      target: x86_64-pc-windows-msvc
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper.exe
+                    - name: macos
+                      arch: x86-64
+                      os: macos-latest
+                      target: x86_64-apple-darwin
+                      artifact_path: native-helper/target/release/intellij-rust-native-helper
+
+        name: ${{ matrix.config.name }}-${{ matrix.config.arch }}
+        runs-on: ${{ matrix.config.os }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v2
+
+            - name: Set up Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  target: ${{ matrix.config.target }}
+                  default: true
+
+            - name: Build
+              uses: actions-rs/cargo@v1
+              with:
+                  command: build
+                  args: --manifest-path native-helper/Cargo.toml --release
+
+            - name: Publish
+              uses: actions/upload-artifact@v2
+              with:
+                  name: ${{ matrix.config.name }}-${{ matrix.config.arch }}
+                  path: ${{ matrix.config.artifact_path }}
+
+    build:
+        if: needs.fetch-latest-changes.outputs.rust-commit != needs.fetch-latest-changes.outputs.rust-release
+        needs: [ generate-build-number, get-release-branch, update-changelog-link, get-channel, fetch-latest-changes, build-native-code ]
+        runs-on: ubuntu-18.04
+        strategy:
+            fail-fast: true
+            matrix:
+                platform-version: [ 203, 211 ]
         env:
             ORG_GRADLE_PROJECT_buildNumber: ${{ needs.generate-build-number.outputs.build_number }}
             ORG_GRADLE_PROJECT_platformVersion: ${{ matrix.platform-version }}
             ORG_GRADLE_PROJECT_enableBuildSearchableOptions: true
             ORG_GRADLE_PROJECT_publishChannel: ${{ needs.get-channel.outputs.channel }}
             ORG_GRADLE_PROJECT_publishToken: ${{ secrets.plugin_bot_token }}
+            ORG_GRADLE_PROJECT_compileNativeCode: false
 
         steps:
             - name: Checkout
@@ -140,11 +191,23 @@ jobs:
               with:
                   java-version: 11
 
-            - name: Publish rust plugin
-              if: needs.fetch-latest-changes.outputs.rust-commit != needs.fetch-latest-changes.outputs.rust-release
-              uses: eskatos/gradle-command-action@v1
+            - name: Load linux binaries
+              uses: actions/download-artifact@v2
               with:
-                  arguments: ":plugin:publishPlugin"
+                  name: linux-x86-64
+                  path: bin/linux/x86-64
+
+            - name: Load windows binaries
+              uses: actions/download-artifact@v2
+              with:
+                  name: windows-x86-64
+                  path: bin/windows/x86-64
+
+            - name: Load macos binaries
+              uses: actions/download-artifact@v2
+              with:
+                  name: macos-x86-64
+                  path: bin/macos/x86-64
 
             - name: Publish toml plugin
               if: needs.fetch-latest-changes.outputs.toml-commit != needs.fetch-latest-changes.outputs.toml-release
@@ -152,9 +215,14 @@ jobs:
               with:
                   arguments: ":intellij-toml:publishPlugin"
 
+            - name: Publish rust plugin
+              uses: eskatos/gradle-command-action@v1
+              with:
+                  arguments: ":plugin:publishPlugin"
+
     save-commit:
         needs: [ get-channel, fetch-latest-changes, build ]
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-18.04
         steps:
             - name: Checkout
               uses: actions/checkout@v2

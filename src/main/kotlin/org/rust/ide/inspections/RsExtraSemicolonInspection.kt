@@ -8,8 +8,7 @@ package org.rust.ide.inspections
 import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiElementVisitor
-import org.rust.lang.core.cfg.ExitPoint
+import org.rust.lang.core.dfa.ExitPoint
 import org.rust.lang.core.psi.RsExprStmt
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.RsVisitor
@@ -26,7 +25,7 @@ import org.rust.lang.core.types.type
 class RsExtraSemicolonInspection : RsLocalInspectionTool() {
     override fun getDisplayName() = "Extra semicolon"
 
-    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor =
+    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean): RsVisitor =
         object : RsVisitor() {
             override fun visitFunction(o: RsFunction) = inspect(holder, o)
         }

@@ -17,9 +17,8 @@ class RsPartialParsingTestCase : RsParsingTestCaseBase("partial") {
     fun `test fn`() = doTest(true)
     fun `test use item`() = doTest(true)
     fun `test shifts`() = doTest(true)
-    fun `test struct pat`() = doTest(true)
+    fun `test patterns`() = doTest(true)
     fun `test struct def`() = doTest(true)
-    fun `test enum vis`() = doTest(true)
     fun `test impl body`() = doTest(true)
     fun `test trait body`() = doTest(true)
     fun `test match expr`() = doTest(true)
@@ -30,6 +29,7 @@ class RsPartialParsingTestCase : RsParsingTestCaseBase("partial") {
     fun `test macros`() = doTest(true)
     fun `test exprs`() = doTest(true)
     fun `test bounds`() = doTest(true)
+    fun `test paths`() = doTest(true)
 
     override fun checkResult(targetDataName: String, file: PsiFile) {
         check(hasError(file)) {

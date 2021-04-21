@@ -15,13 +15,16 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.ui.EditorNotificationPanel
+import org.rust.RsBundle
 import org.rust.cargo.project.model.*
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsChangedEvent
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsListener
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.workspace.StandardLibrary
+import org.rust.cargo.toolchain.tools.isRustupAvailable
 import org.rust.lang.core.psi.isRustFile
 
 /**
@@ -43,10 +46,8 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
                     }
                 })
 
-            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                    updateAllNotifications()
-                }
+            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+                updateAllNotifications()
             })
         }
     }
@@ -71,12 +72,13 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
 
         if (!cargoProjects.initialized) return null
 
-        val workspace = cargoProjects.findProjectForFile(file)?.workspace ?: return null
+        val cargoProject = cargoProjects.findProjectForFile(file) ?: return null
+        val workspace = cargoProject.workspace ?: return null
         if (!workspace.hasStandardLibrary) {
             // If rustup is not null, the WorkspaceService will use it
             // to add stdlib automatically. This happens asynchronously,
             // so we can't reliably say here if that succeeded or not.
-            if (!toolchain.isRustupAvailable) return createLibraryAttachingPanel(file)
+            if (!toolchain.isRustupAvailable) return createLibraryAttachingPanel(project, file, cargoProject.rustcInfo)
         }
 
         return null
@@ -84,34 +86,34 @@ class MissingToolchainNotificationProvider(project: Project) : RsNotificationPro
 
     private fun createBadToolchainPanel(file: VirtualFile): RsEditorNotificationPanel =
         RsEditorNotificationPanel(NO_RUST_TOOLCHAIN).apply {
-            setText("No Rust toolchain configured")
-            createActionLabel("Setup toolchain") {
+            text = RsBundle.message("notification.no.toolchain.configured")
+            createActionLabel(RsBundle.message("notification.action.set.up.toolchain.text")) {
                 project.rustSettings.configureToolchain()
             }
-            createActionLabel("Do not show again") {
+            createActionLabel(RsBundle.message("notification.action.do.not.show.again.text")) {
                 disableNotification(file)
                 updateAllNotifications()
             }
         }
 
-    private fun createLibraryAttachingPanel(file: VirtualFile): RsEditorNotificationPanel =
+    private fun createLibraryAttachingPanel(project: Project, file: VirtualFile, rustcInfo: RustcInfo?): RsEditorNotificationPanel =
         RsEditorNotificationPanel(NO_ATTACHED_STDLIB).apply {
-            setText("Can not attach stdlib sources automatically without rustup.")
-            createActionLabel("Attach manually") {
+            text = RsBundle.message("notification.can.not.attach.stdlib.sources")
+            createActionLabel(RsBundle.message("notification.action.attach.manually.text")) {
                 val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor()
-                val stdlib = FileChooser.chooseFile(descriptor, this, project, null) ?: return@createActionLabel
-                if (StandardLibrary.fromFile(stdlib) != null) {
-                    project.rustSettings.modify { it.explicitPathToStdlib = stdlib.path }
+                val stdlib = FileChooser.chooseFile(descriptor, this, this@MissingToolchainNotificationProvider.project, null) ?: return@createActionLabel
+                if (StandardLibrary.fromFile(project, stdlib, rustcInfo) != null) {
+                    this@MissingToolchainNotificationProvider.project.rustSettings.modify { it.explicitPathToStdlib = stdlib.path }
                 } else {
-                    project.showBalloon(
-                        "Invalid Rust standard library source path: `${stdlib.presentableUrl}`",
+                    this@MissingToolchainNotificationProvider.project.showBalloon(
+                        RsBundle.message("notification.invalid.stdlib.source.path", stdlib.presentableUrl),
                         NotificationType.ERROR
                     )
                 }
                 updateAllNotifications()
             }
 
-            createActionLabel("Do not show again") {
+            createActionLabel(RsBundle.message("notification.action.do.not.show.again.text")) {
                 disableNotification(file)
                 updateAllNotifications()
             }

@@ -244,24 +244,57 @@ class RsSyntaxErrorsAnnotatorTest : RsAnnotatorTestBase(RsSyntaxErrorsAnnotator:
         fn foo<T, <error descr="Lifetime parameters must be declared prior to type parameters">'a</error>>(bar: &'a T) {}
     """)
 
+    fun `test lifetime params after const params`() = checkErrors("""
+        fn foo<const C: usize, <error descr="Lifetime parameters must be declared prior to const parameters">'a</error>>(bar: &'a usize) {}
+    """)
+
+    @MockRustcVersion("1.51.0-nightly")
+    fun `test type params after const params (old)`() = checkErrors("""
+        #![feature(min_const_generics)]
+        fn foo<const C: usize, <error descr="Type parameters must be declared prior to const parameters">T</error>>(bar: T) {}
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
+    fun `test type params after const params (new)`() = checkErrors("""
+        #![feature(const_generics)]
+        fn foo<const C: usize, T>(bar: T) {}
+    """)
+
+    @MockRustcVersion("1.34.0-nightly")
     fun `test type arguments order`() = checkErrors("""
+        #![feature(const_generics)]
         type A1 = B<C, <error descr="Lifetime arguments must be declared prior to type arguments">'d</error>>;
 
         type A2 = B<C, <error descr="Lifetime arguments must be declared prior to type arguments">'d</error>,
-                      <error descr="Lifetime arguments must be declared prior to type arguments">'e</error>>;
+                       <error descr="Lifetime arguments must be declared prior to type arguments">'e</error>>;
 
-        type A3 = B<C=D, <error descr="Type arguments must be declared prior to associated type bindings">E</error>>;
+        type A3 = B<0, <error descr="Lifetime arguments must be declared prior to const arguments">'d</error>>;
 
-        type A4 = B<C=D, <error descr="Type arguments must be declared prior to associated type bindings">E</error>,
-                         <error descr="Type arguments must be declared prior to associated type bindings">F</error>>;
+        type A4 = B<0, <error descr="Lifetime arguments must be declared prior to const arguments">'d</error>,
+                       <error descr="Lifetime arguments must be declared prior to const arguments">'e</error>>;
 
-        type A3 = B<C=D, <error descr="Lifetime arguments must be declared prior to associated type bindings">'e</error>>;
+        type A4 = B<C, 0, 1>;
+        type A5 = B<0, C1, C2>;
 
-        type A4 = B<C=D, <error descr="Lifetime arguments must be declared prior to associated type bindings">'e</error>,
-                         <error descr="Lifetime arguments must be declared prior to associated type bindings">'f</error>>;
+        type A6 = B<C, 0, <error descr="Lifetime arguments must be declared prior to const arguments">'d</error>>;
+        type A7 = B<0, C, <error descr="Lifetime arguments must be declared prior to type arguments">'d</error>>;
+    """)
 
-        type A5 = B<1, <error descr="Type arguments must be declared prior to const arguments">C</error>,
-                         <error descr="Lifetime arguments must be declared prior to const arguments">'d</error>>;
+    fun `test generic arguments after constraints`() = checkErrors("""
+        type A1 = B<C=D, <error descr="Generic arguments must come before the first constraint">E</error>>;
+
+        type A2 = B<C=D, <error descr="Generic arguments must come before the first constraint">E</error>,
+                         <error descr="Generic arguments must come before the first constraint">F</error>>;
+
+        type A3 = B<C=D, <error descr="Generic arguments must come before the first constraint">'e</error>>;
+
+        type A4 = B<C=D, <error descr="Generic arguments must come before the first constraint">'e</error>,
+                         <error descr="Generic arguments must come before the first constraint">'f</error>>;
+
+        type A5 = B<C=D, <error descr="Generic arguments must come before the first constraint">1</error>>;
+
+        type A6 = B<C=D, <error descr="Generic arguments must come before the first constraint">1</error>,
+                         <error descr="Generic arguments must come before the first constraint">2</error>>;
     """)
 
     fun `test default type parameters in impl`() = checkErrors("""
@@ -347,5 +380,11 @@ class RsSyntaxErrorsAnnotatorTest : RsAnnotatorTestBase(RsSyntaxErrorsAnnotator:
         <error descr="Macros cannot have the `default` qualifier">default</error> macro_rules! i {}
         <error descr="Macros cannot have the `default` qualifier">default</error> macro j() {}
         <error descr="Macro invocations cannot have the `default` qualifier">default</error> foo!();
+    """)
+
+    fun `test constants without a type`() = checkErrors("""
+        <error descr="Missing type for `const` item">const MY_CONST = 1;</error>
+        <error descr="Missing type for `static` item">static MY_STATIC = 1;</error>
+        const PARTIAL_TYPE:<error descr="<type> expected, got '='"> </error> = 1;
     """)
 }

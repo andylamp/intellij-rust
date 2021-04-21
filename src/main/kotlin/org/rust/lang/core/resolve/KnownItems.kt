@@ -13,6 +13,7 @@ import com.intellij.psi.util.CachedValuesManager
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.util.AutoInjectedCrates.CORE
+import org.rust.lang.core.macros.proc.ProcMacroApplicationService
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.RsTraitItem
 import org.rust.lang.core.psi.ext.RsElement
@@ -136,6 +137,7 @@ class KnownItems(
     // In this case, fully qualified name search is used
     val Debug: RsTraitItem? get() = findLangItem("debug_trait") ?: findItem("core::fmt::Debug")
     val Box: RsStructOrEnumItemElement? get() = findLangItem("owned_box", "alloc")
+    val Pin: RsStructOrEnumItemElement? get() = findLangItem("pin", "core")
 
     val drop: RsFunction? get() = findItem("core::mem::drop")
 }
@@ -173,7 +175,8 @@ private class RealKnownItemsLookup(
 
 enum class KnownDerivableTrait(
     private val resolver: (KnownItems) -> RsTraitItem?,
-    val dependencies: Array<KnownDerivableTrait> = emptyArray()
+    val dependencies: Array<KnownDerivableTrait> = emptyArray(),
+    val isStd: Boolean = true
 ) {
     Clone(KnownItems::Clone),
     Copy(KnownItems::Copy, arrayOf(Clone)),
@@ -185,16 +188,31 @@ enum class KnownDerivableTrait(
     PartialOrd(KnownItems::PartialOrd, arrayOf(PartialEq)),
     Ord(KnownItems::Ord, arrayOf(PartialOrd, Eq, PartialEq)),
 
-    Serialize({ it.findItem("serde::Serialize") }),
-    Deserialize({ it.findItem("serde::Deserialize") }),
+    Serialize({ it.findItem("serde::Serialize") }, isStd = false),
+    Deserialize({ it.findItem("serde::Deserialize") }, isStd = false),
 
     // TODO Fail also derives `Display`. Ignore it for now
-    Fail({ it.findItem("failure::Fail") }, arrayOf(Debug)),
+    Fail({ it.findItem("failure::Fail") }, arrayOf(Debug), isStd = false),
     ;
 
     fun findTrait(items: KnownItems): RsTraitItem? = resolver(items)
+
+    /** Hardcoded trait impl vs proc macro expansion usage */
+    fun shouldUseHardcodedTraitDerive(): Boolean {
+        // Use hardcoded impls for all known derives except `failure::Fail` (if proc macro expansion
+        // is enabled). We always hardcode `serde` due to performance reasons
+        return this != Fail || !ProcMacroApplicationService.isEnabled()
+    }
+
+    companion object {
+        /** Hardcoded trait impl vs proc macro expansion usage */
+        fun shouldUseHardcodedTraitDerive(deriveName: String?): Boolean {
+            val known = KNOWN_DERIVABLE_TRAITS[deriveName] ?: return false
+            return known.shouldUseHardcodedTraitDerive()
+        }
+    }
 }
 
 val KnownDerivableTrait.withDependencies: List<KnownDerivableTrait> get() = listOf(this, *dependencies)
 
-val KNOWN_DERIVABLE_TRAITS: Map<String, KnownDerivableTrait> = KnownDerivableTrait.values().associate { it.name to it }
+val KNOWN_DERIVABLE_TRAITS: Map<String, KnownDerivableTrait> = KnownDerivableTrait.values().associateBy { it.name }

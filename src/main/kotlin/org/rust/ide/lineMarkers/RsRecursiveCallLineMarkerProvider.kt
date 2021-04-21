@@ -9,7 +9,6 @@ import com.intellij.codeInsight.daemon.LineMarkerInfo
 import com.intellij.codeInsight.daemon.LineMarkerProvider
 import com.intellij.openapi.editor.markup.GutterIconRenderer
 import com.intellij.psi.PsiElement
-import com.intellij.util.FunctionUtil
 import org.rust.ide.icons.RsIcons
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.ancestorStrict
@@ -44,13 +43,13 @@ class RsRecursiveCallLineMarkerProvider : LineMarkerProvider {
             val lineNumber = doc.getLineNumber(el.textOffset)
             if (lineNumber !in lines) {
                 lines.add(lineNumber)
-                result.add(LineMarkerInfo(
+                result.add(RsLineMarkerInfoUtils.create(
                     el,
                     el.textRange,
                     RsIcons.RECURSIVE_CALL,
-                    FunctionUtil.constant("Recursive call"),
                     null,
-                    GutterIconRenderer.Alignment.RIGHT))
+                    GutterIconRenderer.Alignment.RIGHT
+                ) { "Recursive call" })
             }
         }
     }

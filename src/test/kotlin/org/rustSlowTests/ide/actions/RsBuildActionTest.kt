@@ -9,9 +9,11 @@ package org.rustSlowTests.ide.actions
 
 import com.intellij.build.events.impl.SuccessResultImpl
 import com.intellij.execution.RunManager
+import com.intellij.execution.configuration.EnvironmentVariablesData
 import com.intellij.execution.impl.RunManagerImpl
-import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.testFramework.TestDataProvider
+import org.rust.MinRustcVersion
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.lastBuildCommandLine
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.mockBuildProgressListener
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.testBuildId
@@ -25,6 +27,7 @@ import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyFi
 import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyStartBuildEvent
 import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyStartEvent
 
+@MinRustcVersion("1.48.0")
 class RsBuildActionTest : CargoBuildTest() {
 
     fun `test build first action`() {
@@ -69,11 +72,16 @@ class RsBuildActionTest : CargoBuildTest() {
         }.create()
 
         setUpSelectedConfigurationFromContext(testProject.fileWithCaret)
-        RsBuildAction().performForContext(dataContext)
+        performBuildAction()
         mockBuildProgressListener!!.waitFinished()
 
         val actualCommandLine = lastBuildCommandLine!!
-        val expectedCommandLine = CargoCommandLine("build", actualCommandLine.workingDirectory, listOf("--package", "first", "--bin", "first"))
+        val expectedCommandLine = CargoCommandLine(
+            "build",
+            actualCommandLine.workingDirectory,
+            listOf("--message-format=json-diagnostic-rendered-ansi", "--package", "first", "--bin", "first"),
+            environmentVariables = BUILD_VARIABLES
+        )
         assertEquals(expectedCommandLine, actualCommandLine)
 
         checkEvents(
@@ -141,11 +149,16 @@ class RsBuildActionTest : CargoBuildTest() {
         }.create()
 
         setUpSelectedConfigurationFromContext(testProject.fileWithCaret)
-        RsBuildAction().performForContext(dataContext)
+        performBuildAction()
         mockBuildProgressListener!!.waitFinished()
 
         val actualCommandLine = lastBuildCommandLine!!
-        val expectedCommandLine = CargoCommandLine("build", actualCommandLine.workingDirectory, listOf("--package", "second", "--bin", "second"))
+        val expectedCommandLine = CargoCommandLine(
+            "build",
+            actualCommandLine.workingDirectory,
+            listOf("--message-format=json-diagnostic-rendered-ansi", "--package", "second", "--bin", "second"),
+            environmentVariables = BUILD_VARIABLES
+        )
         assertEquals(expectedCommandLine, actualCommandLine)
 
         checkEvents(
@@ -215,11 +228,16 @@ class RsBuildActionTest : CargoBuildTest() {
             }
         }.create()
 
-        RsBuildAction().performForContext(dataContext)
+        performBuildAction()
         mockBuildProgressListener!!.waitFinished()
 
         val actualCommandLine = lastBuildCommandLine!!
-        val expectedCommandLine = CargoCommandLine("build", actualCommandLine.workingDirectory, listOf("--all", "--all-targets"))
+        val expectedCommandLine = CargoCommandLine(
+            "build",
+            actualCommandLine.workingDirectory,
+            listOf("--message-format=json-diagnostic-rendered-ansi", "--all", "--all-targets"),
+            environmentVariables = BUILD_VARIABLES
+        )
         assertEquals(expectedCommandLine, actualCommandLine)
 
         checkEvents(
@@ -256,8 +274,10 @@ class RsBuildActionTest : CargoBuildTest() {
         )
     }
 
-    private val dataContext: DataContext
-        get() = TestDataProvider(project)
+    private fun performBuildAction() {
+        val action = ActionManager.getInstance().getAction("Rust.Build") as RsBuildAction
+        action.performForContext(TestDataProvider(project))
+    }
 
     private fun setUpSelectedConfigurationFromContext(fileWithCaret: String) {
         val runManager = RunManager.getInstance(project) as RunManagerImpl
@@ -266,5 +286,16 @@ class RsBuildActionTest : CargoBuildTest() {
         val settings = createRunnerAndConfigurationSettingsFromContext(producer, null)
         runManager.addConfiguration(settings)
         runManager.selectedConfiguration = settings
+    }
+
+    companion object {
+        private val BUILD_VARIABLES: EnvironmentVariablesData =
+            EnvironmentVariablesData.create(
+                mapOf(
+                    "CARGO_TERM_PROGRESS_WHEN" to "always",
+                    "CARGO_TERM_PROGRESS_WIDTH" to "1000"
+                ),
+                true
+            )
     }
 }

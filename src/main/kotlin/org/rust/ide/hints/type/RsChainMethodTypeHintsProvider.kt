@@ -63,7 +63,7 @@ class RsChainMethodTypeHintsProvider : InlayHintsProvider<RsChainMethodTypeHints
         editor: Editor,
         settings: Settings,
         sink: InlayHintsSink
-    ): InlayHintsCollector? =
+    ): InlayHintsCollector =
         object : FactoryInlayHintsCollector(editor) {
             val typeHintsFactory = RsTypeHintsPresentationFactory(factory, true)
 
@@ -100,7 +100,7 @@ class RsChainMethodTypeHintsProvider : InlayHintsProvider<RsChainMethodTypeHints
                 val project = call.project
                 val presentation = typeHintsFactory.typeHint(type)
                 val finalPresentation = presentation.withDisableAction(project)
-                sink.addInlineElement(call.endOffset, true, finalPresentation)
+                sink.addInlineElement(call.endOffset, true, finalPresentation, false)
             }
 
             /**

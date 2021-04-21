@@ -5,8 +5,10 @@
 
 package org.rust.ide.hints.parameter
 
-import com.intellij.codeInsight.lookup.LookupElement
-import com.intellij.lang.parameterInfo.*
+import com.intellij.lang.parameterInfo.CreateParameterInfoContext
+import com.intellij.lang.parameterInfo.ParameterInfoUIContext
+import com.intellij.lang.parameterInfo.ParameterInfoUtils
+import com.intellij.lang.parameterInfo.UpdateParameterInfoContext
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiFile
 import com.intellij.util.containers.nullize
@@ -57,10 +59,6 @@ class RsGenericParameterInfoHandler : RsAsyncParameterInfoHandler<RsTypeArgument
         )
     }
 
-    override fun getParametersForLookup(item: LookupElement?, context: ParameterInfoContext?): Array<Any>? = null
-
-    override fun couldShowInLookup() = false
-
     // to avoid hint on :: before <>
     private fun findExceptColonColon(file: PsiFile, offset: Int): RsTypeArgumentList? {
         val element = file.findElementAt(offset) ?: return null
@@ -76,7 +74,7 @@ class HintLine(
     val presentText: String,
     private val ranges: List<TextRange>
 ) {
-    fun getRange(index: Int): TextRange = if (index !in 0 until ranges.size) TextRange.EMPTY_RANGE else ranges[index]
+    fun getRange(index: Int): TextRange = if (index !in ranges.indices) TextRange.EMPTY_RANGE else ranges[index]
 }
 
 /**

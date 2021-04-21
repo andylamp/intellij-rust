@@ -25,7 +25,7 @@ fun ImportCandidate.import(context: RsElement) {
     // we uses this info to create correct relative use item path if needed
     var relativeDepth: Int? = null
 
-    val isEdition2018 = context.isEdition2018
+    val isAtLeastEdition2018 = context.isAtLeastEdition2018
     val info = info
     // if crate of importing element differs from current crate
     // we need to add new extern crate item
@@ -42,7 +42,7 @@ fun ImportCandidate.import(context: RsElement) {
             // we don't add corresponding extern crate item manually for the same reason
             attributes == RsFile.Attributes.NO_STD && crate.isCore -> Testmarks.autoInjectedCoreCrate.hit()
             else -> {
-                if (info.needInsertExternCrateItem && !isEdition2018) {
+                if (info.needInsertExternCrateItem && !isAtLeastEdition2018) {
                     crateRoot?.insertExternCrateItem(psiFactory, info.externCrateName)
                 } else {
                     if (info.depth != null) {
@@ -59,17 +59,20 @@ fun ImportCandidate.import(context: RsElement) {
         else -> "super::".repeat(relativeDepth)
     }
 
-    val insertionScope = if (context.isDoctestInjection) {
-        // In doctest injections all our code is located inside one invisible (main) function.
-        // If we try to change PSI outside of that function, we'll take a crash.
-        // So here we limit the module search with the last function (and never inert to an RsFile)
-        Testmarks.doctestInjectionImport.hit()
-        val scope = context.ancestors.find { it is RsMod && it !is RsFile }
-            ?: context.ancestors.findLast { it is RsFunction }
-        ((scope as? RsFunction)?.block ?: scope) as RsItemsOwner
-    } else {
-        context.containingMod
-    }
+    val containingFile = context.containingFile
+    val insertionScope = when {
+        context.isDoctestInjection -> {
+            // In doctest injections all our code is located inside one invisible (main) function.
+            // If we try to change PSI outside of that function, we'll take a crash.
+            // So here we limit the module search with the last function (and never inert to an RsFile)
+            Testmarks.doctestInjectionImport.hit()
+            val scope = context.ancestors.find { it is RsMod && it !is RsFile }
+                ?: context.ancestors.findLast { it is RsFunction }
+            ((scope as? RsFunction)?.block ?: scope) as RsItemsOwner
+        }
+        containingFile is RsCodeFragment -> containingFile.importTarget
+        else -> null
+    } ?: context.containingMod
     insertionScope.insertUseItem(psiFactory, "$prefix${info.usePath}")
 }
 
@@ -86,6 +89,10 @@ private fun RsMod.insertExternCrateItem(psiFactory: RsPsiFactory, crateName: Str
 
 fun RsItemsOwner.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
     val useItem = psiFactory.createUseItem(usePath)
+    insertUseItem(psiFactory, useItem)
+}
+
+fun RsItemsOwner.insertUseItem(psiFactory: RsPsiFactory, useItem: RsUseItem) {
     if (tryGroupWithOtherUseItems(psiFactory, useItem)) return
     val anchor = childrenOfType<RsUseItem>().lastElement ?: childrenOfType<RsExternCrateItem>().lastElement
     if (anchor != null) {
@@ -96,7 +103,8 @@ fun RsItemsOwner.insertUseItem(psiFactory: RsPsiFactory, usePath: String) {
             addBefore(psiFactory.createNewline(), insertedUseItem)
         }
     } else {
-        addBefore(useItem, firstItem)
+        // `if` is needed to support adding import to empty inline mod (see `RsCodeFragment#importTarget`)
+        addBefore(useItem, if (this is RsModItem && itemsAndMacros.none()) rbrace else firstItem)
         addAfter(psiFactory.createNewline(), firstItem)
     }
 }
@@ -152,7 +160,7 @@ private val RsItemsOwner.firstItem: RsElement get() = itemsAndMacros.first { it 
 val <T : RsElement> List<T>.lastElement: T? get() = maxBy { it.textOffset }
 
 val RsElement.stdlibAttributes: RsFile.Attributes
-    get() = (crateRoot?.containingFile as? RsFile)?.attributes ?: RsFile.Attributes.NONE
+    get() = (crateRoot?.containingFile as? RsFile)?.stdlibAttributes ?: RsFile.Attributes.NONE
 
 val Crate.isStd: Boolean
     get() = origin == PackageOrigin.STDLIB && normName == AutoInjectedCrates.STD

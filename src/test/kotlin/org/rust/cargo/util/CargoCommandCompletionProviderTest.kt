@@ -13,6 +13,7 @@ import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.CargoWorkspace.*
 import org.rust.cargo.project.workspace.CargoWorkspaceData
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.singleProject
 import java.nio.file.Paths
 
 class CargoCommandCompletionProviderTest : RsTestBase() {
@@ -20,9 +21,8 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
         val provider = CargoCommandCompletionProvider(project.cargoProjects, null)
         fun doCheck(text: String, ctx: String, prefix: String) {
             val (actualCtx, actualPrefix) = provider.splitContextPrefix(text)
-            check(actualCtx == ctx && actualPrefix == prefix) {
-                "\nExpected\n\n$ctx, $prefix\nActual:\n$actualCtx, $actualPrefix"
-            }
+            assertEquals(ctx, actualCtx)
+            assertEquals(prefix, actualPrefix)
         }
 
         doCheck("build", "", "build")
@@ -74,7 +74,7 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
 
     fun `test no completion for unknown command`() = checkCompletion(
         "frob ",
-        listOf()
+        emptyList()
     )
 
     fun `test complete run args`() = checkCompletion(
@@ -104,12 +104,12 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
 
     fun `test dont suggest a flag twice`() = checkCompletion(
         "run --release --rel",
-        listOf()
+        emptyList()
     )
 
     fun `test dont suggest after double dash`() = checkCompletion(
         "run -- --rel",
-        listOf()
+        emptyList()
     )
 
     fun `test suggest package argument`() = checkCompletion(
@@ -124,7 +124,7 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
 
     fun `test suggest manifest path`() = checkCompletion(
         "run --manifest-path ",
-        listOf(project.cargoProjects.allProjects.singleOrNull()?.manifest.toString())
+        listOf(project.cargoProjects.singleProject().manifest.toString())
     )
 
     private fun checkCompletion(
@@ -132,7 +132,7 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
         expectedCompletions: List<String>
     ) {
 
-        val provider = CargoCommandCompletionProvider(project.cargoProjects, TEST_WORKSPACE)
+        val provider = CargoCommandCompletionProvider(project.cargoProjects, testWorkspace)
         val (ctx, prefix) = provider.splitContextPrefix(text)
         val matcher = PlainPrefixMatcher(prefix)
 
@@ -142,7 +142,7 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
         }
     }
 
-    private val TEST_WORKSPACE = run {
+    private val testWorkspace: CargoWorkspace = run {
         fun target(
             name: String,
             kind: TargetKind,
@@ -152,7 +152,8 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
             name = name,
             kind = kind,
             edition = edition,
-            doctest = true
+            doctest = true,
+            requiredFeatures = emptyList()
         )
 
         fun pkg(
@@ -169,7 +170,8 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
             source = null,
             origin = if (isWorkspaceMember) PackageOrigin.WORKSPACE else PackageOrigin.DEPENDENCY,
             edition = edition,
-            features = emptyList(),
+            features = emptyMap(),
+            enabledFeatures = emptySet(),
             cfgOptions = CfgOptions.EMPTY,
             env = emptyMap(),
             outDirUrl = null
@@ -183,6 +185,14 @@ class CargoCommandCompletionProviderTest : RsTestBase() {
             )),
             pkg("quux", false, listOf(target("quux", TargetKind.Lib(LibKind.LIB))))
         )
-        CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(pkgs, dependencies = emptyMap()), CfgOptions.DEFAULT)
+        CargoWorkspace.deserialize(
+            Paths.get("/my-crate/Cargo.toml"),
+            CargoWorkspaceData(
+                pkgs,
+                dependencies = emptyMap(),
+                rawDependencies = emptyMap()
+            ),
+            CfgOptions.DEFAULT
+        )
     }
 }

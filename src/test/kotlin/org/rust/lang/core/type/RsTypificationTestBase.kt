@@ -5,13 +5,13 @@
 
 package org.rust.lang.core.type
 
-import com.intellij.openapi.vfs.VirtualFileFilter
 import com.intellij.openapiext.Testmark
 import org.intellij.lang.annotations.Language
 import org.rust.RsTestBase
 import org.rust.fileTreeFromText
 import org.rust.lang.core.macros.expandedFrom
 import org.rust.lang.core.psi.RsExpr
+import org.rust.lang.core.psi.RsMacroCall
 import org.rust.lang.core.psi.ext.RsInferenceContextOwner
 import org.rust.lang.core.psi.ext.descendantsOfType
 import org.rust.lang.core.psi.ext.descendantsWithMacrosOfType
@@ -39,9 +39,9 @@ abstract class RsTypificationTestBase : RsTestBase() {
         val testProject = fileTreeFromText(code)
             .createAndOpenFileWithCaretMarker()
 
-        checkAstNotLoaded(VirtualFileFilter { file ->
+        checkAstNotLoaded { file ->
             !file.path.endsWith(testProject.fileWithCaret)
-        })
+        }
 
         check(description)
         if (!allowErrors) checkNoInferenceErrors()
@@ -49,10 +49,12 @@ abstract class RsTypificationTestBase : RsTestBase() {
     }
 
     private fun check(description: String) {
-        val (expr, expectedType) = findElementAndDataInEditor<RsExpr>()
+        val (expr, data) = findElementAndDataInEditor<RsExpr>()
+        val expectedTypes = data.split("|").map(String::trim)
 
-        check(expr.type.toString() == expectedType) {
-            "Type mismatch. Expected: $expectedType, found: ${expr.type}. $description"
+        val type = expr.type.toString()
+        check(type in expectedTypes) {
+            "Type mismatch. Expected one of $expectedTypes, found: $type. $description"
         }
     }
 
@@ -73,11 +75,12 @@ abstract class RsTypificationTestBase : RsTestBase() {
     }
 
     private fun checkAllExpressionsTypified() {
-        val notTypifiedExprs = myFixture.file.descendantsWithMacrosOfType<RsExpr>().filter { expr ->
-            expr.inference?.isExprTypeInferred(expr) == false
-        }.filter {
-            it.expandedFrom?.let { it.macroName in BUILTIN_MACRO_NAMES } != true
-        }
+        val notTypifiedExprs = myFixture.file.descendantsWithMacrosOfType<RsExpr>()
+            .filter { expr ->
+                expr.inference?.isExprTypeInferred(expr) == false
+            }.filter { expr ->
+                expr.expandedFrom?.let { it is RsMacroCall && it.macroName in BUILTIN_MACRO_NAMES } != true
+            }
         if (notTypifiedExprs.isNotEmpty()) {
             error(
                 notTypifiedExprs.joinToString(
@@ -90,6 +93,6 @@ abstract class RsTypificationTestBase : RsTestBase() {
     }
 }
 
-private val BUILTIN_MACRO_NAMES = listOf(
+private val BUILTIN_MACRO_NAMES: List<String> = listOf(
     "env", "option_env", "concat", "line", "column", "file", "stringify", "module_path", "cfg"
 )

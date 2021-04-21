@@ -7,18 +7,15 @@ package org.rust.lang.core.resolve
 
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileFilter
-import com.intellij.openapiext.Testmark
-import com.intellij.psi.NavigatablePsiElement
+import com.intellij.openapiext.TestmarkPred
 import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiReference
 import org.intellij.lang.annotations.Language
-import org.rust.FileTree
-import org.rust.RsTestBase
-import org.rust.fileTreeFromText
-import org.rust.lang.core.macros.isExpandedFromMacro
-import org.rust.lang.core.psi.ext.*
-import org.rust.lang.core.resolve.ref.RsReference
+import org.rust.*
+import org.rust.lang.core.psi.ext.RsNamedElement
+import org.rust.lang.core.psi.ext.RsReferenceElement
+import org.rust.lang.core.psi.ext.RsReferenceElementBase
+import org.rust.lang.core.psi.ext.contextualFile
 
 abstract class RsResolveTestBase : RsTestBase() {
     protected open fun checkByCode(@Language("Rust") code: String) =
@@ -27,19 +24,25 @@ abstract class RsResolveTestBase : RsTestBase() {
     protected open fun checkByCode(@Language("Rust") code: String, fileName: String) =
         checkByCodeGeneric<RsNamedElement>(code, fileName)
 
-    protected inline fun <reified T : NavigatablePsiElement> checkByCodeGeneric(
+    protected inline fun <reified T : PsiElement> checkByCodeGeneric(
         @Language("Rust") code: String,
         fileName: String = "main.rs"
-    ) = checkByCodeGeneric(T::class.java, code, fileName)
+    ) = checkByCodeGeneric2<RsReferenceElementBase, T>(code, fileName)
 
-    protected fun <T : NavigatablePsiElement> checkByCodeGeneric(
+    protected inline fun <reified R : PsiElement, reified T : PsiElement> checkByCodeGeneric2(
+        code: String,
+        fileName: String
+    ) = checkByCodeGeneric2(R::class.java, T::class.java, code, fileName)
+
+    protected fun <R : PsiElement, T : PsiElement> checkByCodeGeneric2(
+        referenceClass: Class<R>,
         targetPsiClass: Class<T>,
         @Language("Rust") code: String,
         fileName: String = "main.rs"
     ) {
         InlineFile(code, fileName)
 
-        val (refElement, data, offset) = findElementWithDataAndOffsetInEditor<RsReferenceElementBase>("^")
+        val (refElement, data, offset) = findElementWithDataAndOffsetInEditor(referenceClass, "^")
 
         if (data == "unresolved") {
             val resolved = refElement.reference?.resolve()
@@ -57,32 +60,48 @@ abstract class RsResolveTestBase : RsTestBase() {
         }
     }
 
-    protected fun checkByCode(@Language("Rust") code: String, mark: Testmark) =
+    protected fun checkByCode(@Language("Rust") code: String, mark: TestmarkPred) =
         mark.checkHit { checkByCode(code) }
+
+    protected fun stubOnlyResolve(
+        @Language("Rust") code: String,
+        mark: TestmarkPred,
+        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile
+    ) = mark.checkHit { stubOnlyResolve(code, resolveFileProducer) }
 
     protected fun stubOnlyResolve(
         @Language("Rust") code: String,
         resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile
     ) = stubOnlyResolve<RsReferenceElement>(fileTreeFromText(code), resolveFileProducer)
 
-    protected fun stubOnlyResolve(
-        @Language("Rust") code: String,
-        mark: Testmark,
-        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile
-    ) = mark.checkHit { stubOnlyResolve(code, resolveFileProducer) }
-
     protected inline fun <reified T : PsiElement> stubOnlyResolve(
         fileTree: FileTree,
-        resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile,
-        customCheck: (PsiElement) -> Unit = {}
+        noinline resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile,
+        noinline customCheck: (PsiElement) -> Unit = {}
+    ) = resolveByFileTree(T::class.java, fileTree, { testProject ->
+        checkAstNotLoaded { file ->
+            !file.path.endsWith(testProject.fileWithCaret)
+        }
+    }, resolveFileProducer, customCheck)
+
+    protected inline fun <reified T : PsiElement> resolveByFileTree(
+        fileTree: FileTree,
+        noinline resolveFileProducer: (PsiElement) -> VirtualFile = this::getActualResolveFile,
+        noinline customCheck: (PsiElement) -> Unit = {}
+    ) = resolveByFileTree(T::class.java, fileTree, {}, resolveFileProducer, customCheck)
+
+    protected fun <T : PsiElement> resolveByFileTree(
+        referenceClass: Class<T>,
+        fileTree: FileTree,
+        configure: (TestProject) -> Unit,
+        resolveFileProducer: (PsiElement) -> VirtualFile,
+        customCheck: (PsiElement) -> Unit
     ) {
         val testProject = fileTree.createAndOpenFileWithCaretMarker()
 
-        checkAstNotLoaded(VirtualFileFilter { file ->
-            !file.path.endsWith(testProject.fileWithCaret)
-        })
+        configure(testProject)
 
-        val (referenceElement, resolveVariants, offset) = findElementWithDataAndOffsetInEditor<T>()
+        val (referenceElement, resolveVariants, offset) = findElementWithDataAndOffsetInEditor(referenceClass, "^")
 
         if (resolveVariants == "unresolved") {
             val element = referenceElement.findReference(offset)?.resolve()
@@ -118,37 +137,5 @@ abstract class RsResolveTestBase : RsTestBase() {
 
     protected fun check(actualResolveFile: VirtualFile, expectedFilePath: String): ResolveResult {
         return checkResolvedFile(actualResolveFile, expectedFilePath) { path -> myFixture.findFileInTempDir(path) }
-    }
-}
-
-fun PsiElement.findReference(offset: Int): PsiReference? = findReferenceAt(offset - startOffset)
-
-fun PsiElement.checkedResolve(offset: Int): PsiElement {
-    val reference = findReference(offset) ?: error("element doesn't have reference")
-    val resolved = reference.resolve() ?: run {
-        val multiResolve = (reference as? RsReference)?.multiResolve().orEmpty()
-        check(multiResolve.size != 1)
-        if (multiResolve.isEmpty()) {
-            error("Failed to resolve $text")
-        } else {
-            error("Failed to resolve $text, multiple variants:\n${multiResolve.joinToString()}")
-        }
-    }
-
-    check(reference.isReferenceTo(resolved)) {
-        "Incorrect `isReferenceTo` implementation in `${reference.javaClass.name}`"
-    }
-
-    checkSearchScope(this, resolved)
-
-    return resolved
-}
-
-private fun checkSearchScope(referenceElement: PsiElement, resolvedTo: PsiElement) {
-    if (resolvedTo.isExpandedFromMacro) return
-    val virtualFile = referenceElement.containingFile.virtualFile ?: return
-    check(resolvedTo.useScope.contains(virtualFile)) {
-        "Incorrect `getUseScope` implementation in `${resolvedTo.javaClass.name}`;" +
-            "also this can means that `pub` visibility is missed somewhere in the test"
     }
 }

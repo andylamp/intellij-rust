@@ -5,7 +5,27 @@
 
 package org.rust.ide.intentions
 
+import org.rust.MockEdition
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.ide.intentions.createFromUsage.CreateFunctionIntention
+
 class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention::class) {
+    fun `test function availability range`() = checkAvailableInSelectionOnly("""
+        fn main() {
+            <selection>foo</selection>(bar::baz);
+        }
+    """)
+
+    fun `test method availability range`() = checkAvailableInSelectionOnly("""
+        struct S;
+
+        fn foo(s: S) {
+            s.<selection>foo</selection>();
+        }
+    """)
+
     fun `test unavailable on resolved function`() = doUnavailableTest("""
         fn foo() {}
 
@@ -21,10 +41,31 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
     """)
 
     fun `test unavailable on path argument`() = doUnavailableTest("""
-        fn foo(a: u32) {}
-
         fn main() {
             foo(bar::baz/*caret*/);
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test create function unavailable on std`() = doUnavailableTest("""
+        fn main() {
+            std::foo/*caret*/();
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test create method unavailable on std`() = doUnavailableTest("""
+        fn main() {
+            let v: Vec<u32> = Vec::new();
+            v.foo/*caret*/();
+        }
+    """)
+
+    fun `test unavailable on trait associated function`() = doUnavailableTest("""
+        trait Trait {}
+
+        fn foo() {
+            Trait::baz/*caret*/();
         }
     """)
 
@@ -38,7 +79,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn foo() {
-            unimplemented!()/*caret*/
+            todo!()/*caret*/
         }
     """)
 
@@ -51,7 +92,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
     """, """
         mod foo {
             pub(crate) fn bar() {
-                unimplemented!()/*caret*/
+                todo!()/*caret*/
             }
         }
 
@@ -80,7 +121,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
             fn test() {}
 
             pub(crate) fn bar() {
-                unimplemented!()
+                todo!()
             }
     """)
 
@@ -97,7 +138,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
     //- lib.rs
         pub fn foo() {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -119,7 +160,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
                 bar();
             }
             fn bar() {
-                unimplemented!()/*caret*/
+                todo!()/*caret*/
             }
         }
     """)
@@ -137,7 +178,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
             }
 
             fn bar() {
-                unimplemented!()/*caret*/
+                todo!()/*caret*/
             }
         }
     """)
@@ -154,7 +195,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn foo(p0: i32, p1: &str, p2: &i32) {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -174,7 +215,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar<T, R: Trait1>(p0: R, p1: T, p2: T) where T: Trait2 {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -200,7 +241,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar<'a, R, T: 'a>(p0: T, p1: &R) where R: Trait + for<'d> Fn(&'d i32), T: Trait + Trait2, for<'c> T: Fn(&'c i32) + Trait {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -216,7 +257,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
                 baz(t);
             }
             fn baz<T>(p0: T) where T: Bar {
-                unimplemented!()
+                todo!()
             }
         }
     """)
@@ -231,7 +272,35 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar() -> u32 {
-            unimplemented!()
+            todo!()
+        }
+    """)
+
+    fun `test guess return unknown type`() = doAvailableTest("""
+        fn foo() {
+            let x: S = bar/*caret*/();
+        }
+    """, """
+        fn foo() {
+            let x: S = bar();
+        }
+
+        fn bar() -> _/*caret*/ {
+            todo!()
+        }
+    """)
+
+    fun `test guess return type empty let decl`() = doAvailableTest("""
+        fn foo() {
+            let x = bar/*caret*/();
+        }
+    """, """
+        fn foo() {
+            let x = bar();
+        }
+
+        fn bar() -> _/*caret*/ {
+            todo!()
         }
     """)
 
@@ -247,7 +316,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar() -> u32 {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -263,7 +332,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn baz() -> u32 {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -285,7 +354,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn baz() -> u32 {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -309,7 +378,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn baz() -> u32 {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -331,7 +400,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn baz() -> &S {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -345,7 +414,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar<T>() -> T {
-            unimplemented!()
+            todo!()
         }
     """)
 
@@ -359,7 +428,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
         }
 
         fn bar() {
-            unimplemented!()/*caret*/
+            todo!()/*caret*/
         }
     """)
 
@@ -376,7 +445,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl<T> S<T> where T: Trait {
             pub(crate) fn foo(&self, p0: i32, p1: i32) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -396,7 +465,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn foo(&self) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -416,7 +485,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn foo<R>(&self, p0: R) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -439,7 +508,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
                 self.bar(0);
             }
             fn bar(&self, p0: i32) {
-                unimplemented!()
+                todo!()
             }
         }
     """)
@@ -458,7 +527,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
                 self.bar(t);
             }
             fn bar(&self, p0: T) {
-                unimplemented!()
+                todo!()
             }
         }
     """)
@@ -479,7 +548,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
                 self.bar(t);
             }
             fn bar(&self, p0: T) {
-                unimplemented!()
+                todo!()
             }
         }
     """)
@@ -501,7 +570,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn bar(&self, p0: i32, p1: i32) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -520,7 +589,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn bar(&self, p0: i32, p1: i32) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -539,7 +608,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn bar(&self, p0: i32, p1: i32) -> u32 {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -566,7 +635,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn bar(&self) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -590,7 +659,7 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub(crate) fn bar(&self) {
-                unimplemented!()
+                todo!()
             }
         }
 
@@ -619,8 +688,294 @@ class CreateFunctionIntentionTest : RsIntentionTestBase(CreateFunctionIntention:
 
         impl S {
             pub fn foo(&self) {
-                unimplemented!()
+                todo!()
             }
         }
+    """)
+
+    fun `test create associated function for struct`() = doAvailableTest("""
+        struct S;
+        fn foo() {
+            S::bar/*caret*/(1, 2);
+        }
+    """, """
+        struct S;
+
+        impl S {
+            fn bar(p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+
+        fn foo() {
+            S::bar(1, 2);
+        }
+    """)
+
+    fun `test create associated function for enum`() = doAvailableTest("""
+        enum S {
+            V1
+        }
+        fn foo() {
+            S::bar/*caret*/(1, 2);
+        }
+    """, """
+        enum S {
+            V1
+        }
+
+        impl S {
+            fn bar(p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+
+        fn foo() {
+            S::bar(1, 2);
+        }
+    """)
+
+    fun `test create associated function for generic struct`() = doAvailableTest("""
+        struct S<T>(T);
+        fn foo() {
+            S::<u32>::bar/*caret*/(1, 2);
+        }
+    """, """
+        struct S<T>(T);
+
+        impl<T> S<T> {
+            fn bar(p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+
+        fn foo() {
+            S::<u32>::bar(1, 2);
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test function call type to create async function`() = doAvailableTest("""
+        async fn foo() {
+            /*caret*/bar().await;
+        }
+    ""","""
+        async fn foo() {
+            bar().await;
+        }
+
+        async fn bar() {
+            todo!()
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test function call type create async function in blocks`() = doAvailableTest("""
+        fn foo() {
+            async {
+                /*caret*/bar().await
+            };
+        }
+    """, """
+        fn foo() {
+            async {
+                bar().await
+            };
+        }
+
+        async fn bar() {
+            todo!()
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test function call type create async function in nested blocks`() = doAvailableTest("""
+        fn foo() {
+            async {
+                {
+                    /*caret*/bar().await
+                }
+            };
+        }
+    """, """
+        fn foo() {
+            async {
+                {
+                    bar().await
+                }
+            };
+        }
+
+        async fn bar() {
+            todo!()
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test function call type create async function in nested function`() = doAvailableTest("""
+        fn main() {
+            async fn foo() {
+                /*caret*/bar().await;
+            }
+        }
+    """, """
+        fn main() {
+            async fn foo() {
+                bar().await;
+            }
+            async fn bar() {
+                todo!()
+            }
+        }
+    """)
+
+
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test method call type to create async function`() = doAvailableTest("""
+        struct S;
+
+        impl S {
+            async fn foo(&self) {
+                self./*caret*/bar(1, 2).await;
+            }
+        }
+    """, """
+        struct S;
+
+        impl S {
+            async fn foo(&self) {
+                self.bar(1, 2).await;
+            }
+            async fn bar(&self, p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test method call type create async function in blocks`() = doAvailableTest("""
+        struct S;
+
+        impl S {
+            fn foo(&self) {
+                async {
+                    self./*caret*/bar(1, 2).await;
+                };
+            }
+        }
+    """, """
+        struct S;
+
+        impl S {
+            fn foo(&self) {
+                async {
+                    self.bar(1, 2).await;
+                };
+            }
+            async fn bar(&self, p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test method call type create async function in nested blocks`() = doAvailableTest("""
+        struct S;
+
+        impl S {
+            fn foo(&self) {
+                async {
+                    {
+                        self./*caret*/bar(1, 2).await;
+                    }
+                };
+            }
+        }
+    """, """
+        struct S;
+
+        impl S {
+            fn foo(&self) {
+                async {
+                    {
+                        self.bar(1, 2).await;
+                    }
+                };
+            }
+            async fn bar(&self, p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test method call type create async function in nested function`() = doAvailableTest("""
+        struct S;
+
+        impl S {
+            fn foo(&self) {
+                async fn foo_a(s: &S) {
+                    s./*caret*/bar(1, 2).await;
+                }
+            }
+        }
+    """, """
+        struct S;
+
+        impl S {
+            async fn bar(&self, p0: i32, p1: i32) {
+                todo!()
+            }
+        }
+
+        impl S {
+            fn foo(&self) {
+                async fn foo_a(s: &S) {
+                    s.bar(1, 2).await;
+                }
+            }
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test function call type create in the async function call`() = doAvailableTest("""
+        async fn foo() {
+            baz(/*caret*/bar()).await;
+        }
+        async fn baz(a: u32) {}
+    """, """
+        async fn foo() {
+            baz(bar()).await;
+        }
+
+        fn bar() -> u32 {
+            todo!()
+        }
+
+        async fn baz(a: u32) {}
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test method call type create in the async function call`() = doAvailableTest("""
+        struct S;
+
+        async fn foo(s: S) {
+            baz(s./*caret*/bar()).await;
+        }
+        async fn baz(a: u32) {}
+    """, """
+        struct S;
+
+        impl S {
+            pub(crate) fn bar(&self) -> u32 {
+                todo!()
+            }
+        }
+
+        async fn foo(s: S) {
+            baz(s.bar()).await;
+        }
+        async fn baz(a: u32) {}
     """)
 }

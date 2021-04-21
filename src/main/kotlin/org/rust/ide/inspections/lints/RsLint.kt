@@ -15,8 +15,8 @@ import org.rust.lang.core.psi.ext.*
  */
 enum class RsLint(
     val id: String,
-    val groupIds: List<String> = emptyList(),
-    val defaultLevel: RsLintLevel = WARN
+    private val groupIds: List<String> = emptyList(),
+    private val defaultLevel: RsLintLevel = WARN
 ) {
     NonSnakeCase("non_snake_case", listOf("bad_style", "nonstandard_style")),
     NonCamelCaseTypes("non_camel_case_types", listOf("bad_style", "nonstandard_style")),
@@ -55,6 +55,14 @@ enum class RsLint(
 
     UnreachablePattern("unreachable_patterns", listOf("unused")),
 
+    UnreachableCode("unreachable_code") {
+        override fun toHighlightingType(level: RsLintLevel): ProblemHighlightType =
+            when (level) {
+                WARN -> ProblemHighlightType.LIKE_UNUSED_SYMBOL
+                else -> super.toHighlightingType(level)
+            }
+    },
+
     BareTraitObjects("bare_trait_objects", listOf("rust_2018_idioms"));
 
     protected open fun toHighlightingType(level: RsLintLevel): ProblemHighlightType =
@@ -73,9 +81,9 @@ enum class RsLint(
 
     private fun explicitLevel(el: PsiElement): RsLintLevel? = el.ancestors
         .filterIsInstance<RsDocAndAttributeOwner>()
-        .flatMap { it.queryAttributes.metaItems }
-        .filter { it.metaItemArgs?.metaItemList.orEmpty().any { it.id == id || it.id in groupIds } }
-        .mapNotNull { it.name?.let { RsLintLevel.valueForId(it) } }
+        .flatMap { it.queryAttributes.metaItems.toList().asReversed().asSequence() }
+        .filter { it.metaItemArgs?.metaItemList.orEmpty().any { item -> item.id == id || item.id in groupIds } }
+        .mapNotNull { it.name?.let { name -> RsLintLevel.valueForId(name) } }
         .firstOrNull()
 
     private fun superModsLevel(el: PsiElement): RsLintLevel? = el.ancestors

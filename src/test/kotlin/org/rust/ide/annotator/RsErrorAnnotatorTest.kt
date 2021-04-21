@@ -223,6 +223,22 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         impl T for S { impl_foo!(); }
     """)
 
+    fun `test invalid parameters number in closures E0057`() = checkErrors("""
+        fn main() {
+            let closure_0 = || ();
+            let closure_1 = |x| x;
+            let closure_2 = |x, y| (x, y);
+
+            closure_0();
+            closure_0(<error descr="This function takes 0 parameters but 1 parameter was supplied [E0057]">42</error>);
+            closure_1(<error descr="This function takes 1 parameter but 0 parameters were supplied [E0057]">)</error>;
+            closure_1(42);
+            closure_2(<error descr="This function takes 2 parameters but 0 parameters were supplied [E0057]">)</error>;
+            closure_2(42<error descr="This function takes 2 parameters but 1 parameter was supplied [E0057]">)</error>;
+            closure_2(42, 43);
+        }
+    """)
+
     fun `test invalid parameters number in variadic functions E0060`() = checkErrors("""
         extern {
             fn variadic_1(p1: u32, ...);
@@ -239,20 +255,27 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
     """)
 
+    @MockAdditionalCfgOptions("intellij_rust")
     fun `test invalid parameters number in free functions E0061`() = checkErrors("""
         fn par_0() {}
         fn par_1(p: bool) {}
         fn par_3(p1: u32, p2: f64, p3: &'static str) {}
+        fn par_0_cfg(#[cfg(not(intellij_rust))] p1: u32) {}
+        fn par_1_cfg(#[cfg(intellij_rust)] p1: u32, #[cfg(not(intellij_rust))] p1: i32) {}
 
         fn main() {
             par_0();
             par_1(true);
             par_3(12, 7.1, "cool");
+            par_0_cfg();
+            par_1_cfg(1);
 
             par_0(<error descr="This function takes 0 parameters but 1 parameter was supplied [E0061]">4</error>);
             par_1(<error descr="This function takes 1 parameter but 0 parameters were supplied [E0061]">)</error>;
             par_1(true, <error descr="This function takes 1 parameter but 2 parameters were supplied [E0061]">false</error>);
             par_3(5, 1.0<error descr="This function takes 3 parameters but 2 parameters were supplied [E0061]">)</error>;
+            par_0_cfg(<error descr="This function takes 0 parameters but 1 parameter was supplied [E0061]">4</error>);
+            par_1_cfg(<error descr="This function takes 1 parameter but 0 parameters were supplied [E0061]">)</error>;
         }
     """)
 
@@ -395,7 +418,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
 
         fn foo(a: <error descr="The type placeholder `_` is not allowed within types on item signatures [E0121]">_</error>) {}
         fn bar() -> <error>_</error> {}
-        fn baz(t: (u32, <error>_</error>)) -> (bool, (f64, <error>_</error>)) {}
+        fn baz(t: (u32, <error>_</error>)) -> (bool, (f64, <error>_</error>)) { unreachable!() }
         static FOO: <error>_</error> = 42;
     """)
 
@@ -531,28 +554,69 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
     """)
 
     @MockRustcVersion("1.23.0")
-    fun `test in-band lifetimes feature E0658 1`() = checkErrors("""
+    fun `test in-band lifetimes feature E0658 in fn 1`() = checkErrors("""
         fn foo(x: &<error descr="in-band lifetimes is experimental [E0658]">'a</error> str) {}
     """)
 
     @MockRustcVersion("1.23.0-nightly")
-    fun `test in-band lifetimes feature E0658 2`() = checkErrors("""
+    fun `test in-band lifetimes feature E0658 in fn 2`() = checkErrors("""
         #![feature(in_band_lifetimes)]
         fn foo<T: 'a>(x: &'b str) where 'c: 'd {}
     """)
 
     @MockRustcVersion("1.23.0-nightly")
-    fun `test in-band lifetimes feature E0658 3`() = checkErrors("""
+    fun `test in-band lifetimes feature E0658 in fn 3`() = checkErrors("""
         #![feature(in_band_lifetimes)]
         fn foo<'b>(x: &<error descr="Cannot mix in-band and explicit lifetime definitions [E0688]">'a</error> str) {}
     """)
 
     @MockRustcVersion("1.23.0-nightly")
-    fun `test in-band lifetimes feature E0658 4`() = checkErrors("""
+    fun `test in-band lifetimes feature E0658 in let`() = checkErrors("""
         #![feature(in_band_lifetimes)]
         fn foo() {
             let x: &<error descr="Use of undeclared lifetime name `'a` [E0261]">'a</error> str = unimplemented!();
         }
+    """)
+
+    @MockRustcVersion("1.23.0")
+    fun `test in-band lifetimes feature E0658 in impl 1`() = checkErrors("""
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl T<<error descr="in-band lifetimes is experimental [E0658]">'a</error>> for S<<error descr="in-band lifetimes is experimental [E0658]">'a</error>> {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 in impl 2`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl T<'a> for S<'b> where 'c: 'd {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 in impl 3`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        trait T<'a> {}
+        struct S<'a>(&'a str);
+        impl <'b> T<<error descr="Cannot mix in-band and explicit lifetime definitions [E0688]">'a</error>> for S<<error descr="Cannot mix in-band and explicit lifetime definitions [E0688]">'a</error>> {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 in struct`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        struct S(&<error descr="Use of undeclared lifetime name `'a` [E0261]">'a</error> str);
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 in trait`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        trait S<T: <error descr="Use of undeclared lifetime name `'a` [E0261]">'a</error>> {}
+    """)
+
+    @MockRustcVersion("1.23.0-nightly")
+    fun `test in-band lifetimes feature E0658 in enum`() = checkErrors("""
+        #![feature(in_band_lifetimes)]
+        enum E<T: <error descr="Use of undeclared lifetime name `'a` [E0261]">'a</error>> {}
     """)
 
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
@@ -609,6 +673,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
     """)
 
+    @MockAdditionalCfgOptions("intellij_rust")
     fun `test name duplication in param list E0415`() = checkErrors("""
         fn foo(x: u32, X: u32) {}
         fn bar<T>(T: T) {}
@@ -618,6 +683,22 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
                   <error>a</error>: f64) {}
         fn tuples(<error>a</error>: u8, (b, (<error>a</error>, c)): (u16, (u32, u64))) {}
         fn fn_ptrs(x: i32, y: fn (x: i32, y: i32), z: fn (x: i32, x: i32)) {}
+        fn cfg_1(#[cfg(intellij_rust)] a: i32, #[cfg(not(intellij_rust))] a: u32) {}
+        fn cfg_2(#[cfg(intellij_rust)] <error>a</error>: i32, #[cfg(intellij_rust)] <error>a</error>: u32) {}
+        fn cfg_3(#[cfg(intellij_rust)] <error>a</error>: i32, <error>a</error>: u32) {}
+
+        trait Foo {
+            fn foo(&self,
+                   <error descr="Identifier `x` is bound more than once in this parameter list [E0415]">x</error>: i32,
+                   <error descr="Identifier `x` is bound more than once in this parameter list [E0415]">x</error>: i32
+            ) {}
+        }
+    """)
+
+    fun `test name duplication in param list of non-default trait methods`() = checkErrors("""
+        trait Foo {
+            fn bar(x: i32, x: i32);
+        }
     """)
 
     fun `test undeclared label E0426`() = checkErrors("""
@@ -870,6 +951,31 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
     """)
 
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test no duplicates with import E0252 textual-scoped macros`() = checkDontTouchAstInOtherFiles("""
+    //- main.rs
+        use test_package::foo;
+        macro_rules! foo { () => {} }
+    //- lib.rs
+        #[macro_export]
+        macro_rules! foo { () => {} }
+    """)
+
+    @UseNewResolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test no duplicates with import E0252 private item`() = checkErrors("""
+        mod mod1 {
+            fn foo() {}
+            pub struct foo {}
+        }
+        mod mod2 {
+            pub fn foo() {}
+        }
+
+        use mod1::foo;
+        use mod2::foo;
+    """)
+
     fun `test unnecessary pub E0449`() = checkErrors("""
         <error descr="Unnecessary visibility qualifier [E0449]">pub</error> extern "C" { }
 
@@ -887,7 +993,8 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
                 bar: u32,
                 <error>pub</error> baz: u32
             },
-            BAR(<error>pub</error> u32, f64)
+            <error>pub</error> BAR(<error>pub</error> u32, f64),
+            <error>pub(crate)</error> BAZ
         }
 
         pub trait Foo {
@@ -1084,7 +1191,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             }
         }
         fn main() {
-            let f = some_module::Foo { <error descr="Field `x` of struct `some_module::Foo` is private [E0451]">x: 0</error> };
+            let f = some_module::Foo { <error descr="Field `x` of struct `some_module::Foo` is private [E0451]">x</error>: 0 };
         }
     """)
 
@@ -1187,7 +1294,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             const BAR: u32 = 0x_a_bad_1dea_u32;
         }
 
-        use <error descr="Constant `foo::BAR` is private [E0603]">foo::BAR</error>;
+        use foo::<error descr="Constant `BAR` is private [E0603]">BAR</error>;
     """)
 
     fun `test not const outside scope E0603`() = checkErrors("""
@@ -1203,7 +1310,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             fn bar() {}
         }
 
-        use <error descr="Function `foo::bar` is private [E0603]">foo::bar</error>;
+        use foo::<error descr="Function `bar` is private [E0603]">bar</error>;
     """)
 
     fun `test not fn outside scope E0603`() = checkErrors("""
@@ -1219,7 +1326,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             struct Bar;
         }
 
-        use <error descr="Struct `foo::Bar` is private [E0603]">foo::Bar</error>;
+        use foo::<error descr="Struct `Bar` is private [E0603]">Bar</error>;
     """)
 
     fun `test struct fn outside scope E0603`() = checkErrors("""
@@ -1238,7 +1345,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         //- main.rs
             mod foo;
 
-            use <error descr="Module `foo::bar` is private [E0603]">foo::bar</error>::Foo;
+            use foo::<error descr="Module `bar` is private [E0603]">bar</error>::Foo;
     """)
 
     fun `test module is public E0603`() = checkDontTouchAstInOtherFiles("""
@@ -1302,7 +1409,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
         mod bar {
             mod baz {
-                use <error descr="Module `foo::qwe` is private [E0603]">foo::qwe</error>::Foo;
+                use foo::<error descr="Module `qwe` is private [E0603]">qwe</error>::Foo;
             }
         }
     """)
@@ -1318,7 +1425,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         //- bar/mod.rs
             mod baz;
         //- bar/baz.rs
-            use <error descr="Module `foo::qwe` is private [E0603]">foo::qwe</error>::Foo;
+            use foo::<error descr="Module `qwe` is private [E0603]">qwe</error>::Foo;
     """, filePath = "bar/baz.rs")
 
     @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
@@ -1329,8 +1436,8 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
             pub(crate) fn bar() {}
         //- main.rs
             extern crate test_package;
-            use <error descr="Function `test_package::foo` is private [E0603]">test_package::foo</error>; /*caret*/
-            use <error descr="Function `test_package::bar` is private [E0603]">test_package::bar</error>; /*caret*/
+            use test_package::<error descr="Function `foo` is private [E0603]">foo</error>; /*caret*/
+            use test_package::<error descr="Function `bar` is private [E0603]">bar</error>;
     """, checkWarn = false)
 
     fun `test item with crate visibility is visible in the same crate E0603`() = checkErrors("""
@@ -1352,13 +1459,13 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
                 pub(super) fn spam() {}
                 pub(in foo) fn eggs() {}
             }
-            use <error descr="Function `self::bar::quux` is private [E0603]">self::bar::quux</error>;
+            use self::bar::<error descr="Function `quux` is private [E0603]">quux</error>;
             use self::bar::spam;
             use self::bar::eggs;
         }
-        use <error descr="Function `foo::bar::quux` is private [E0603]">foo::bar::quux</error>;
-        use <error descr="Function `foo::bar::spam` is private [E0603]">foo::bar::spam</error>;
-        use <error descr="Function `foo::bar::eggs` is private [E0603]">foo::bar::eggs</error>;
+        use foo::bar::<error descr="Function `quux` is private [E0603]">quux</error>;
+        use foo::bar::<error descr="Function `spam` is private [E0603]">spam</error>;
+        use foo::bar::<error descr="Function `eggs` is private [E0603]">eggs</error>;
     """)
 
     // Issue https://github.com/intellij-rust/intellij-rust/issues/3558
@@ -1383,7 +1490,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         mod foo {
             pub(in foo) trait Bar { fn baz(&self); }
         }
-        fn quux(a: &<error descr="Trait `foo::Bar` is private [E0603]">foo::Bar</error>) {
+        fn quux(a: &foo::<error descr="Trait `Bar` is private [E0603]">Bar</error>) {
             a.<error descr="Method `baz` is private [E0624]">baz</error>();
         }
     """)
@@ -1452,11 +1559,11 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         trait C<T>: A<T> {}
 
         struct S1;
-        impl <error descr="the trait bound `S1: A&lt;u32&gt;` is not satisfied [E0277]">B</error> for S1 {}
+        impl <error descr="the trait bound `S1: A<u32>` is not satisfied [E0277]">B</error> for S1 {}
 
         struct S2;
         impl A<bool> for S2 {}
-        impl <error descr="the trait bound `S2: A&lt;u32&gt;` is not satisfied [E0277]">B</error> for S2 {}
+        impl <error descr="the trait bound `S2: A<u32>` is not satisfied [E0277]">B</error> for S2 {}
 
         struct S3;
         impl A<bool> for S3 {}
@@ -1464,11 +1571,11 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         impl B for S3 {}
 
         struct S4;
-        impl<T> <error descr="the trait bound `S4: A&lt;T&gt;` is not satisfied [E0277]">C<T></error> for S4 {}
+        impl<T> <error descr="the trait bound `S4: A<T>` is not satisfied [E0277]">C<T></error> for S4 {}
 
         struct S5;
         impl A<u32> for S5 {}
-        impl<T> <error descr="the trait bound `S5: A&lt;T&gt;` is not satisfied [E0277]">C<T></error> for S5 {}
+        impl<T> <error descr="the trait bound `S5: A<T>` is not satisfied [E0277]">C<T></error> for S5 {}
 
         struct S6;
         impl<T> A<T> for S6 {}
@@ -1480,7 +1587,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
 
         struct S8;
         impl A<bool> for S8 {}
-        impl <error descr="the trait bound `S8: A&lt;u32&gt;` is not satisfied [E0277]">C<u32></error> for S8 {}
+        impl <error descr="the trait bound `S8: A<u32>` is not satisfied [E0277]">C<u32></error> for S8 {}
 
         struct S9;
         impl A<u32> for S9 {}
@@ -1524,6 +1631,14 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         impl <T> Trait2 for X<T> where T: Trait<T> {}
     """)
 
+    fun `test supertrait is not implemented E0277 self substitution 4`() = checkErrors("""
+        trait Foo {}
+        trait Baz: Foo {}
+
+        impl<T> Foo for T {}
+        impl<T> Baz for T {}
+    """)
+
     @MockRustcVersion("1.27.1")
     fun `test crate visibility feature E0658`() = checkErrors("""
         <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
@@ -1548,6 +1663,30 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         mod foo {
             #![feature(crate_visibility_modifier)]
         }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 under cfg_attr 1`() = checkErrors("""
+        #![cfg_attr(intellij_rust, feature(crate_visibility_modifier))]
+
+        crate struct Foo;
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 under cfg_attr 2`() = checkErrors("""
+        #![cfg_attr(not(intellij_rust), feature(crate_visibility_modifier))]
+
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 under nested cfg_attr`() = checkErrors("""
+        #![cfg_attr(intellij_rust, cfg_attr(intellij_rust, feature(crate_visibility_modifier)))]
+
+        crate struct Foo;
     """)
 
     fun `test parenthesized lifetime bounds`() = checkErrors("""
@@ -1613,11 +1752,13 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         type T = S;
         mod a {}
         trait Trait {}
+        trait TraitAlias = Trait;
         impl <error descr="Expected trait, found struct `S` [E0404]">S</error> for S {}
         impl <error descr="Expected trait, found enum `E` [E0404]">E</error> for S {}
         impl <error descr="Expected trait, found type alias `T` [E0404]">T</error> for S {}
         impl <error descr="Expected trait, found module `a` [E0404]">a</error> for S {}
         fn foo<A: <error descr="Expected trait, found struct `S` [E0404]">S</error>>() {}
+        fn foo2<A: TraitAlias>() {}
         impl Trait for S {}
     """)
 
@@ -1670,6 +1811,28 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         struct S;
         fn main() {
             let x = box S;
+        }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test box expression feature E0658 with cfg_attr with several attributes 1`() = checkErrors("""
+        #![cfg_attr(intellij_rust, feature(generators), feature(box_syntax))]
+
+        struct S;
+        fn main() {
+            let x = box S;
+        }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    @MockRustcVersion("1.0.0-nightly")
+    fun `test box expression feature E0658 with cfg_attr with several attributes 2`() = checkErrors("""
+        #![cfg_attr(not(intellij_rust), feature(generators), feature(box_syntax))]
+
+        struct S;
+        fn main() {
+            let x = <error descr="`box` expression syntax is experimental [E0658]">box</error> S;
         }
     """)
 
@@ -2742,6 +2905,51 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         enum E<const C: i32> {}
     """)
 
+    @MockRustcVersion("1.47.0")
+    fun `test min const generics E0658 1`() = checkErrors("""
+        fn f<<error descr="const generics is experimental [E0658]">const C: i32</error>>() {}
+        struct S<<error descr="const generics is experimental [E0658]">const C: i32</error>>(A);
+        trait T<<error descr="const generics is experimental [E0658]">const C: i32</error>> {}
+        enum E<<error descr="const generics is experimental [E0658]">const C: i32</error>> {}
+    """)
+
+    @MockRustcVersion("1.51.0-nightly")
+    fun `test min const generics E0658 2`() = checkErrors("""
+        #![feature(min_const_generics)]
+        fn f<const C: i32>() {}
+        struct S<const C: i32>(A);
+        trait T<const C: i32> {}
+        enum E<const C: i32> {}
+    """)
+
+    @MockRustcVersion("1.51.0-nightly")
+    fun `test min const generics E0658 3`() = checkErrors("""
+        #![feature(const_generics)]
+        fn f<const C: i32>() {}
+        struct S<const C: i32>(A);
+        trait T<const C: i32> {}
+        enum E<const C: i32> {}
+    """)
+
+    @MockRustcVersion("1.47.0-nightly")
+    fun `test min const generics vs const generics E0658`() = checkErrors("""
+        #![feature(min_const_generics)]
+        struct A;
+        fn f<const C: <error descr="the only supported types are integers, `bool` and `char`">A</error>>() {}
+        struct S<const C: <error descr="the only supported types are integers, `bool` and `char`">A</error>>(A);
+        trait T<const C: <error descr="the only supported types are integers, `bool` and `char`">A</error>> {}
+        enum E<const C: <error descr="the only supported types are integers, `bool` and `char`">A</error>> {}
+    """)
+
+    @MockRustcVersion("1.51.0")
+    fun `test min const generics vs const generics E0658 (stabilized)`() = checkErrors("""
+        struct A;
+        fn f<<error descr="const generics is experimental [E0658]">const C: A</error>>() {}
+        struct S<<error descr="const generics is experimental [E0658]">const C: A</error>>(A);
+        trait T<<error descr="const generics is experimental [E0658]">const C: A</error>> {}
+        enum E<<error descr="const generics is experimental [E0658]">const C: A</error>> {}
+    """)
+
     @MockRustcVersion("1.41.0")
     fun `test slice patterns E0658 1`() = checkErrors("""
         fn main() {
@@ -3195,11 +3403,11 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         }
     """)
 
-    fun `test no error on missing field with cfg-attribute`() = checkErrors("""
+    fun `test no error on missing field under disabled cfg-attribute`() = checkErrors("""
         struct Foo {
             a: i32,
             b: i32,
-            #[cfg(foo)]
+            #[cfg(intellij_rust)]
             c: i32,
         }
 
@@ -3221,14 +3429,6 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
 
         fn main() {
             let Foo (_, _, _) = foo;
-        }
-    """)
-
-    fun `test error analysis on invalid syntax with no name elements`() = checkErrors("""
-        struct Foo { a: i32,<error>:</error> i32<error> </error> }
-
-        fn main() {
-            let Foo { a, } = foo;
         }
     """)
 
@@ -3254,7 +3454,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         impl <error descr="`aaa` is unstable [E0658]">S</error> {
             #[unstable(feature = "ccc", reason = "bar \
                 baz")]
-            fn foo(self) -> Self {}
+            fn foo(self) -> Self { unreachable!() }
         }
 
         fn main() {
@@ -3284,7 +3484,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         impl S {
             #[unstable(feature = "ccc", reason = "bar \
                 baz")]
-            fn foo(self) -> Self {}
+            fn foo(self) -> Self { unreachable!() }
         }
 
         fn main() {
@@ -3631,6 +3831,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         type Foo = i32;
     """)
 
+    @UseOldResolve
     @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
     fun `test custom inline proc macro attr and disable cfg`() = checkByFileTree("""
     //- dep-proc-macro/lib.rs
@@ -3724,5 +3925,228 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         enum Color {
             RED, GREEN
         }
+    """)
+
+    fun `test E0025 struct field bound multiple times`() = checkErrors("""
+        struct Foo { a: i32, b: i32 }
+
+        fn foo(x: Foo) {
+            let Foo { a, <error descr="Field `a` bound multiple times in the pattern [E0025]"><error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error></error>, b } = x;
+        }
+    """)
+
+    fun `test E0025 renamed struct field bound multiple times`() = checkErrors("""
+        struct Foo { a: i32, b: i32 }
+
+        fn foo(x: Foo) {
+            let Foo { a, <error descr="Field `a` bound multiple times in the pattern [E0025]">a: c</error>, b } = x;
+        }
+    """)
+
+    fun `test E0025 struct field bound multiple times in nested pattern`() = checkErrors("""
+        struct Foo { c: i32, b: Bar }
+        struct Bar { a: i32, b: i32 }
+
+        fn foo(x: Foo) {
+            let Foo { c, b: Bar { a, <error descr="Field `a` bound multiple times in the pattern [E0025]"><error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error></error>, .. } } = x;
+        }
+    """)
+
+    fun `test E0416 identifier bound multiple times in struct pattern`() = checkErrors("""
+        struct Foo { a: i32, b: i32 }
+
+        fn foo(x: Foo) {
+            let Foo { a, b: <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error> } = x;
+        }
+    """)
+
+    fun `test E0416 identifier bound multiple times in nested struct pattern`() = checkErrors("""
+        struct Foo { a: Bar, b: Bar }
+        struct Bar { a: i32, b: i32 }
+
+        fn foo(x: Foo) {
+            let Foo { a: Bar { a, b }, b: Bar { <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error>, <error descr="Identifier `b` is bound more than once in the same pattern [E0416]">b</error> } } = x;
+        }
+    """)
+
+    fun `test E0416 identifier bound multiple times in nested complex pattern`() = checkErrors("""
+        struct Foo { a: Bar, b: Bar }
+        struct Bar { a: i32, b: (i32, i32) }
+
+        fn foo(x: Foo) {
+            let Foo { a: Bar { a, b }, b: Bar { <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error>, b: (<error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error>, <error descr="Identifier `b` is bound more than once in the same pattern [E0416]">b</error>) } } = x;
+        }
+    """)
+
+    fun `test E0416 identifier bound multiple times in tuple pattern`() = checkErrors("""
+        fn foo() {
+            let (a, <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error>) = (0, 0);
+        }
+    """)
+
+    fun `test E0416 identifier bound multiple times in tuple struct pattern`() = checkErrors("""
+        struct Foo(u32, u32);
+
+        fn foo(x: Foo) {
+            let Foo (a, <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error>) = x;
+        }
+    """)
+
+    fun `test E0416 in or pattern branch`() = checkErrors("""
+        enum E {
+            Bar { a: u32, b: u32 },
+            Baz { a: u32 }
+        }
+
+        fn foo(x: E) {
+            match x {
+                E::Bar { a, b: <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error> } | E::Baz { a } => {}
+            }
+        }
+    """)
+
+    fun `test no E0416 on or pattern in distinct or branches`() = checkErrors("""
+        enum E {
+            Bar { a: u32 },
+            Baz { a: u32 }
+        }
+
+        fn foo(x: E) {
+            match x {
+                E::Bar { a } | E::Baz { a } => {}
+            }
+        }
+    """)
+
+    @MockRustcVersion("1.38.0-nightly")
+    fun `test E0416 in nested or pattern branches`() = checkErrors("""
+        #![feature(or_patterns)]
+
+        struct Foo { a: i32, b: E }
+
+        enum E {
+            Bar { a: u32 },
+            Baz { a: u32 }
+        }
+
+        fn foo(x: Foo) {
+            let Foo { a, b: E::Bar { <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error> } | E::Baz { <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error> } } = x;
+        }
+    """)
+
+    @MockRustcVersion("1.38.0-nightly")
+    fun `test E0416 in nested or pattern branches in reverse order`() = checkErrors("""
+        #![feature(or_patterns)]
+
+        struct Foo { a: i32, b: E }
+
+        enum E {
+            Bar { a: u32 },
+            Baz { a: u32 }
+        }
+
+        fn foo(x: Foo) {
+            let Foo { b: E::Bar { a } | E::Baz { a }, <error descr="Identifier `a` is bound more than once in the same pattern [E0416]">a</error> } = x;
+        }
+    """)
+
+    fun `test no E0416 with path pattern`() = checkErrors("""
+        enum Option {
+            None,
+            Some
+        }
+        use Option::*;
+
+        fn foo(x: (Option, Option)) {
+            match x {
+                (None, None) => {},
+                _ => {}
+            }
+        }
+    """)
+
+    fun `test empty function E0308 wrong return type`() = checkByText("""
+        fn foo() -> u32 {<error descr="mismatched types [E0308]">}</error>
+    """)
+
+    fun `test empty function ignore impl trait return type`() = checkByText("""
+        trait FooBar {}
+        impl FooBar for () {}
+
+        fn foo() -> impl FooBar {}
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test E0116 inherent impls should be in same crate`() = checkByFileTree("""
+    //- lib.rs
+        pub struct ForeignStruct {}
+        pub trait ForeignTrait {}
+    //- main.rs
+        /*caret*/
+        use test_package::{ForeignStruct, ForeignTrait};
+
+        struct LocalStruct {}
+        trait LocalTrait {}
+        type ForeignStructAlias = ForeignStruct;
+        type LocalStructAlias = LocalStruct;
+
+        impl <error descr="Cannot define inherent `impl` for a type outside of the crate where the type is defined [E0116]">ForeignStruct</error> {}
+        impl <error descr="Cannot define inherent `impl` for a type outside of the crate where the type is defined [E0116]">ForeignStructAlias</error> {}
+        impl LocalStruct {}
+        impl LocalStructAlias {}
+
+        impl dyn LocalTrait {}
+        impl <error descr="Cannot define inherent `impl` for a type outside of the crate where the type is defined [E0116]">dyn ForeignTrait</error> {}
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test E0117 trait impls orphan rules`() = checkByFileTree("""
+    //- lib.rs
+        pub struct ForeignStruct {}
+        pub trait ForeignTrait {}
+        pub trait ForeignTrait0 {}
+        pub trait ForeignTrait1<T> {}
+    //- main.rs
+        /*caret*/
+        use std::pin::Pin;
+        use test_package::*;
+
+        pub struct LocalStruct {}
+        pub trait LocalTrait {}
+
+        // simple
+        impl LocalTrait for LocalStruct {}
+        impl LocalTrait for ForeignStruct {}
+        impl ForeignTrait for LocalStruct {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait</error> for ForeignStruct {}
+
+        // trait has type parameters
+        impl ForeignTrait1<LocalStruct> for ForeignStruct {}
+        impl ForeignTrait1<ForeignStruct> for LocalStruct {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait1<ForeignStruct></error> for ForeignStruct {}
+
+        // uncovering
+        impl ForeignTrait for &LocalStruct {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait</error> for &ForeignStruct {}
+        impl ForeignTrait for Box<LocalStruct> {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait</error> for Box<ForeignStruct> {}
+        impl ForeignTrait for Pin<LocalStruct> {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait</error> for Pin<ForeignStruct> {}
+
+        // trait objects
+        impl ForeignTrait for Box<dyn LocalTrait> {}
+        impl <error descr="Only traits defined in the current crate can be implemented for arbitrary types [E0117]">ForeignTrait</error> for Box<dyn ForeignTrait0> {}
+    """)
+
+    fun `test no E0252 multiple underscore aliases`() = checkErrors("""
+        mod foo {
+            pub trait T1 {}
+        }
+        mod bar {
+            pub trait T2 {}
+        }
+        use foo::T1 as _;
+        use bar::T2 as _;
     """)
 }

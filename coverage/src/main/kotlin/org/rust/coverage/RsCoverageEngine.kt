@@ -20,6 +20,7 @@ import com.intellij.ide.util.treeView.NodeDescriptor
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -48,7 +49,7 @@ class RsCoverageEngine : CoverageEngine() {
 
     override fun coverageEditorHighlightingApplicableTo(psiFile: PsiFile): Boolean = psiFile is RsFile
 
-    override fun createCoverageEnabledConfiguration(conf: RunConfigurationType): CoverageEnabledConfiguration =
+    override fun createCoverageEnabledConfiguration(conf: RunConfigurationBase<*>): CoverageEnabledConfiguration =
         RsCoverageEnabledConfiguration(conf)
 
     override fun getQualifiedName(outputFile: File, sourceFile: PsiFile): String? = getQName(sourceFile)
@@ -67,7 +68,7 @@ class RsCoverageEngine : CoverageEngine() {
 
     override fun getCoverageAnnotator(project: Project): CoverageAnnotator = RsCoverageAnnotator.getInstance(project)
 
-    override fun isApplicableTo(conf: RunConfigurationType): Boolean = conf is CargoCommandConfiguration
+    override fun isApplicableTo(conf: RunConfigurationBase<*>): Boolean = conf is CargoCommandConfiguration
 
     override fun createEmptyCoverageSuite(coverageRunner: CoverageRunner): CoverageSuite = RsCoverageSuite()
 
@@ -77,7 +78,7 @@ class RsCoverageEngine : CoverageEngine() {
         project: Project,
         suiteBundle: CoverageSuitesBundle,
         stateBean: CoverageViewManager.StateBean
-    ): CoverageViewExtension? =
+    ): CoverageViewExtension =
         object : DirectoryCoverageViewExtension(project, getCoverageAnnotator(project), suiteBundle, stateBean) {
             override fun createColumnInfos(): Array<ColumnInfo<NodeDescriptor<*>, String>> {
                 val percentage = PercentageCoverageColumnInfo(
@@ -87,7 +88,7 @@ class RsCoverageEngine : CoverageEngine() {
                     myStateBean
                 )
                 val files = object : ColumnInfo<NodeDescriptor<*>, String>("File") {
-                    override fun valueOf(item: NodeDescriptor<*>?): String? = item.toString()
+                    override fun valueOf(item: NodeDescriptor<*>?): String = item.toString()
                     override fun getComparator(): Comparator<NodeDescriptor<*>>? = AlphaComparator.INSTANCE
                 }
                 return arrayOf(files, percentage)
@@ -110,7 +111,7 @@ class RsCoverageEngine : CoverageEngine() {
         chooseSuiteAction: Runnable
     ): Boolean = false
 
-    override fun canHavePerTestCoverage(conf: RunConfigurationType): Boolean = false
+    override fun canHavePerTestCoverage(conf: RunConfigurationBase<*>): Boolean = false
 
     override fun findTestsByNames(testNames: Array<out String>, project: Project): List<PsiElement> = emptyList()
 
@@ -141,10 +142,11 @@ class RsCoverageEngine : CoverageEngine() {
             val output = File(outputDir, outputFileName)
             writeLcov(coverageReport, output)
             refresh(output)
-            val url = "http://ltp.sourceforge.net/coverage/lcov.php"
+            // TODO: generate html report ourselves
+            val url = "https://github.com/linux-test-project/lcov"
             Messages.showInfoMessage(
                 "<html>Coverage report has been successfully saved as '$outputFileName' file.<br>" +
-                    "Use <a href='$url'>$url</a> to generate HTML output.</html>",
+                    "Use instruction in <a href='$url'>$url</a> to generate HTML output.</html>",
                 title
             )
         } catch (e: IOException) {
@@ -215,9 +217,9 @@ class RsCoverageEngine : CoverageEngine() {
     }
 
     companion object {
-        private val LOG: Logger = Logger.getInstance(RsCoverageEngine::class.java)
+        private val LOG: Logger = logger<RsCoverageEngine>()
 
-        fun getInstance(): RsCoverageEngine = CoverageEngine.EP_NAME.findExtensionOrFail(RsCoverageEngine::class.java)
+        fun getInstance(): RsCoverageEngine = EP_NAME.findExtensionOrFail(RsCoverageEngine::class.java)
 
         private fun getQName(sourceFile: PsiFile): String? = sourceFile.virtualFile?.path
     }

@@ -11,19 +11,21 @@ import com.intellij.ide.annotator.AnnotatorBase
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.TextRange
-import com.intellij.openapi.util.text.StringUtil
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
+import org.rust.ide.annotator.fixes.AddTypeFix
 import org.rust.ide.inspections.fixes.SubstituteTextFix
+import org.rust.lang.core.CONST_GENERICS
 import org.rust.lang.core.C_VARIADIC
+import org.rust.lang.core.FeatureAvailability
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.types.type
 import org.rust.lang.utils.RsDiagnostic
 import org.rust.lang.utils.addToHolder
 import org.rust.openapiext.forEachChild
 import org.rust.stdext.pluralize
 import java.lang.Integer.max
-import kotlin.reflect.KClass
 
 class RsSyntaxErrorsAnnotator : AnnotatorBase() {
     override fun annotateInternal(element: PsiElement, holder: AnnotationHolder) {
@@ -165,6 +167,28 @@ private fun checkConstant(holder: AnnotationHolder, const: RsConstant) {
             require(const.expr, holder, "$title must have a value", const)
         }
     }
+    checkConstantType(holder, const)
+}
+
+private fun checkConstantType(holder: AnnotationHolder, element: RsConstant) {
+    if (element.colon == null && element.typeReference == null) {
+        val typeText = if (element.isConst) {
+            "const"
+        } else {
+            "static"
+        }
+        val message = "Missing type for `$typeText` item"
+
+        val annotation = holder.newAnnotation(HighlightSeverity.ERROR, message)
+            .range(element.textRange)
+
+        val expr = element.expr
+        if (expr != null) {
+            annotation.withFix(AddTypeFix(element.nameLikeElement, expr.type))
+        }
+
+        annotation.create()
+    }
 }
 
 private fun checkValueParameterList(holder: AnnotationHolder, params: RsValueParameterList) {
@@ -239,9 +263,10 @@ private fun checkTypeParameterList(holder: AnnotationHolder, element: RsTypePara
         element.typeParameterList
             .mapNotNull { it.typeReference }
             .forEach {
-                holder.newAnnotation(HighlightSeverity.ERROR,
-                    "Defaults for type parameters are only allowed in `struct`, `enum`, `type`, or `trait` definitions")
-                    .range(it).create()
+                holder.newAnnotation(
+                    HighlightSeverity.ERROR,
+                    "Defaults for type parameters are only allowed in `struct`, `enum`, `type`, or `trait` definitions"
+                ).range(it).create()
             }
     } else {
         val lastNotDefaultIndex = max(element.typeParameterList.indexOfLast { it.typeReference == null }, 0)
@@ -253,48 +278,57 @@ private fun checkTypeParameterList(holder: AnnotationHolder, element: RsTypePara
                     .range(it).create()
             }
     }
-    val lifetimeParams = element.lifetimeParameterList
-    if (lifetimeParams.isEmpty()) return
-    val startOfTypeParams = element.typeParameterList.firstOrNull()?.textOffset ?: return
-    for (e in lifetimeParams) {
-        if (e.textOffset > startOfTypeParams) {
-            holder.newAnnotation(HighlightSeverity.ERROR, "Lifetime parameters must be declared prior to type parameters")
-                .range(e).create()
-        }
-    }
+
+    checkTypeList(element, "parameters", holder)
 }
 
 private fun checkTypeArgumentList(holder: AnnotationHolder, args: RsTypeArgumentList) {
-    var kind = TypeArgumentKind.LIFETIME
-    args.forEachChild { child ->
-        val newKind = TypeArgumentKind.forType(child) ?: return@forEachChild
-        if (newKind.canStandAfter(kind)) {
-            kind = newKind
-        } else {
-            val newStateName = newKind.argumentNameCapitalized
+    checkTypeList(args, "arguments", holder)
 
-            holder.newAnnotation(HighlightSeverity.ERROR, "$newStateName must be declared prior to ${kind.argumentName}")
-                .range(child).create()
+    val startOfAssocTypeBindings = args.assocTypeBindingList.firstOrNull()?.textOffset ?: return
+    for (generic in args.lifetimeList + args.typeReferenceList + args.exprList) {
+        if (generic.textOffset > startOfAssocTypeBindings) {
+            holder.newAnnotation(HighlightSeverity.ERROR, "Generic arguments must come before the first constraint")
+                .range(generic).create()
         }
     }
 }
 
-private enum class TypeArgumentKind(private val elementClass: KClass<*>, val argumentName: String) {
-    LIFETIME(RsLifetime::class, "lifetime arguments"),
-    TYPE(RsTypeReference::class, "type arguments"),
-    CONST(RsExpr::class, "const arguments"),
-    ASSOC(RsAssocTypeBinding::class, "associated type bindings");
+private fun checkTypeList(typeList: PsiElement, elementsName: String, holder: AnnotationHolder) {
+    val isConstGenericsAvailable = CONST_GENERICS.availability(typeList) == FeatureAvailability.AVAILABLE
+    var kind = TypeKind.LIFETIME
+    typeList.forEachChild { child ->
+        val newKind = TypeKind.forType(child) ?: return@forEachChild
+        if (newKind.canStandAfter(kind, isConstGenericsAvailable)) {
+            kind = newKind
+        } else {
+            val newStateName = newKind.presentableName.capitalize()
+            holder.newAnnotation(
+                HighlightSeverity.ERROR,
+                "$newStateName $elementsName must be declared prior to ${kind.presentableName} $elementsName"
+            ).range(child).create()
+        }
+    }
+}
 
-    val argumentNameCapitalized: String
-        get() = StringUtil.capitalize(argumentName)
+private enum class TypeKind {
+    LIFETIME,
+    TYPE,
+    CONST;
 
-    fun canStandAfter(prevArgument: TypeArgumentKind): Boolean =
-        ordinal >= prevArgument.ordinal
+    val presentableName: String get() = name.toLowerCase()
+
+    fun canStandAfter(prev: TypeKind, isConstGenericsAvailable: Boolean): Boolean =
+        if (isConstGenericsAvailable) this !== LIFETIME || prev === LIFETIME else ordinal >= prev.ordinal
 
     companion object {
-        private val VALUES = values()
-        fun forType(seekingElement: PsiElement): TypeArgumentKind? =
-            VALUES.find { it.elementClass.isInstance(seekingElement) }
+        fun forType(seekingElement: PsiElement): TypeKind? =
+            when (seekingElement) {
+                is RsLifetimeParameter, is RsLifetime -> LIFETIME
+                is RsTypeParameter, is RsTypeReference -> TYPE
+                is RsConstParameter, is RsExpr -> CONST
+                else -> null
+            }
     }
 }
 

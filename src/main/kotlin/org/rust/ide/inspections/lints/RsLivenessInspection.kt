@@ -13,22 +13,21 @@ import org.rust.ide.inspections.fixes.RemoveParameterFix
 import org.rust.ide.inspections.fixes.RemoveVariableFix
 import org.rust.ide.inspections.fixes.RenameFix
 import org.rust.ide.utils.isCfgUnknown
+import org.rust.lang.core.dfa.liveness.DeclarationKind
+import org.rust.lang.core.dfa.liveness.DeclarationKind.Parameter
+import org.rust.lang.core.dfa.liveness.DeclarationKind.Variable
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.ancestorStrict
 import org.rust.lang.core.psi.ext.descendantsWithMacrosOfType
 import org.rust.lang.core.psi.ext.expansion
 import org.rust.lang.core.psi.ext.topLevelPattern
-import org.rust.lang.core.types.DeclarationKind
-import org.rust.lang.core.types.DeclarationKind.Parameter
-import org.rust.lang.core.types.DeclarationKind.Variable
 import org.rust.lang.core.types.liveness
 
 class RsLivenessInspection : RsLintInspection() {
 
-    override fun getLint(element: PsiElement): RsLint? =
-        RsLint.UnusedVariables
+    override fun getLint(element: PsiElement): RsLint = RsLint.UnusedVariables
 
-    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean) =
+    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean): RsVisitor =
         object : RsVisitor() {
             override fun visitFunction(func: RsFunction) {
                 // Disable inside doc tests

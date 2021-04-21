@@ -17,9 +17,10 @@ import com.intellij.util.containers.MultiMap
 import org.rust.ide.refactoring.move.common.ElementToMove
 import org.rust.ide.refactoring.move.common.RsMoveCommonProcessor
 import org.rust.ide.refactoring.move.common.RsMoveUtil.addInner
-import org.rust.lang.core.psi.ext.RsItemElement
-import org.rust.lang.core.psi.ext.RsMod
-import org.rust.lang.core.psi.ext.startOffset
+import org.rust.lang.core.psi.RsModItem
+import org.rust.lang.core.psi.RsPsiFactory
+import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.namespaces
 
 /** See overview of move refactoring in comment for [RsMoveCommonProcessor] */
 class RsMoveTopLevelItemsProcessor(
@@ -39,9 +40,29 @@ class RsMoveTopLevelItemsProcessor(
         return commonProcessor.findUsages()
     }
 
+    private fun checkNoItemsWithSameName(conflicts: MultiMap<PsiElement, String>) {
+        if (!searchForReferences) return
+
+        val targetModItems = targetMod.expandedItemsExceptImplsAndUses
+            .filterIsInstance<RsNamedElement>()
+            .groupBy { it.name }
+        for (item in itemsToMove) {
+            val name = (item as? RsNamedElement)?.name ?: continue
+            val namespaces = item.namespaces
+            val itemsExisting = targetModItems[name] ?: continue
+            for (itemExisting in itemsExisting) {
+                val namespacesExisting = itemExisting.namespaces
+                if ((namespacesExisting intersect namespaces).isNotEmpty()) {
+                    conflicts.putValue(itemExisting, "Target file already contains item with name $name")
+                }
+            }
+        }
+    }
+
     override fun preprocessUsages(refUsages: Ref<Array<UsageInfo>>): Boolean {
         val usages = refUsages.get()
         val conflicts = MultiMap<PsiElement, String>()
+        checkNoItemsWithSameName(conflicts)
         return commonProcessor.preprocessUsages(usages, conflicts) && showConflicts(conflicts, usages)
     }
 
@@ -50,19 +71,24 @@ class RsMoveTopLevelItemsProcessor(
     }
 
     private fun moveItems(): List<ElementToMove> {
+        val psiFactory = RsPsiFactory(project)
         return itemsToMove
             .sortedBy { it.startOffset }
-            .map { item -> moveItem(item) }
+            .map { item -> moveItem(item, psiFactory) }
     }
 
-    private fun moveItem(item: RsItemElement): ElementToMove {
+    private fun moveItem(item: RsItemElement, psiFactory: RsPsiFactory): ElementToMove {
         commonProcessor.updateMovedItemVisibility(item)
 
-        val space = item.nextSibling as? PsiWhiteSpace
+        if (targetMod.lastChildInner !is PsiWhiteSpace) {
+            targetMod.addInner(psiFactory.createNewline())
+        }
+        val targetModLastWhiteSpace = targetMod.lastChildInner as PsiWhiteSpace
 
+        val space = (item.prevSibling as? PsiWhiteSpace) ?: (item.nextSibling as? PsiWhiteSpace)
         // have to call `copy` because of rare suspicious `PsiInvalidElementAccessException`
-        val itemNew = targetMod.addInner(item.copy()) as RsItemElement
-        if (space != null) targetMod.addInner(space.copy())
+        val itemNew = targetMod.addBefore(item.copy(), targetModLastWhiteSpace) as RsItemElement
+        targetMod.addBefore(space?.copy() ?: psiFactory.createNewline(), itemNew)
 
         space?.delete()
         item.delete()
@@ -73,5 +99,7 @@ class RsMoveTopLevelItemsProcessor(
     override fun createUsageViewDescriptor(usages: Array<out UsageInfo>): UsageViewDescriptor =
         MoveMultipleElementsViewDescriptor(itemsToMove.toTypedArray(), targetMod.name ?: "")
 
-    override fun getCommandName(): String = "Move items"
+    override fun getCommandName(): String = "Move Items"
 }
+
+private val RsMod.lastChildInner: PsiElement? get() = if (this is RsModItem) rbrace?.prevSibling else lastChild

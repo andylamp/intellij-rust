@@ -5,10 +5,7 @@
 
 package org.rust.lang.core.resolve
 
-import org.rust.ExpandMacros
-import org.rust.MockEdition
-import org.rust.ProjectDescriptor
-import org.rust.WithDependencyRustProjectDescriptor
+import org.rust.*
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.stdext.BothEditions
 
@@ -419,6 +416,26 @@ class RsMacroExpansionResolveTest : RsResolveTestBase() {
         #[macro_export]
         macro_rules! foo {
             () => { use $ crate::func; }
+        }
+    //- main.rs
+        #[macro_use]
+        extern crate test_package as package;
+
+        foo!();
+
+        fn main() {
+            func();
+        } //^ lib.rs
+    """)
+
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test 'crate' metavar with alias (macro expanded to import with group)`() = stubOnlyResolve("""
+    //- lib.rs
+        pub fn func() {}
+             //X
+        #[macro_export]
+        macro_rules! foo {
+            () => { use $ crate::{func}; }
         }
     //- main.rs
         #[macro_use]
@@ -861,6 +878,113 @@ class RsMacroExpansionResolveTest : RsResolveTestBase() {
         #[macro_export]
         macro_rules! bar {
             () => { use Foo as Bar; };
+        }
+    """)
+
+    // we only test that there are no exception with new resolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
+    fun `test local_inner_macros expanded to extern crate`() = stubOnlyResolve("""
+    //- main.rs
+        use test_package::foo;
+        foo!();
+        //^ lib.rs
+        fn main() {}
+    //- lib.rs
+        #[macro_export(local_inner_macros)]
+        macro_rules! foo {
+            () => {
+                extern crate foo;
+            };
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test expand macro with incomplete path`() = stubOnlyResolve("""
+    //- main.rs
+        macro_rules! gen_func {
+            () => { fn func() {} };
+        }
+
+        gen_func::!();
+
+        fn main() {
+            // here we just check that incomplete path doesn't cause exceptions
+            func();
+        } //^ unresolved
+    """)
+
+    @UseNewResolve
+    fun `test legacy textual macro reexported as macro 2`() = checkByCode("""
+        mod inner {
+            #[macro_export]
+            macro_rules! as_is_ {
+                ($ i:item) => { $ i }
+            }
+            pub use as_is_ as as_is;
+        }
+
+        inner::as_is! { fn foo() {} }
+                         //X
+
+        fn main() {
+            foo();
+        } //^
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro call expanded to macro def and macro call 1`() = checkByCode("""
+        macro_rules! as_is { ($($ t:tt)*) => { $($ t)* }; }
+        as_is! {
+            macro_rules! foo { () => {}; }
+                       //X
+            foo!();
+        } //^
+    """)
+
+    // when resolving macro call expanded from other macro call,
+    // firstly left sibling expanded elements should be processed
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test macro call expanded to macro def and macro call 2`() = checkByCode("""
+        macro_rules! foo {
+            (1) => {
+                macro_rules! foo {
+                    (2) => { use inner::func; };
+                }
+                foo!(2);
+            };
+            (2) => {};
+        }
+
+        mod inner {
+            pub fn func() {}
+        }        //X
+        foo!(1);
+
+        fn main() {
+            func();
+        } //^
+    """)
+
+    @UseNewResolve
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test propagate expanded macro def to grandparent mod`() = checkByCode("""
+        mod inner {
+            #[macro_use]
+            mod mod1 {
+                #[macro_use]
+                mod mod2 {
+                    macro_rules! gen {
+                        ($ name:ident) => {
+                            macro_rules! $ name { () => {} }
+                        };
+                    }
+                    gen!(foo);
+                       //X
+                }
+            }
+            foo!();
+            //^
         }
     """)
 }

@@ -5,6 +5,9 @@
 
 package org.rust.ide.inspections
 
+import org.rust.ExpandMacros
+import org.rust.MockAdditionalCfgOptions
+
 class RsTraitImplementationInspectionTest : RsInspectionsTestBase(RsTraitImplementationInspection::class) {
 
     fun `test self in trait not in impl E0186`() = checkErrors("""
@@ -67,6 +70,30 @@ class RsTraitImplementationInspectionTest : RsInspectionsTestBase(RsTraitImpleme
         }
     """)
 
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test incorrect params number in trait impl E0050 with cfg attributes`() = checkErrors("""
+        trait T {
+            fn foo(#[cfg(intellij_rust)] a: i32);
+            fn bar(#[cfg(not(intellij_rust))] a: i32);
+            fn baz(#[cfg(intellij_rust)] a: i32, #[cfg(not(intellij_rust))] a: u32);
+            fn quux(#[cfg(not(intellij_rust))] a: i32, #[cfg(intellij_rust)] a: u32);
+        }
+        struct S1;
+        impl T for S1 {
+            fn foo(a: i32) {}
+            fn bar() {}
+            fn baz(a: i32);
+            fn quux(a: u32);
+        }
+        struct S2;
+        impl T for S2 {
+            fn foo(#[cfg(intellij_rust)] a: i32) {}
+            fn bar(#[cfg(not(intellij_rust))] a: i32) {}
+            fn baz(#[cfg(intellij_rust)] a: i32, #[cfg(not(intellij_rust))] a: i32) {}
+            fn quux(#[cfg(not(intellij_rust))] a: i32, #[cfg(intellij_rust)] a: u32);
+        }
+    """)
+
     fun `test absent method in trait impl E0046`() = checkErrors("""
         trait TError {
             fn bar();
@@ -88,6 +115,22 @@ class RsTraitImplementationInspectionTest : RsInspectionsTestBase(RsTraitImpleme
         }
     """)
 
+    @ExpandMacros
+    fun `test ignore expanded methods`() = checkErrors("""
+        macro_rules! as_is { ($($ t:tt)*) => {$($ t)*}; }
+        trait T {
+            fn foo1(&self);
+            fn foo2();
+            fn foo3(a: i32);
+        }
+        impl T for () {
+            as_is! { fn foo1() {} }       // self in trait not in impl E0186
+            as_is! { fn foo2(&self) {} }  // self in impl not in trait E0185
+            as_is! { fn foo3() {} }       // incorrect params number in trait impl E0050
+            as_is! { fn bar() {} }        // unknown method E0407
+        }
+    """)
+
     fun `test different type items have same name E0046`() = checkErrors("""
         trait A {
             type C;
@@ -96,5 +139,16 @@ class RsTraitImplementationInspectionTest : RsInspectionsTestBase(RsTraitImpleme
         <error descr="Not all trait items implemented, missing: `C` [E0046]">impl A for ()</error> {
             type C = ();
         }
+    """)
+
+    @MockAdditionalCfgOptions("intellij_rust")
+    fun `test ignore cfg-disabled item without a default`() = checkErrors("""
+        trait A {
+            #[cfg(intellij_rust)]
+            fn foo() {}
+            #[cfg(not(intellij_rust))]
+            fn foo();
+        }
+        impl A for () {}
     """)
 }

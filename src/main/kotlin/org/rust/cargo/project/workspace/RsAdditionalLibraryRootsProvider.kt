@@ -17,8 +17,7 @@ import org.rust.cargo.icons.CargoIcons
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.PackageOrigin.*
-import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.toolchain.RustcVersion
+import org.rust.cargo.toolchain.impl.RustcVersion
 import org.rust.ide.icons.RsIcons
 import org.rust.openapiext.checkReadAccessAllowed
 import org.rust.stdext.buildList
@@ -43,11 +42,10 @@ class CargoLibrary(
 
     override fun getLocationString(): String? = null
 
-    override fun getIcon(unused: Boolean): Icon? = icon
+    override fun getIcon(unused: Boolean): Icon = icon
 
-    override fun getPresentableText(): String? = if (version != null) "$name $version" else name
+    override fun getPresentableText(): String = if (version != null) "$name $version" else name
 }
-
 
 class RsAdditionalLibraryRootsProvider : AdditionalLibraryRootsProvider() {
     override fun getAdditionalProjectLibraries(project: Project): Collection<CargoLibrary> {
@@ -74,7 +72,7 @@ private val CargoProject.ideaLibraries: Collection<CargoLibrary>
         val dependencyPackages = mutableListOf<CargoWorkspace.Package>()
         for (pkg in workspace.packages) {
             when (pkg.origin) {
-                STDLIB -> stdlibPackages += pkg
+                STDLIB, STDLIB_DEPENDENCY -> stdlibPackages += pkg
                 DEPENDENCY -> dependencyPackages += pkg
                 WORKSPACE -> Unit
             }.exhaustive
@@ -99,18 +97,18 @@ private fun makeStdlibLibrary(packages: List<CargoWorkspace.Package>, rustcVersi
     }
 
     for (root in sourceRoots) {
-        excludedRoots += listOfNotNull(root.findChild("tests"), root.findChild("benches"))
+        excludedRoots += listOfNotNull(
+            root.findChild("tests"),
+            root.findChild("benches"),
+            root.findChild("examples"),
+            root.findChild("ci"), // From `backtrace`
+            root.findChild(".github"), // From `backtrace`
+            root.findChild("libc-test") // From Rust 1.32.0 `liblibc`
+        )
     }
 
-    val version = rustcVersion?.stdlibVersion()
+    val version = rustcVersion?.semver?.parsedVersion
     return CargoLibrary("stdlib", sourceRoots, excludedRoots, RsIcons.RUST, version)
-}
-
-private fun RustcVersion.stdlibVersion(): String = buildString {
-    append(semver)
-    if (channel > RustChannel.STABLE) {
-        channel.channel?.let { append("-$it") }
-    }
 }
 
 private fun CargoWorkspace.Package.toCargoLibrary(): CargoLibrary? {
@@ -121,8 +119,7 @@ private fun CargoWorkspace.Package.toCargoLibrary(): CargoLibrary? {
         val crateRoot = target.crateRoot ?: continue
         if (target.kind.isLib) {
             val crateRootDir = crateRoot.parent
-            val commonAncestor = VfsUtilCore.getCommonAncestor(root, crateRootDir)
-            when (commonAncestor) {
+            when (VfsUtilCore.getCommonAncestor(root, crateRootDir)) {
                 root -> sourceRoots += root
                 crateRootDir -> sourceRoots += crateRootDir
                 else -> {

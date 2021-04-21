@@ -56,7 +56,7 @@ open class Graph<N, E>(
             it.nextTargetEdge
         }
 
-    fun incidentEdges(node: Node<N, E>, direction: Direction): Sequence<Edge<N, E>> =
+    private fun incidentEdges(node: Node<N, E>, direction: Direction): Sequence<Edge<N, E>> =
         when (direction) {
             Direction.OUTGOING -> outgoingEdges(node)
             Direction.INCOMING -> incomingEdges(node)
@@ -124,6 +124,7 @@ class PresentableGraph<N : PresentableNodeData, E> : Graph<N, E>() {
      * Creates graph description written in the DOT language.
      * Usage: copy the output into `cfg.dot` file and run `dot -Tpng cfg.dot -o cfg.png`
      */
+    @Suppress("unused")
     fun createDotDescription(): String =
         buildString {
             append("digraph {\n")

@@ -9,7 +9,10 @@ import com.intellij.codeInsight.daemon.RainbowVisitor
 import com.intellij.codeInsight.daemon.impl.HighlightVisitor
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
-import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.RsFunction
+import org.rust.lang.core.psi.RsPatBinding
+import org.rust.lang.core.psi.RsPath
 import org.rust.lang.core.psi.ext.descendantsOfType
 
 class RsRainbowVisitor : RainbowVisitor() {
@@ -27,9 +30,7 @@ class RsRainbowVisitor : RainbowVisitor() {
         val bindingToUniqueName: Map<RsPatBinding, String> = run {
             val allBindings = function.descendantsOfType<RsPatBinding>().filter { it.name != null }
             val byName = allBindings.groupBy { it.name }
-            allBindings
-                .map { it to "${it.name}#${byName[it.name]!!.indexOf(it)}" }
-                .toMap()
+            allBindings.associateWith { "${it.name}#${byName[it.name]!!.indexOf(it)}" }
         }
 
         for ((binding, name) in bindingToUniqueName) {
@@ -39,7 +40,8 @@ class RsRainbowVisitor : RainbowVisitor() {
         for (path in function.descendantsOfType<RsPath>()) {
             val target = path.reference?.resolve() as? RsPatBinding ?: continue
             val colorTag = bindingToUniqueName[target] ?: return
-            addInfo(path.referenceNameElement, colorTag)
+            val ident = path.referenceNameElement ?: return
+            addInfo(ident, colorTag)
         }
     }
 }

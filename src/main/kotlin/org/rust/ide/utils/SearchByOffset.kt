@@ -78,8 +78,11 @@ fun findStatementsOrExprInRange(file: PsiFile, startOffset: Int, endOffset: Int)
     val mostDistantParent = parent.ancestors
         .last { it.textRange == parent.textRange }
 
-    if (mostDistantParent is RsExpr || mostDistantParent is RsStmt)
-        return arrayOf(mostDistantParent)
+    if (mostDistantParent is RsExpr || mostDistantParent is RsStmt) {
+        if (startOffset == mostDistantParent.startOffset && endOffset == mostDistantParent.endOffset) {
+            return arrayOf(mostDistantParent)
+        }
+    }
 
     return findStatementsInRange(element1, element2)
 }
@@ -111,10 +114,10 @@ private fun findStatementsInRangeUnchecked(element1: PsiElement, element2: PsiEl
     // Finally check if found elements meet requirements, and return result
     elements.forEachIndexed { idx, element ->
         if (!(element is RsStmt
-            || element is RsMacroCall && element.expansionContext == STMT
-            || (idx == elements.size - 1 && element is RsExpr)
-            || element is PsiComment
-            )) return emptyArray()
+                || element is RsMacroCall && element.expansionContext == STMT
+                || (idx == elements.size - 1 && element is RsExpr)
+                || element is PsiComment
+                )) return emptyArray()
     }
 
     return elements

@@ -5,7 +5,6 @@
 
 package org.rust.ide.inspections
 
-import com.intellij.psi.PsiElementVisitor
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.RsImplItem
 import org.rust.lang.core.psi.RsVisitor
@@ -18,7 +17,7 @@ import org.rust.lang.utils.addToHolder
 
 class RsTraitImplementationInspection : RsLocalInspectionTool() {
 
-    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor = object : RsVisitor() {
+    override fun buildVisitor(holder: RsProblemsHolder, isOnTheFly: Boolean): RsVisitor = object : RsVisitor() {
         override fun visitImplItem(impl: RsImplItem) {
             val traitRef = impl.traitRef ?: return
             val trait = traitRef.resolveToTrait() ?: return
@@ -27,17 +26,25 @@ class RsTraitImplementationInspection : RsLocalInspectionTool() {
             val implInfo = TraitImplementationInfo.create(trait, impl) ?: return
 
             if (implInfo.missingImplementations.isNotEmpty()) {
-                val missing = implInfo.missingImplementations.mapNotNull { it.name?.let { "`$it`" } }.joinToString(", ")
+                val missing = implInfo.missingImplementations
+                    .mapNotNull { missing -> missing.name?.let { "`$it`" } }
+                    .joinToString(", ")
                 RsDiagnostic.TraitItemsMissingImplError(impl.impl, impl.typeReference ?: impl.impl, missing, impl)
                     .addToHolder(holder)
             }
 
             for (member in implInfo.nonExistentInTrait) {
+                // ignore members expanded from macros
+                if (member.containingFile != impl.containingFile) continue
+
                 RsDiagnostic.UnknownMethodInTraitError(member.nameIdentifier!!, member, traitName)
                     .addToHolder(holder)
             }
 
             for ((imp, dec) in implInfo.implementationToDeclaration) {
+                // ignore members expanded from macros
+                if (imp.containingFile != impl.containingFile) continue
+
                 if (imp is RsFunction && dec is RsFunction) {
                     checkTraitFnImplParams(holder, imp, dec, traitName)
                 }

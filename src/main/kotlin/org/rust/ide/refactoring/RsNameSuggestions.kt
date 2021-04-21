@@ -100,8 +100,7 @@ private fun nameForCall(expr: RsCallExpr): List<String> {
         val path = pathElement.path
 
         //path.path.identifier gives us the x's out of: Xxx::<T>::yyy
-        return listOf(path.identifier, path.path?.identifier)
-            .filterNotNull().map(PsiElement::getText)
+        return listOfNotNull(path.identifier, path.path?.identifier).map(PsiElement::getText)
     }
     return listOf(pathElement.text)
 }
@@ -112,5 +111,11 @@ private fun findNamesInLocalScope(expr: PsiElement): Set<String> {
     // Existing names should not be shadowed.
     // For example, see https://github.com/intellij-rust/intellij-rust/issues/2919
     return PsiTreeUtil.findChildrenOfAnyType(functionScope, RsPatBinding::class.java, RsPath::class.java)
-        .mapNotNullToSet { (it as? RsPath)?.referenceName ?: (it as RsPatBinding).name }
+        .mapNotNullToSet {
+            when (it) {
+                is RsPath -> it.referenceName
+                is RsPatBinding -> it.name
+                else -> null
+            }
+        }
 }

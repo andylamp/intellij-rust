@@ -1,7 +1,10 @@
 <idea-plugin xmlns:xi="http://www.w3.org/2001/XInclude" allow-bundled-update="true">
+    <depends>com.intellij.cidr.base</depends>
+    <depends>com.intellij.clion</depends>
+
     <xi:include href="/META-INF/core-debugger-only.xml" xpointer="xpointer(/idea-plugin/*)"/>
 
-    <extensions defaultExtensionNs="clion">
+    <extensions defaultExtensionNs="cidr">
         <buildConfigurationProvider implementation="org.rust.clion.cargo.CargoBuildConfigurationProvider"/>
     </extensions>
 

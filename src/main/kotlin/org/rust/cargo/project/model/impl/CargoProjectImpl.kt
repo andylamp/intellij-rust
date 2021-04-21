@@ -5,15 +5,14 @@
 
 package org.rust.cargo.project.model.impl
 
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.execution.RunManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.invokeAndWaitIfNeeded
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.application.runWriteAction
-import com.intellij.openapi.components.PersistentStateComponent
-import com.intellij.openapi.components.State
-import com.intellij.openapi.components.Storage
-import com.intellij.openapi.components.StoragePathMacros
+import com.intellij.openapi.components.*
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.module.ModuleUtilCore
@@ -22,6 +21,7 @@ import com.intellij.openapi.project.ex.ProjectEx
 import com.intellij.openapi.roots.ContentEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.util.EmptyRunnable
@@ -31,8 +31,8 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapiext.isUnitTestMode
+import com.intellij.psi.PsiManager
 import com.intellij.ui.GuiUtils
-import com.intellij.util.Consumer
 import com.intellij.util.indexing.LightDirectoryIndex
 import com.intellij.util.io.exists
 import com.intellij.util.io.systemIndependentPath
@@ -42,30 +42,23 @@ import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProject.UpdateStatus
 import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.setup
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsChangedEvent
 import org.rust.cargo.project.settings.RustProjectSettingsService.RustSettingsListener
 import org.rust.cargo.project.settings.rustSettings
-import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.toolwindow.CargoToolWindow.Companion.initializeToolWindow
-import org.rust.cargo.project.workspace.CargoWorkspace
-import org.rust.cargo.project.workspace.PackageOrigin
-import org.rust.cargo.project.workspace.StandardLibrary
-import org.rust.cargo.project.workspace.additionalRoots
+import org.rust.cargo.project.workspace.*
 import org.rust.cargo.runconfig.command.workingDirectory
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RsToolchain
 import org.rust.cargo.util.AutoInjectedCrates
 import org.rust.ide.notifications.showBalloon
 import org.rust.lang.RsFileType
 import org.rust.lang.core.macros.macroExpansionManager
-import org.rust.openapiext.CachedVirtualFile
-import org.rust.openapiext.TaskResult
-import org.rust.openapiext.modules
-import org.rust.openapiext.pathAsPath
-import org.rust.stdext.AsyncValue
-import org.rust.stdext.applyWithSymlink
+import org.rust.openapiext.*
+import org.rust.stdext.*
 import org.rust.taskQueue
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -97,13 +90,11 @@ open class CargoProjectsServiceImpl(
                 }
             })
 
-            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                    StartupManager.getInstance(project).runAfterOpened {
-                        GuiUtils.invokeLaterIfNeeded({
-                            initializeToolWindow(project)
-                        }, ModalityState.NON_MODAL)
-                    }
+            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, _ ->
+                StartupManager.getInstance(project).runAfterOpened {
+                    GuiUtils.invokeLaterIfNeeded({
+                        initializeToolWindow(project)
+                    }, ModalityState.NON_MODAL)
                 }
             })
         }
@@ -117,13 +108,15 @@ open class CargoProjectsServiceImpl(
     private val projects = AsyncValue<List<CargoProjectImpl>>(emptyList())
 
 
+    @Suppress("LeakingThis")
     private val noProjectMarker = CargoProjectImpl(Paths.get(""), this)
+
     /**
      * [directoryIndex] allows to quickly map from a [VirtualFile] to
      * a containing [CargoProject].
      */
     private val directoryIndex: LightDirectoryIndex<CargoProjectImpl> =
-        LightDirectoryIndex(project, noProjectMarker, Consumer { index ->
+        LightDirectoryIndex(project, noProjectMarker) { index ->
             val visited = mutableSetOf<VirtualFile>()
 
             fun VirtualFile.put(cargoProject: CargoProjectImpl) {
@@ -159,8 +152,9 @@ open class CargoProjectsServiceImpl(
             for ((pkg, cargoProject) in lowPriority) {
                 pkg.put(cargoProject)
             }
-        })
+        }
 
+    @Suppress("LeakingThis")
     private val packageIndex: CargoPackageIndex = CargoPackageIndex(project, this)
 
     override val allProjects: Collection<CargoProject>
@@ -175,7 +169,7 @@ open class CargoProjectsServiceImpl(
     private var isLegacyRustNotificationShowed: Boolean = false
 
     override fun findProjectForFile(file: VirtualFile): CargoProject? =
-        file.applyWithSymlink { directoryIndex.getInfoForFile(it).takeIf { it !== noProjectMarker } }
+        file.applyWithSymlink { directoryIndex.getInfoForFile(it).takeIf { info -> info !== noProjectMarker } }
 
     override fun findPackageForFile(file: VirtualFile): CargoWorkspace.Package? =
         file.applyWithSymlink(packageIndex::findPackageForFile)
@@ -214,7 +208,94 @@ open class CargoProjectsServiceImpl(
         project.modules
             .asSequence()
             .flatMap { ModuleRootManager.getInstance(it).contentRoots.asSequence() }
-            .mapNotNull { it.findChild(RustToolchain.CARGO_TOML) }
+            .mapNotNull { it.findChild(CargoConstants.MANIFEST_FILE) }
+
+    /**
+     * Modifies [CargoProject.userDisabledFeatures] that eventually affects [CargoWorkspace.Package.featureState].
+     * Note that [CargoProject] is immutable object, so [cargoProject] instance is not mutated by [modifyFeatures]
+     * invocation. Instead, new [CargoProject] instance is created and replaces this instance in
+     * [CargoProjectsService.allProjects].
+     *
+     * Here we only modify [CargoProject.userDisabledFeatures]. The final feature state
+     * is inferred in [WorkspaceImpl.inferFeatureState].
+     *
+     * See tests in `CargoFeaturesModificationTest`
+     */
+    override fun modifyFeatures(cargoProject: CargoProject, features: Set<PackageFeature>, newState: FeatureState) {
+        modifyProjectFeatures(cargoProject) { workspace, userDisabledFeatures ->
+            val packagesByRoots = workspace.packages.associateBy { it.rootDirectory }
+            val actualFeatures = features.mapNotNullToSet { f ->
+                packagesByRoots[f.pkg.rootDirectory]?.let { PackageFeature(it, f.name) }
+            }
+            when (newState) {
+                FeatureState.Disabled -> {
+                    // When a user disables a feature, all we have to do is add it into `userDisabledFeatures`.
+                    // The state of dependant features will be inferred in `WorkspaceImpl.inferFeatureState`
+                    for (feature in actualFeatures) {
+                        userDisabledFeatures.setFeatureState(feature, FeatureState.Disabled)
+                    }
+                }
+                FeatureState.Enabled -> {
+                    // But when disables, we should ensure `userDisabledFeatures` state is consistent.
+                    //
+                    // For example, consider such a case:
+                    // (let [x] mean the feature was enabled automatically (by default),
+                    // [d] – disabled because of presence in `userDisabledFeatures`,
+                    // [ ] – disabled automatically because of dependency on [d] feature)
+                    //
+                    // [x] f1 = ["f3"]
+                    // [x] f2 = ["f3"]
+                    // [x] f3 = []
+                    //
+                    // Then a user disables `f3`:
+                    // [ ] f1 = ["f3"]
+                    // [ ] f2 = ["f3"]
+                    // [d] f3 = []
+                    // `f1` and `f2` disabled automatically because they depend on `f3`.
+                    //
+                    // Then a user enables `f1`, and this is our case!
+                    // [x] f1 = ["f3"]
+                    // [d] f2 = ["f3"]
+                    // [x] f3 = []
+                    // To enable `f1`, `f3` should be removed from `userDisabledFeatures` (because `f1`
+                    // depends on `f3`). But if we just remove `f3` from `userDisabledFeatures`, `f2` will
+                    // also become enabled, but we don't want it! So we have to remove `f3` and add `f2`
+
+                    workspace.featureGraph.apply(defaultState = FeatureState.Enabled) {
+                        disableAll(userDisabledFeatures.getDisabledFeatures(workspace.packages))
+                        enableAll(actualFeatures)
+                    }.forEach { (feature, state) ->
+                        if (feature.pkg.origin == PackageOrigin.WORKSPACE) {
+                            userDisabledFeatures.setFeatureState(feature, state)
+                        }
+                    }
+                }
+            }.exhaustive
+        }
+    }
+
+    private fun modifyProjectFeatures(
+        cargoProject: CargoProject,
+        action: (CargoWorkspace, MutableUserDisabledFeatures) -> Unit
+    ) {
+        modifyProjectsLite { projects ->
+            val oldProject = projects.singleOrNull { it.manifest == cargoProject.manifest }
+                ?: return@modifyProjectsLite projects
+
+            val workspace = oldProject.workspace ?: return@modifyProjectsLite projects
+
+            val userDisabledFeatures = oldProject.userDisabledFeatures.toMutable()
+
+            action(workspace, userDisabledFeatures)
+
+            val newProject = oldProject.copy(userDisabledFeatures = userDisabledFeatures)
+            val newProjects = projects.toMutableList()
+
+            // This can't fail because we got `oldProject` from `projects` few lines above
+            newProjects[newProjects.indexOf(oldProject)] = newProject
+            newProjects
+        }
+    }
 
     /**
      * All modifications to project model except for low-level `loadState` should
@@ -227,6 +308,7 @@ open class CargoProjectsServiceImpl(
         projects.updateAsync(f)
             .thenApply { projects ->
                 invokeAndWaitIfNeeded {
+                    val fileTypeManager = FileTypeManager.getInstance()
                     runWriteAction {
                         if (projects.isNotEmpty()) {
                             checkRustVersion(projects)
@@ -237,7 +319,7 @@ open class CargoProjectsServiceImpl(
                             // See https://youtrack.jetbrains.com/issue/IDEA-237376
                             //
                             // It's a hack to provide proper mapping when we are sure that it's Rust project
-                            FileTypeManager.getInstance().associateExtension(RsFileType, RsFileType.defaultExtension)
+                            fileTypeManager.associateExtension(RsFileType, RsFileType.defaultExtension)
                         }
 
                         directoryIndex.resetIndex()
@@ -255,17 +337,37 @@ open class CargoProjectsServiceImpl(
                 projects
             }
 
+    private fun modifyProjectsLite(
+        f: (List<CargoProjectImpl>) -> List<CargoProjectImpl>
+    ): CompletableFuture<List<CargoProjectImpl>> =
+        projects.updateSync(f)
+            .thenApply { projects ->
+                invokeAndWaitIfNeeded {
+                    val psiManager = PsiManager.getInstance(project)
+                    runWriteAction {
+                        directoryIndex.resetIndex()
+                        project.messageBus.syncPublisher(CargoProjectsService.CARGO_PROJECTS_TOPIC)
+                            .cargoProjectsUpdated(this, projects)
+                        psiManager.dropPsiCaches()
+                        DaemonCodeAnalyzer.getInstance(project).restart()
+                    }
+                }
+
+                projects
+            }
+
     private fun checkRustVersion(projects: List<CargoProjectImpl>) {
         val minToolchainVersion = projects.asSequence()
             .mapNotNull { it.rustcInfo?.version?.semver }
             .min()
         val isUnsupportedRust = minToolchainVersion != null &&
-            minToolchainVersion < RustToolchain.MIN_SUPPORTED_TOOLCHAIN
+            minToolchainVersion < RsToolchain.MIN_SUPPORTED_TOOLCHAIN
+        @Suppress("LiftReturnOrAssignment")
         if (isUnsupportedRust) {
             if (!isLegacyRustNotificationShowed) {
                 val content = "Rust <b>$minToolchainVersion</b> is no longer supported. " +
                     "It may lead to unexpected errors. " +
-                    "Consider upgrading your toolchain to at least <b>${RustToolchain.MIN_SUPPORTED_TOOLCHAIN}</b>"
+                    "Consider upgrading your toolchain to at least <b>${RsToolchain.MIN_SUPPORTED_TOOLCHAIN}</b>"
                 project.showBalloon(content, NotificationType.WARNING)
             }
             isLegacyRustNotificationShowed = true
@@ -288,10 +390,20 @@ open class CargoProjectsServiceImpl(
     }
 
     override fun loadState(state: Element) {
-        // [loaded] is non-empty here. Otherwise, [noStateLoaded] is called instead of [loadState]
-        val loaded = state.getChildren("cargoProject")
-            .mapNotNull { it.getAttributeValue("FILE") }
-            .map { CargoProjectImpl(Paths.get(it), this) }
+        // [cargoProjects] is non-empty here. Otherwise, [noStateLoaded] is called instead of [loadState]
+        val cargoProjects = state.getChildren("cargoProject")
+        val loaded = mutableListOf<CargoProjectImpl>()
+
+        val userDisabledFeaturesMap = project.service<UserDisabledFeaturesHolder>()
+            .takeLoadedUserDisabledFeatures()
+
+        for (cargoProject in cargoProjects) {
+            val file = cargoProject.getAttributeValue("FILE")
+            val manifest = Paths.get(file)
+            val userDisabledFeatures = userDisabledFeaturesMap[manifest] ?: UserDisabledFeatures.EMPTY
+            val newProject = CargoProjectImpl(manifest, this, userDisabledFeatures)
+            loaded.add(newProject)
+        }
 
         // Wake the macro expansion service as soon as possible.
         project.macroExpansionManager
@@ -299,7 +411,7 @@ open class CargoProjectsServiceImpl(
         // Refresh projects via `invokeLater` to avoid model modifications
         // while the project is being opened. Use `updateSync` directly
         // instead of `modifyProjects` for this reason
-        projects.updateSync { _ -> loaded }
+        projects.updateSync { loaded }
             .whenComplete { _, _ ->
                 invokeLater {
                     if (project.isDisposed) return@invokeLater
@@ -320,6 +432,9 @@ open class CargoProjectsServiceImpl(
         // explicitly" happens in [org.rust.ide.notifications.MissingToolchainNotificationProvider]
 
         initialized = true // No lock required b/c it's service init time
+
+        // Should be initialized with this service because it stores a part of cargo projects data
+        project.service<UserDisabledFeaturesHolder>()
     }
 
     override fun toString(): String =
@@ -329,7 +444,8 @@ open class CargoProjectsServiceImpl(
 data class CargoProjectImpl(
     override val manifest: Path,
     private val projectService: CargoProjectsServiceImpl,
-    private val rawWorkspace: CargoWorkspace? = null,
+    override val userDisabledFeatures: UserDisabledFeatures = UserDisabledFeatures.EMPTY,
+    val rawWorkspace: CargoWorkspace? = null,
     private val stdlib: StandardLibrary? = null,
     override val rustcInfo: RustcInfo? = null,
     override val workspaceStatus: UpdateStatus = UpdateStatus.NeedsUpdate,
@@ -340,8 +456,13 @@ data class CargoProjectImpl(
 
     override val workspace: CargoWorkspace? by lazy(LazyThreadSafetyMode.PUBLICATION) {
         val rawWorkspace = rawWorkspace ?: return@lazy null
-        val stdlib = stdlib ?: return@lazy rawWorkspace
+        val stdlib = stdlib ?: return@lazy if (!userDisabledFeatures.isEmpty() && isUnitTestMode) {
+            rawWorkspace.withDisabledFeatures(userDisabledFeatures)
+        } else {
+            rawWorkspace
+        }
         rawWorkspace.withStdlib(stdlib, rawWorkspace.cfgOptions, rustcInfo)
+            .withDisabledFeatures(userDisabledFeatures)
     }
 
     override val presentableName: String by lazy {
@@ -360,7 +481,7 @@ data class CargoProjectImpl(
             return file
         }
 
-    override val workspaceRootDir: VirtualFile? by CachedVirtualFile(workspace?.workspaceRootPath?.toUri()?.toString())
+    override val workspaceRootDir: VirtualFile? by CachedVirtualFile(rawWorkspace?.workspaceRootPath?.toUri()?.toString())
 
     @TestOnly
     fun setRootDir(dir: VirtualFile) = rootDirCache.set(dir)
@@ -371,9 +492,9 @@ data class CargoProjectImpl(
         // "rustc" package was renamed to "rustc_middle" in https://github.com/rust-lang/rust/pull/70536
         // so starting with rustc 1.42 a stable way to identify it is to try to find any of some possible packages
         val possiblePackages = listOf("rustc", "rustc_middle", "rustc_typeck")
-        return workspace.findPackage(AutoInjectedCrates.STD) != null &&
-            workspace.findPackage(AutoInjectedCrates.CORE) != null &&
-            possiblePackages.any { workspace.findPackage(it) != null }
+        return workspace.findPackageByName(AutoInjectedCrates.STD) != null &&
+            workspace.findPackageByName(AutoInjectedCrates.CORE) != null &&
+            possiblePackages.any { workspace.findPackageByName(it) != null }
     }
 
     fun withStdlib(result: TaskResult<StandardLibrary>): CargoProjectImpl = when (result) {
@@ -382,7 +503,11 @@ data class CargoProjectImpl(
     }
 
     fun withWorkspace(result: TaskResult<CargoWorkspace>): CargoProjectImpl = when (result) {
-        is TaskResult.Ok -> copy(rawWorkspace = result.value, workspaceStatus = UpdateStatus.UpToDate)
+        is TaskResult.Ok -> copy(
+            rawWorkspace = result.value,
+            workspaceStatus = UpdateStatus.UpToDate,
+            userDisabledFeatures = userDisabledFeatures.retain(result.value.packages)
+        )
         is TaskResult.Err -> copy(workspaceStatus = UpdateStatus.UpdateFailed(result.reason))
     }
 
@@ -404,6 +529,7 @@ val CargoProjectsService.allTargets: Sequence<CargoWorkspace.Target>
 private fun hasAtLeastOneValidProject(projects: Collection<CargoProject>) =
     projects.any { it.manifest.exists() }
 
+/** Keep in sync with [org.rust.cargo.project.model.impl.deduplicateProjects] */
 private fun isExistingProject(projects: Collection<CargoProject>, manifest: Path): Boolean {
     if (projects.any { it.manifest == manifest }) return true
     return projects.mapNotNull { it.workspace }.flatMap { it.packages }
@@ -413,22 +539,16 @@ private fun isExistingProject(projects: Collection<CargoProject>, manifest: Path
 
 private fun doRefresh(project: Project, projects: List<CargoProjectImpl>): CompletableFuture<List<CargoProjectImpl>> {
     // TODO: get rid of `result` here
-    val result = CompletableFuture<List<CargoProjectImpl>>()
-    val syncTask = CargoSyncTask(project, projects, result)
-    project.taskQueue.run(syncTask)
+    val result = if (projects.isEmpty()) {
+        CompletableFuture.completedFuture(emptyList())
+    } else {
+        val result = CompletableFuture<List<CargoProjectImpl>>()
+        val syncTask = CargoSyncTask(project, projects, result)
+        project.taskQueue.run(syncTask)
+        result
+    }
 
     return result.thenApply { updatedProjects ->
-        for (p in updatedProjects) {
-            val status = p.mergedStatus
-            if (status is UpdateStatus.UpdateFailed) {
-                project.showBalloon(
-                    "Cargo project update failed:<br>${status.reason}",
-                    NotificationType.ERROR
-                )
-                break
-            }
-        }
-
         runWithNonLightProject(project) {
             setupProjectRoots(project, updatedProjects)
         }
@@ -446,6 +566,11 @@ private inline fun runWithNonLightProject(project: Project, action: () -> Unit) 
 
 private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject>) {
     invokeAndWaitIfNeeded {
+        // Initialize services that we use (probably indirectly) in write action below.
+        // Otherwise, they can be initialized in write action that may lead to deadlock
+        RunManager.getInstance(project)
+        ProjectFileIndex.getInstance(project)
+
         runWriteAction {
             if (project.isDisposed) return@runWriteAction
             ProjectRootManagerEx.getInstanceEx(project).mergeRootsChangesDuring {
@@ -466,7 +591,7 @@ private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject
                         if (pkg in alreadySetUp) return
                         alreadySetUp += pkg
                         if (pkg.origin == PackageOrigin.WORKSPACE) {
-                            pkg.contentRoot?.setupContentRoots(module, ContentEntry::setup)
+                            pkg.contentRoot?.setupContentRoots(project, ContentEntry::setup)
                         }
                         val outDir = pkg.outDir
                         if (outDir != null) {

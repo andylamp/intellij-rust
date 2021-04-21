@@ -7,22 +7,23 @@ package org.rust.lang.core.psi.ext
 
 import com.intellij.openapi.util.Key
 import com.intellij.psi.StubBasedPsiElement
-import com.intellij.psi.stubs.StubElement
 import com.intellij.psi.util.CachedValue
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.util.SmartList
+import gnu.trove.THashMap
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsCachedItems.CachedNamedImport
 import org.rust.lang.core.psi.ext.RsCachedItems.CachedStarImport
 import org.rust.openapiext.testAssert
 import org.rust.stdext.optimizeList
+import org.rust.stdext.replaceTrivialMap
 
 interface RsItemsOwner : RsElement
 
 val RsItemsOwner.itemsAndMacros: Sequence<RsElement>
     get() {
-        val stubChildren: List<StubElement<*>>? = run {
+        val stubChildren = run {
             when (this) {
                 is RsFile -> {
                     val stub = greenStub
@@ -36,6 +37,7 @@ val RsItemsOwner.itemsAndMacros: Sequence<RsElement>
             null
         }
 
+        @Suppress("IfThenToElvis")
         return if (stubChildren != null) {
             stubChildren.asSequence().map { it.psi }
         } else {
@@ -51,7 +53,7 @@ inline fun RsItemsOwner.processExpandedItemsExceptImplsAndUses(processor: (RsIte
 }
 
 val RsItemsOwner.expandedItemsExceptImplsAndUses: List<RsItemElement>
-    get() = expandedItemsCached.rest
+    get() = expandedItemsCached.named.values.flatten()
 
 private val EXPANDED_ITEMS_KEY: Key<CachedValue<RsCachedItems>> = Key.create("EXPANDED_ITEMS_KEY")
 
@@ -59,14 +61,16 @@ val RsItemsOwner.expandedItemsCached: RsCachedItems
     get() = CachedValuesManager.getCachedValue(this, EXPANDED_ITEMS_KEY) {
         val namedImports = SmartList<CachedNamedImport>()
         val starImports = SmartList<CachedStarImport>()
-        val rest = SmartList<RsItemElement>()
-        processExpandedItemsInternal {
-            when (it) {
+        val macros = SmartList<RsMacro>()
+        val namedCfgEnabled: MutableMap<String, SmartList<RsItemElement>> = THashMap()
+        val namedCfgDisabled: MutableMap<String, SmartList<RsItemElement>> = THashMap()
+        processExpandedItemsInternal { it, isEnabledByCfgSelf ->
+            when {
                 // Optimization: impls are not named elements, so we don't need them for name resolution
-                is RsImplItem -> Unit
+                it is RsImplItem -> Unit
 
                 // Optimization: prepare use items to reduce PSI tree access in hotter code
-                is RsUseItem ->  {
+                isEnabledByCfgSelf && it is RsUseItem -> {
                     val isPublic = it.isPublic
                     it.useSpeck?.forEachLeafSpeck { speck ->
                         if (speck.isStarImport) {
@@ -81,7 +85,23 @@ val RsItemsOwner.expandedItemsCached: RsCachedItems
                     }
                 }
 
-                else -> rest.add(it)
+                isEnabledByCfgSelf && it is RsMacro -> macros.add(it)
+
+                it is RsItemElement -> {
+                    val named = if (isEnabledByCfgSelf) namedCfgEnabled else namedCfgDisabled
+                    if (it is RsForeignModItem) {
+                        for (item in it.stubChildrenOfType<RsItemElement>()) {
+                            val name = item.name ?: continue
+                            named.getOrPut(name) { SmartList() }.add(item)
+                        }
+                    } else {
+                        val name = when (it) {
+                            is RsExternCrateItem -> it.nameWithAlias
+                            else -> it.name
+                        } ?: return@processExpandedItemsInternal false
+                        named.getOrPut(name) { SmartList() }.add(it)
+                    }
+                }
             }
             false
         }
@@ -91,7 +111,13 @@ val RsItemsOwner.expandedItemsCached: RsCachedItems
             null
         }
         CachedValueProvider.Result.create(
-            RsCachedItems(namedImports.optimizeList(), starImports.optimizeList(), rest.optimizeList()),
+            RsCachedItems(
+                namedImports.optimizeList(),
+                starImports.optimizeList(),
+                macros.optimizeList(),
+                namedCfgEnabled.replaceTrivialMap(),
+                namedCfgDisabled.replaceTrivialMap()
+            ),
             listOfNotNull(rustStructureOrAnyPsiModificationTracker, localModTracker)
         )
     }
@@ -103,7 +129,9 @@ val RsItemsOwner.expandedItemsCached: RsCachedItems
 class RsCachedItems(
     val namedImports: List<CachedNamedImport>,
     val starImports: List<CachedStarImport>,
-    val rest: List<RsItemElement>
+    val macros: List<RsMacro>,
+    val named: Map<String, List<RsItemElement>>,
+    val namedCfgDisabled: Map<String, List<RsItemElement>>,
 ) {
     data class CachedNamedImport(
         val isPublic: Boolean,
@@ -115,16 +143,21 @@ class RsCachedItems(
     data class CachedStarImport(val isPublic: Boolean, val speck: RsUseSpeck)
 }
 
-private fun RsItemsOwner.processExpandedItemsInternal(processor: (RsItemElement) -> Boolean): Boolean {
+private fun RsItemsOwner.processExpandedItemsInternal(processor: (RsElement, Boolean) -> Boolean): Boolean {
     return itemsAndMacros.any { it.processItem(processor) }
 }
 
-private fun RsElement.processItem(processor: (RsItemElement) -> Boolean): Boolean {
-    if (this is RsDocAndAttributeOwner && !this.isEnabledByCfgSelf) return false
+private fun RsElement.processItem(processor: (RsElement, Boolean) -> Boolean): Boolean {
+    val isEnabledByCfgSelf = this !is RsDocAndAttributeOwner || this.isEnabledByCfgSelf
 
     return when (this) {
-        is RsMacroCall -> processExpansionRecursively { it is RsItemElement && it.isEnabledByCfgSelf && processor(it) }
-        is RsItemElement -> processor(this)
+        is RsMacroCall -> {
+            if (!isEnabledByCfgSelf) return false
+            processExpansionRecursively {
+                it is RsDocAndAttributeOwner && processor(it, it.isEnabledByCfgSelf)
+            }
+        }
+        is RsItemElement, is RsMacro -> processor(this, isEnabledByCfgSelf)
         else -> false
     }
 }

@@ -8,8 +8,8 @@ package org.rustPerformanceTests
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.vfs.*
 import com.intellij.util.ui.UIUtil
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.RsWithToolchainTestBase
-import org.rust.cargo.toolchain.RustToolchain
 import org.rust.openapiext.fullyRefreshDirectory
 
 abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
@@ -17,7 +17,7 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
         val base = openRealProject("testData/${info.path}", info.exclude)
         if (base == null) {
             val name = info.name
-            println("SKIP $name: git clone ${info.gitUrl} testData/$name")
+            println("SKIP $name: git clone ${info.repository} testData/$name")
             return null
         }
         return base
@@ -36,7 +36,7 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
             // 3. Ignore excluded directories in the root of the project
             if (file.isDirectory &&
                 file.name in EXCLUDED_DIRECTORY_NAMES &&
-                file.parent.findChild(RustToolchain.CARGO_TOML) != null) return false
+                file.parent.findChild(CargoConstants.MANIFEST_FILE) != null) return false
 
             // Otherwise, analyse it
             return true
@@ -53,10 +53,10 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
         return cargoProjectDirectory
     }
 
-    class RealProjectInfo(
+    data class RealProjectInfo(
         val name: String,
-        val path: String,
-        val gitUrl: String,
+        val path: String = name,
+        val repository: String = "",
         val exclude: List<String> = emptyList()
     )
 
@@ -64,7 +64,7 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
         val RUSTC = RealProjectInfo(
             name = "rust",
             path = "rust",
-            gitUrl = "https://github.com/rust-lang/rust",
+            repository = "https://github.com/rust-lang/rust",
             exclude = listOf(
                 "src/llvm",
                 "src/llvm-emscripten",
@@ -87,6 +87,7 @@ abstract class RsRealProjectTestBase : RsWithToolchainTestBase() {
         val RUST_ANALYZER = RealProjectInfo("rust-analyzer", "rust-analyzer", "https://github.com/rust-analyzer/rust-analyzer")
         val XI_EDITOR = RealProjectInfo("xi-editor", "xi-editor/rust", "https://github.com/xi-editor/xi-editor")
         val JUNIPER = RealProjectInfo("juniper", "juniper", "https://github.com/graphql-rust/juniper")
+        val STDARCH = RealProjectInfo("stdarch", "stdarch", "https://github.com/rust-lang/stdarch")
 
         private val EXCLUDED_DIRECTORY_NAMES = setOf("target")
     }

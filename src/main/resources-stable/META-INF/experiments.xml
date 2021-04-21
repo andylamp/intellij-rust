@@ -1,19 +1,28 @@
 <idea-plugin>
     <extensions defaultExtensionNs="com.intellij">
-        <experimentalFeature id="org.rust.cargo.build.tool.window" percentOfUsers="0">
+        <experimentalFeature id="org.rust.cargo.build.tool.window" percentOfUsers="100">
             <description>Enable Cargo tasks to use Build Tool Window</description>
         </experimentalFeature>
         <experimentalFeature id="org.rust.cargo.test.tool.window" percentOfUsers="100">
             <description>Show test results in Test Tool Window</description>
         </experimentalFeature>
-        <experimentalFeature id="org.rust.cargo.fetch.out.dir" percentOfUsers="0">
-            <description>Fetch `OUT_DIR` environment variable value. It's needed to make proper name resolution for code included via `include` macro</description>
-        </experimentalFeature>
         <experimentalFeature id="org.rust.cargo.evaluate.build.scripts" percentOfUsers="0">
             <description>Run build scripts while project refresh. It allows collecting information about generated items like `cfg` options, environment variables, etc</description>
         </experimentalFeature>
+        <experimentalFeature id="org.rust.cargo.fetch.actual.stdlib.metadata" percentOfUsers="0">
+            <description>Fetch metadata of actual stdlib crates instead of using hardcoded data</description>
+        </experimentalFeature>
         <experimentalFeature id="org.rust.macros.new.engine" percentOfUsers="100">
             <description>Enables new macro expansion engine by default</description>
+        </experimentalFeature>
+        <experimentalFeature id="org.rust.macros.proc" percentOfUsers="0">
+            <description>Enables procedural macro expansion</description>
+        </experimentalFeature>
+        <experimentalFeature id="org.rust.resolve.new.engine" percentOfUsers="0">
+            <description>Enables experimental resolve engine</description>
+        </experimentalFeature>
+        <experimentalFeature id="org.rust.crates.local.index" percentOfUsers="0">
+            <description>Enables crates local index</description>
         </experimentalFeature>
     </extensions>
 </idea-plugin>

@@ -10,6 +10,7 @@ import com.intellij.ide.TreeExpander
 import com.intellij.openapi.actionSystem.*
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.SimpleToolWindowPanel
@@ -25,6 +26,7 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.UIUtil
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.CargoProjectsService.CargoProjectsListener
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.model.guessAndSetupRustProject
 import org.rust.cargo.runconfig.hasCargoProject
@@ -97,7 +99,8 @@ class CargoToolWindow(
     private val projectStructure = CargoProjectTreeStructure(projectTree, project)
 
     val treeExpander: TreeExpander = object : DefaultTreeExpander(projectTree) {
-        override fun isVisible(event: AnActionEvent): Boolean = super.isVisible(event) && project.hasCargoProject
+        override fun isCollapseAllVisible(): Boolean = project.hasCargoProject
+        override fun isExpandAllVisible(): Boolean = project.hasCargoProject
     }
 
     val selectedProject: CargoProject? get() = projectTree.selectedProject
@@ -106,11 +109,9 @@ class CargoToolWindow(
 
     init {
         with(project.messageBus.connect()) {
-            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, object : CargoProjectsService.CargoProjectsListener {
-                override fun cargoProjectsUpdated(service: CargoProjectsService, projects: Collection<CargoProject>) {
-                    invokeLater {
-                        projectStructure.updateCargoProjects(projects.toList())
-                    }
+            subscribe(CargoProjectsService.CARGO_PROJECTS_TOPIC, CargoProjectsListener { _, projects ->
+                invokeLater {
+                    projectStructure.updateCargoProjects(projects.toList())
                 }
             })
         }
@@ -133,14 +134,14 @@ class CargoToolWindow(
     """
 
     companion object {
+        private val LOG: Logger = logger<CargoToolWindow>()
+
         @JvmStatic
-        val SELECTED_CARGO_PROJECT: DataKey<CargoProject> = DataKey.create<CargoProject>("SELECTED_CARGO_PROJECT")
+        val SELECTED_CARGO_PROJECT: DataKey<CargoProject> = DataKey.create("SELECTED_CARGO_PROJECT")
 
         const val CARGO_TOOLBAR_PLACE: String = "Cargo Toolbar"
 
         private const val ID: String = "Cargo"
-
-        private val LOG: Logger = Logger.getInstance(CargoToolWindow::class.java)
 
         fun initializeToolWindow(project: Project) {
             try {

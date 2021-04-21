@@ -5,13 +5,17 @@
 
 package org.rustSlowTests.lang.resolve
 
+import com.intellij.openapi.application.runWriteAction
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.testFramework.fixtures.impl.TempDirTestFixtureImpl
-import org.rust.MinRustcVersion
+import org.rust.*
 import org.rust.cargo.RsWithToolchainTestBase
+import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.model.impl.testCargoProjects
-import org.rust.fileTree
 import org.rust.lang.core.crate.impl.CrateGraphTestmarks
 import org.rust.lang.core.psi.RsPath
 import org.rust.lang.core.resolve.NameResolutionTestmarks
@@ -87,7 +91,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 }
             }
         }
-        NameResolutionTestmarks.shadowingStdCrates.checkHit {
+        NameResolutionTestmarks.shadowingStdCrates.ignoreInNewResolve(project).checkHit {
             testProject.checkReferenceIsResolved<RsPath>("foo/src/lib.rs")
         }
     }
@@ -141,6 +145,61 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         checkReferenceIsResolved<RsPath>("src/bar.rs")
     }
 
+    fun `test resolve local package under symlink`() = fileTree {
+        toml("Cargo.toml", """
+            [package]
+            name = "hello"
+            version = "0.1.0"
+            authors = []
+
+            [dependencies]
+            foo = { path = "./foo" }
+        """)
+
+        dir("src") {
+            rust("main.rs", """
+                extern crate foo;
+                mod bar;
+
+                fn main() {
+                    foo::hello();
+                }       //^
+            """)
+
+            rust("bar.rs", """
+                use foo::hello;
+
+                pub fn bar() {
+                    hello();
+                }   //^
+            """)
+        }
+
+        symlink("foo", "foo2")
+
+        dir("foo2") {
+            toml("Cargo.toml", """
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                authors = []
+            """)
+
+            dir("src") {
+                rust("lib.rs", """
+                    pub fn hello() {}
+                """)
+            }
+        }
+    }.let { fileTree ->
+        // Symlinks doesn't work on Windows CI for some reason
+        if (SystemInfo.isWindows) return@let
+
+        val project = fileTree.create()
+        project.checkReferenceIsResolved<RsPath>("src/main.rs")
+        project.checkReferenceIsResolved<RsPath>("src/bar.rs")
+    }
+
     fun `test module relations`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -164,6 +223,82 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
             """)
         }
     }.checkReferenceIsResolved<RsPath>("src/foo.rs")
+
+    fun `test module relations when cargo project is under symlink`() = fileTree {
+        symlink("foo", "symlink_target")
+
+        dir("symlink_target") {
+            toml("Cargo.toml", """
+                [package]
+                name = "mods"
+                version = "0.1.0"
+                authors = []
+
+                [dependencies]
+            """)
+
+            dir("src") {
+                rust("lib.rs", """
+                    mod foo;
+
+                    pub struct S;
+                """)
+
+                rust("foo.rs", """
+                    use S;
+                      //^
+                """)
+            }
+        }
+    }.let { fileTree ->
+        // Symlinks doesn't work on Windows CI for some reason
+        if (SystemInfo.isWindows) return@let
+
+        val p = fileTree.create(project, cargoProjectDirectory)
+        project.testCargoProjects.attachCargoProject(cargoProjectDirectory.pathAsPath.resolve("foo/Cargo.toml"))
+        excludeDirectoryFromIndex("symlink_target")
+
+        p.checkReferenceIsResolved<RsPath>("foo/src/foo.rs")
+    }
+
+    fun `test module relations when parent of cargo project is under symlink`() = fileTree {
+        symlink("symlink_source", "symlink_target")
+
+        dir("symlink_target") {
+            dir("project") {
+                toml("Cargo.toml", """
+                [package]
+                name = "mods"
+                version = "0.1.0"
+                authors = []
+
+                [dependencies]
+            """)
+
+                dir("src") {
+                    rust("lib.rs", """
+                        mod foo;
+
+                        pub struct S;
+                """)
+
+                    rust("foo.rs", """
+                        use S;
+                          //^
+                """)
+                }
+            }
+        }
+    }.let { fileTree ->
+        // Symlinks doesn't work on Windows CI for some reason
+        if (SystemInfo.isWindows) return@let
+
+        val p = fileTree.create(project, cargoProjectDirectory)
+        project.testCargoProjects.attachCargoProject(cargoProjectDirectory.pathAsPath.resolve("symlink_source/project/Cargo.toml"))
+        excludeDirectoryFromIndex("symlink_target/project")
+
+        p.checkReferenceIsResolved<RsPath>("symlink_source/project/src/foo.rs")
+    }
 
     fun `test kebab-case`() = buildProject {
         toml("Cargo.toml", """
@@ -281,7 +416,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                     extern crate bar;
                     fn main() {
                         let _ = rand::thread_rng();
-                                     // ^
+                                      //^
                     }
                 """)
             }
@@ -300,7 +435,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                     extern crate rand;
                     fn bar() {
                         let _ = rand::thread_rng();
-                                     // ^
+                                      //^
                     }
                 """)
             }
@@ -322,7 +457,6 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         checkReferenceIsResolved<RsPath>("bar/src/lib.rs", toCrate = "rand 54.0.0")
     }
 
-    @MinRustcVersion("1.31.0")
     fun `test cargo rename`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -343,7 +477,6 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         }
     }.checkReferenceIsResolved<RsPath>("src/main.rs", toCrate = "log 0.4.7")
 
-    @MinRustcVersion("1.31.0")
     fun `test cargo rename of local dependency`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -379,7 +512,6 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         }
     }.checkReferenceIsResolved<RsPath>("src/main.rs")
 
-    @MinRustcVersion("1.31.0")
     fun `test cargo rename of local dependency with custom lib target name`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -486,7 +618,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 extern crate foo;
                 fn main() {
                     let _ = foo::bar();
-                              // ^
+                               //^
                 }
             """)
         }
@@ -507,6 +639,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
             }
         }
     }.run {
+        project.cargoProjects.singlePackage("foo").checkFeatureDisabled("foobar")
         checkReferenceIsResolved<RsPath>("src/main.rs", shouldNotResolve = true)
     }
 
@@ -524,7 +657,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 extern crate foo;
                 fn main() {
                     let _ = foo::bar();
-                              // ^
+                               //^
                 }
             """)
         }
@@ -545,6 +678,133 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
             }
         }
     }.run {
+        project.cargoProjects.singlePackage("foo").checkFeatureEnabled("foobar")
+        checkReferenceIsResolved<RsPath>("src/main.rs")
+    }
+
+    fun `test enabled cfg feature in renamed package`() = buildProject {
+        toml("Cargo.toml", """
+            [package]
+            name = "hello"
+            version = "0.1.0"
+            edition = "2018"
+
+            [dependencies]
+            foo = { path = "./foo", features = ["foo_feature"] }
+        """)
+        dir("src") {
+            rust("main.rs", """
+                fn main() {
+                    let _ = foo::bar();
+                               //^
+                }
+            """)
+        }
+        dir("foo") {
+            toml("Cargo.toml", """
+                [package]
+                name = "foo"
+                version = "1.0.0"
+                edition = "2018"
+
+                [features]
+                foo_feature = ["bar_renamed/bar_feature"]
+
+                [dependencies.bar_renamed]
+                package = "bar"
+                path = "../bar"
+                optional = true
+            """)
+            dir("src") {
+                rust("lib.rs", """
+                    #[cfg(feature="bar_renamed")]
+                    pub use bar_renamed::bar;
+                """)
+            }
+        }
+        dir("bar") {
+            toml("Cargo.toml", """
+                [package]
+                name = "bar"
+                version = "1.0.0"
+
+                [features]
+                bar_feature = []
+            """)
+            dir("src") {
+                rust("lib.rs", """
+                    #[cfg(feature="bar_feature")]
+                    pub fn bar() -> u32 { 42 }
+                """)
+            }
+        }
+    }.run {
+        project.cargoProjects.singlePackage("foo").checkFeatureEnabled("foo_feature")
+        project.cargoProjects.singlePackage("foo").checkFeatureEnabled("bar_renamed")
+        project.cargoProjects.singlePackage("bar").checkFeatureEnabled("bar_feature")
+        checkReferenceIsResolved<RsPath>("src/main.rs")
+    }
+
+    fun `test enabled cfg feature with changed target name`() = buildProject {
+        toml("Cargo.toml", """
+            [package]
+            name = "hello"
+            version = "0.1.0"
+            edition = "2018"
+
+            [dependencies]
+            foo = { path = "./foo", features = ["foo_feature"] }
+        """)
+        dir("src") {
+            rust("main.rs", """
+                fn main() {
+                    let _ = foo::bar();
+                               //^
+                }
+            """)
+        }
+        dir("foo") {
+            toml("Cargo.toml", """
+                [package]
+                name = "foo"
+                version = "1.0.0"
+                edition = "2018"
+
+                [features]
+                foo_feature = ["bar/bar_feature"]
+
+                [dependencies]
+                bar = { path = "../bar"}
+            """)
+            dir("src") {
+                rust("lib.rs", """
+                    pub use bar_target::bar;
+                """)
+            }
+        }
+        dir("bar") {
+            toml("Cargo.toml", """
+                [package]
+                name = "bar"
+                version = "1.0.0"
+
+                [lib]
+                path = "src/lib.rs"
+                name = "bar_target"
+
+                [features]
+                bar_feature = []
+            """)
+            dir("src") {
+                rust("lib.rs", """
+                    #[cfg(feature="bar_feature")]
+                    pub fn bar() -> u32 { 42 }
+                """)
+            }
+        }
+    }.run {
+        project.cargoProjects.singlePackage("foo").checkFeatureEnabled("foo_feature")
+        project.cargoProjects.singlePackage("bar").checkFeatureEnabled("bar_feature")
         checkReferenceIsResolved<RsPath>("src/main.rs")
     }
 
@@ -635,7 +895,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 extern crate foo;
                 fn main() {
                     foo::bar();
-                }     // ^
+                }       //^
             """)
         }
         dir("src") {
@@ -645,7 +905,7 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
                 fn test() {
                     extern crate foo;
                     foo::bar();
-                }     // ^
+                }      //^
             """)
         }
         dir("foo") {
@@ -671,7 +931,6 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         }
     }
 
-    @MinRustcVersion("1.41.0") // In this version Cargo starts providing `[build-dependencies]` info
     fun `test build-dependency is resolved in 'build rs' and not resolved in 'main rs'`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -686,14 +945,14 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
             extern crate foo;
             fn main() {
                 foo::bar();
-            }     // ^
+            }      //^
         """)
         dir("src") {
             rust("main.rs", """
                 extern crate foo;
                 fn main() {
                     foo::bar();
-                }     // ^
+                }      //^
             """)
         }
         dir("foo") {
@@ -713,7 +972,6 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         checkReferenceIsResolved<RsPath>("src/main.rs", shouldNotResolve = true)
     }
 
-    @MinRustcVersion("1.41.0") // In this version Cargo starts providing `[build-dependencies]` info
     fun `test normal dependency is not resolved in 'build rs' and resolved in 'main rs'`() = buildProject {
         toml("Cargo.toml", """
             [package]
@@ -728,14 +986,14 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
             extern crate foo;
             fn main() {
                 foo::bar();
-            }     // ^
+            }      //^
         """)
         dir("src") {
             rust("main.rs", """
                 extern crate foo;
                 fn main() {
                     foo::bar();
-                }     // ^
+                }      //^
             """)
         }
         dir("foo") {
@@ -765,12 +1023,24 @@ class CargoProjectResolveTest : RsWithToolchainTestBase() {
         rust("build.rs", """
             fn main() {
                 std::mem::size_of::<i32>();
-            }            // ^
+            }             //^
         """)
         dir("src") {
             rust("main.rs", "")
         }
     }.run {
         checkReferenceIsResolved<RsPath>("build.rs")
+    }
+
+    private fun excludeDirectoryFromIndex(path: String) {
+        runWriteAction {
+            ProjectRootManagerEx.getInstanceEx(project).mergeRootsChangesDuring {
+                val module = ModuleUtilCore.findModuleForFile(cargoProjectDirectory, project)!!
+                ModuleRootModificationUtil.updateModel(module) { rootModel ->
+                    rootModel.contentEntries.singleOrNull()!!
+                        .addExcludeFolder(FileUtil.join(cargoProjectDirectory.url, path))
+                }
+            }
+        }
     }
 }

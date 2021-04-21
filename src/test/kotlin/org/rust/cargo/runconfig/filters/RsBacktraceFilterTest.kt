@@ -7,11 +7,8 @@ package org.rust.cargo.runconfig.filters
 
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.unscramble.AnalyzeStacktraceUtil
-import org.rust.ProjectDescriptor
-import org.rust.WithDependencyRustProjectDescriptor
-import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.*
 import org.rust.cargo.project.model.cargoProjects
-import org.rust.cargo.project.model.impl.CargoProjectImpl
 import org.rust.stdext.BothEditions
 
 /**
@@ -21,12 +18,12 @@ import org.rust.stdext.BothEditions
 @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsBacktraceFilterTest : HighlightFilterTestBase() {
     private val filter: RsBacktraceFilter
-        get() = RsBacktraceFilter(project, projectDir, project.cargoProjects.allProjects.single().workspace)
+        get() = RsBacktraceFilter(project, projectDir, project.cargoProjects.singleWorkspace())
 
     fun `test rustc source code link`() =
         checkHighlights(filter,
             "          at src/main.rs:24",
-            "          at [src/main.rs -> main.rs]:24")
+            "          at [src/main.rs:24 -> main.rs]")
 
     fun `test rustc source code link with absolute path`() {
         // Windows does not handle abs paths on the tmpfs
@@ -34,7 +31,7 @@ class RsBacktraceFilterTest : HighlightFilterTestBase() {
         val absPath = "${projectDir.canonicalPath}/src/main.rs"
         checkHighlights(filter,
             "          at $absPath:24",
-            "          at [$absPath -> main.rs]:24")
+            "          at [$absPath:24 -> main.rs]")
     }
 
     fun `test full backtrace line`() =
@@ -85,11 +82,11 @@ stack backtrace:
                         at ../src/libcore/macros.rs:21
   10:     0x7feeefb3f538 - btest::main::h888e623968051ab6
                         at src/main.rs:22""",
-            "                        at [src/main.rs -> main.rs]:22", 14)
+            "                        at [src/main.rs:22 -> main.rs]", 14)
 
     fun `test full output without explicit project dir and workspace`() {
-        val cargoProject = project.cargoProjects.allProjects.singleOrNull() as? CargoProjectImpl
-        cargoProject?.setRootDir(projectDir)
+        val cargoProject = project.cargoProjects.singleProject()
+        cargoProject.setRootDir(projectDir)
 
         checkHighlights(RsBacktraceFilter(project),
             """    Running `target/debug/test`
@@ -107,7 +104,7 @@ stack backtrace:
                         at ../src/libcore/macros.rs:21
   10:     0x7feeefb3f538 - btest::main::h888e623968051ab6
                         at src/main.rs:22""",
-            "                        at [src/main.rs -> main.rs]:22", 14)
+            "                        at [src/main.rs:22 -> main.rs]", 14)
     }
 
     @ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
@@ -119,6 +116,24 @@ stack backtrace:
             """,
             "  6: dep_lib::foo",
             "  6: [dep_lib::foo -> lib.rs]")
+
+    fun `test resolve stdlib link`()
+        = checkHighlights(filter,
+            """
+                //- lib.rs
+                fn foo() {}/*caret*/
+            """,
+            " at src/libstd/panicking.rs:342",
+            " at [src/libstd/panicking.rs:342]")
+
+    fun `test resolve long stdlib link`()
+        = checkHighlights(filter,
+            """
+                //- lib.rs
+                fn foo() {}/*caret*/
+            """,
+        " at /rustc/foo/src/libstd/panicking.rs:342",
+        " at [/rustc/foo/src/libstd/panicking.rs:342]")
 
     fun `test backtrace filter can be safely created as extension`() {
         val filter = AnalyzeStacktraceUtil.EP_NAME.getExtensions(project).find { it is RsBacktraceFilter }

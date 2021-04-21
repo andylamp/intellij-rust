@@ -15,7 +15,6 @@ import com.intellij.testFramework.builders.ModuleFixtureBuilder
 import com.intellij.testFramework.fixtures.impl.TempDirTestFixtureImpl
 import com.intellij.util.io.delete
 import org.intellij.lang.annotations.Language
-import org.rust.MinRustcVersion
 import org.rust.TestProject
 import org.rust.cargo.RsWithToolchainTestBase
 import org.rust.cargo.project.model.cargoProjects
@@ -59,13 +58,13 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
 
     private fun doNothing(): (p: TestProject) -> Unit = {}
     private fun touchFile(path: String): (p: TestProject) -> Unit = { p ->
-        val file = p.root.findFileByRelativePath(path)!!
+        val file = p.file(path)
         runWriteAction {
             VfsUtil.saveText(file, VfsUtil.loadText(file) + " ")
         }
     }
     private fun replaceInFile(path: String, find: String, replace: String): (p: TestProject) -> Unit = { p ->
-        val file = p.root.findFileByRelativePath(path)!!
+        val file = p.file(path)
         runWriteAction {
             VfsUtil.saveText(file, VfsUtil.loadText(file).replace(find, replace))
         }
@@ -73,8 +72,8 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
 
     private fun List<RsMacroCall>.collectStamps(): Map<String, Long> =
         associate {
-            val expansion = it.expansion ?: error("failed to expand macro ${it.path.referenceName}!")
-            it.path.referenceName to expansion.file.virtualFile.timeStamp
+            val expansion = it.expansion ?: error("failed to expand macro ${it.path.referenceName.orEmpty()}!")
+            it.path.referenceName.orEmpty() to expansion.file.virtualFile.timeStamp
         }
 
     private fun checkReExpanded(action: (p: TestProject) -> Unit, @Language("Rust") code: String, vararg names: String) {
@@ -90,7 +89,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         }.create(project, dirFixture.getFile(".")!!)
 
         attachCargoProjectAndExpandMacros(p)
-        myFixture.openFileInEditor(p.root.findFileByRelativePath("src/main.rs")!!)
+        myFixture.openFileInEditor(p.file("src/main.rs"))
         val oldStamps = myFixture.file.childrenOfType<RsMacroCall>().collectStamps()
 
         macroExpansionServiceDisposable?.let { Disposer.dispose(it) } // also save
@@ -100,7 +99,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         super.setUp()
 
         attachCargoProjectAndExpandMacros(p)
-        myFixture.openFileInEditor(p.root.findFileByRelativePath("src/main.rs")!!)
+        myFixture.openFileInEditor(p.file("src/main.rs"))
         val changed = myFixture.file.childrenOfType<RsMacroCall>().collectStamps().entries
             .filter { oldStamps[it.key] != it.value }
             .map { it.key }
@@ -117,7 +116,7 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
 
     private fun attachCargoProjectAndExpandMacros(p: TestProject) {
         macroExpansionServiceDisposable = project.macroExpansionManager.setUnitTestExpansionModeAndDirectory(MacroExpansionScope.WORKSPACE, "mocked")
-        check(project.cargoProjects.attachCargoProject(p.root.findFileByRelativePath("Cargo.toml")!!.pathAsPath))
+        check(project.cargoProjects.attachCargoProject(p.file("Cargo.toml").pathAsPath))
         val future = project.cargoProjects.refreshAllProjects()
         while (!future.isDone) {
             Thread.sleep(10)
@@ -133,7 +132,6 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
-    @MinRustcVersion("1.33.0")
     fun `test touch definition at separate file`() = stubBasedRefMatch.checkReExpanded(touchFile("src/foo.rs"), """
         //- foo.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -148,7 +146,6 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         bar!(a);
     """)
 
-    @MinRustcVersion("1.33.0")
     fun `test touch usage at separate file`() = refsRecoverExactHit.checkReExpanded(touchFile("src/main.rs"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -164,7 +161,6 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(aaa);
     """, "foo")
 
-    @MinRustcVersion("1.33.0")
     fun `test edit usage at separate file`() = refsRecoverNotHit.checkReExpanded(replaceInFile("src/main.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { mod $ i {} } }
@@ -180,7 +176,6 @@ class RsMacroExpansionCachingToolchainTest : RsWithToolchainTestBase() {
         foo!(a);
     """, "foo")
 
-    @MinRustcVersion("1.33.0")
     fun `test edit definition at separate file`() = stubBasedRefMatch.checkReExpanded(replaceInFile("src/def.rs", "aaa", "aab"), """
         //- def.rs
         macro_rules! foo { ($ i:ident) => { fn $ i() { aaa; } } }

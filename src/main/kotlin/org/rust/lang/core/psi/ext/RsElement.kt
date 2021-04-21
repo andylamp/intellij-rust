@@ -8,8 +8,10 @@ package org.rust.lang.core.psi.ext
 import com.intellij.extapi.psi.ASTWrapperPsiElement
 import com.intellij.extapi.psi.StubBasedPsiElementBase
 import com.intellij.lang.ASTNode
+import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFileSystemItem
+import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
 import org.rust.cargo.project.model.CargoProject
@@ -19,11 +21,10 @@ import org.rust.lang.core.completion.getOriginalOrSelf
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.crate.findDependency
 import org.rust.lang.core.macros.findNavigationTargetIfMacroExpansion
-import org.rust.lang.core.psi.RsConstant
-import org.rust.lang.core.psi.RsEnumVariant
-import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.createProcessor
+import org.rust.lang.core.resolve.processLocalVariables
 import org.rust.lang.core.resolve.processNestedScopesUpwards
 
 interface RsElement : PsiElement {
@@ -64,8 +65,11 @@ val RsElement.containingCargoPackage: CargoWorkspace.Package? get() = containing
 val PsiElement.edition: CargoWorkspace.Edition?
     get() = contextOrSelf<RsElement>()?.containingCrate?.edition
 
-val PsiElement.isEdition2018: Boolean
-    get() = edition == CargoWorkspace.Edition.EDITION_2018
+val PsiElement.isAtLeastEdition2018: Boolean
+    get() {
+        val edition = edition ?: return false
+        return edition >= CargoWorkspace.Edition.EDITION_2018
+    }
 
 /**
  * It is possible to match value with constant-like element, e.g.
@@ -138,3 +142,51 @@ fun RsElement.findInScope(name: String, ns: Set<Namespace>): PsiElement? {
 
 fun RsElement.hasInScope(name: String, ns: Set<Namespace>): Boolean =
     findInScope(name, ns) != null
+
+fun RsElement.getVisibleBindings(): Map<String, RsPatBinding> {
+    val bindings = HashMap<String, RsPatBinding>()
+    processLocalVariables(this) { variable ->
+        variable.name?.let {
+            bindings[it] = variable
+        }
+    }
+    return bindings
+}
+
+/**
+ * Delete the element along with a neighbour comma.
+ * If a comma follows the element, it will be deleted.
+ * Else if a comma precedes the element, it will be deleted.
+ *
+ * It is useful to remove elements that are parts of comma separated lists (parameters, arguments, use specks, ...).
+ */
+fun RsElement.deleteWithSurroundingComma() {
+    val followingComma = getNextNonCommentSibling()
+    if (followingComma?.elementType == RsElementTypes.COMMA) {
+        followingComma?.delete()
+    } else {
+        val precedingComma = getPrevNonCommentSibling()
+        if (precedingComma?.elementType == RsElementTypes.COMMA) {
+            precedingComma?.delete()
+        }
+    }
+
+    delete()
+}
+
+/**
+ * Delete the element along with all surrounding whitespace and a single surrounding comma.
+ * See [deleteWithSurroundingComma].
+ */
+fun RsElement.deleteWithSurroundingCommaAndWhitespace() {
+    while (nextSibling?.isWhitespaceOrComment == true) {
+        nextSibling?.delete()
+    }
+    while (prevSibling?.isWhitespaceOrComment == true) {
+        prevSibling?.delete()
+    }
+    deleteWithSurroundingComma()
+}
+
+private val PsiElement.isWhitespaceOrComment
+    get(): Boolean = this is PsiWhiteSpace || this is PsiComment

@@ -8,9 +8,12 @@ package org.rust.lang.core.psi.ext
 import com.intellij.lang.ASTNode
 import com.intellij.openapi.util.SimpleModificationTracker
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiReference
 import com.intellij.psi.search.SearchScope
+import com.intellij.psi.search.searches.ReferencesSearch
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.util.Query
 import org.rust.ide.icons.RsIcons
 import org.rust.ide.icons.addTestMark
 import org.rust.lang.core.macros.RsExpandedElement
@@ -22,8 +25,6 @@ import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 import javax.swing.Icon
 
-private val FUNCTION_TEST_REGEX = Regex("""^[\w:]*test.*""")
-
 val RsFunction.block: RsBlock? get() = PsiTreeUtil.getChildOfType(this, RsBlock::class.java)
 val RsFunction.stubOnlyBlock: RsBlock? get() = PsiTreeUtil.getStubChildOfType(this, RsBlock::class.java)
 
@@ -31,23 +32,13 @@ val RsFunction.isAssocFn: Boolean get() = !hasSelfParameters && owner.isImplOrTr
 val RsFunction.isMethod: Boolean get() = hasSelfParameters && owner.isImplOrTrait
 
 val RsFunction.isTest: Boolean
-    get() {
-        val stub = greenStub
-        return stub?.isTest
-            ?: (queryAttributes.isTest)
-    }
+    get() = queryAttributes.isTest
 
-val QueryAttributes.isTest
-    get() = hasAttribute(FUNCTION_TEST_REGEX) || hasAtomAttribute("quickcheck")
+private val QueryAttributes<*>.isTest
+    get() = metaItems.mapNotNull { it.path?.referenceName }.any { it.contains("test") } || hasAtomAttribute("quickcheck")
 
 val RsFunction.isBench: Boolean
-    get() {
-        val stub = greenStub
-        return stub?.isBench ?: queryAttributes.isBench
-    }
-
-val QueryAttributes.isBench
-    get() = hasAtomAttribute("bench")
+    get() = queryAttributes.hasAtomAttribute("bench")
 
 val RsFunction.isConst: Boolean
     get() {
@@ -73,7 +64,20 @@ val RsFunction.abiName: String?
         return stub?.abiName ?: abi?.stringLiteral?.text
     }
 
+/**
+ * Those function parameters that are not disabled by cfg attributes.
+ *
+ * Should be used in code analysis: name resolution, type inference, inspections, annotations, etc.
+ */
 val RsFunction.valueParameters: List<RsValueParameter>
+    get() = rawValueParameters.filter { it.isEnabledByCfgSelf }
+
+/**
+ * All function parameters.
+ *
+ * Should be used in code (PSI) manipulations: intentions, quick-fixes, refactorings, code generation, etc.
+ */
+val RsFunction.rawValueParameters: List<RsValueParameter>
     get() = valueParameterList?.valueParameterList.orEmpty()
 
 val RsFunction.selfParameter: RsSelfParameter?
@@ -149,17 +153,89 @@ val RsFunction.isAttributeProcMacroDef: Boolean
     get() = queryAttributes.hasAtomAttribute("proc_macro_attribute")
 
 val RsFunction.isCustomDeriveProcMacroDef: Boolean
-    get() = queryAttributes.hasAttribute("proc_macro_derive")
+    get() = queryAttributes.isCustomDeriveProcMacroDef
+
+val QueryAttributes<*>.isCustomDeriveProcMacroDef: Boolean
+    get() = hasAttribute("proc_macro_derive")
 
 val RsFunction.isProcMacroDef: Boolean
-    get() = greenStub?.isProcMacroDef ?: (queryAttributes.isProcMacroDef)
+    get() = IS_PROC_MACRO_DEF_PROP.getByPsi(this)
 
-val QueryAttributes.isProcMacroDef
+val IS_PROC_MACRO_DEF_PROP: StubbedAttributeProperty<RsFunction, RsFunctionStub> =
+    StubbedAttributeProperty(QueryAttributes<*>::isProcMacroDef, RsFunctionStub::mayBeProcMacroDef)
+
+val RsFunction.procMacroName: String?
+    get() = when {
+        isBangProcMacroDef || isAttributeProcMacroDef -> name
+
+        isCustomDeriveProcMacroDef -> {
+            queryAttributes.getFirstArgOfSingularAttribute("proc_macro_derive")
+        }
+
+        else -> null
+    }
+
+val QueryAttributes<*>.isProcMacroDef
     get() = hasAnyOfAttributes(
         "proc_macro",
         "proc_macro_attribute",
         "proc_macro_derive"
     )
+
+private fun PsiReference.getFunctionCallUsage(): RsCallExpr? {
+    val path = element
+    val pathExpr = path.parent
+    return pathExpr.parent as? RsCallExpr
+}
+
+private fun PsiReference.getMethodCallUsage(): RsMethodCall? = element as? RsMethodCall
+
+private fun PsiReference.getReferenceUsage(): RsPath? {
+    val path = element as? RsPath ?: return null
+    return if (path.parent.parent is RsCallExpr) null
+    else path
+}
+
+/**
+ * Find all function calls that call this function.
+ */
+fun RsFunction.findFunctionCalls(scope: SearchScope? = null): Sequence<RsCallExpr> = searchReferences(scope)
+    .asSequence()
+    .mapNotNull { it.getFunctionCallUsage() }
+
+/**
+ * Find all method calls that call this function.
+ */
+fun RsFunction.findMethodCalls(scope: SearchScope? = null): Sequence<RsMethodCall> = searchReferences(scope)
+    .asSequence()
+    .mapNotNull { it.getMethodCallUsage() }
+
+/**
+ * Find all reference usages of this function, for example when the function is passed as a parameter to another
+ * function.
+ */
+fun RsFunction.findReferenceUsages(scope: SearchScope? = null): Sequence<RsPath> = searchReferences(scope)
+    .asSequence()
+    .mapNotNull { it.getReferenceUsage() }
+
+
+/**
+ * Find all usages of this function. Depending on the type of the returned element, the usage is either:
+ * RsCallExpr - function call (see [findFunctionCalls]).
+ * RsMethodCall - method call (see [findMethodCalls]).
+ * RsPath - reference usage (see [findReferenceUsages]).
+ */
+fun RsFunction.findUsages(scope: SearchScope? = null): Sequence<RsElement> = searchReferences(scope)
+    .asSequence()
+    .mapNotNull { it.getMethodCallUsage() ?: it.getFunctionCallUsage() ?: it.getReferenceUsage() }
+
+private fun RsElement.searchReferences(scope: SearchScope? = null): Query<PsiReference> {
+    return if (scope == null) {
+        ReferencesSearch.search(this)
+    } else {
+        ReferencesSearch.search(this, scope)
+    }
+}
 
 abstract class RsFunctionImplMixin : RsStubbedNamedElementImpl<RsFunctionStub>, RsFunction, RsModificationTrackerOwner {
 
@@ -172,9 +248,6 @@ abstract class RsFunctionImplMixin : RsStubbedNamedElementImpl<RsFunctionStub>, 
     override val isUnsafe: Boolean get() = this.greenStub?.isUnsafe ?: (unsafe != null)
 
     override val crateRelativePath: String? get() = RsPsiImplUtil.crateRelativePath(this)
-
-    final override val innerAttrList: List<RsInnerAttr>
-        get() = stubOnlyBlock?.innerAttrList.orEmpty()
 
     override fun getIcon(flags: Int): Icon {
         val baseIcon = when (val owner = owner) {

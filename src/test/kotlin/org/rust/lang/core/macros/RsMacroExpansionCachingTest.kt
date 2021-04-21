@@ -24,7 +24,6 @@ import org.rust.lang.core.psi.ext.childrenOfType
 import org.rust.lang.core.psi.ext.expansion
 import org.rust.lang.core.psi.ext.stubChildrenOfType
 import org.rust.lang.core.psi.ext.stubDescendantsOfTypeOrSelf
-import org.rust.openapiext.toPsiFile
 
 @ExpandMacros
 class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
@@ -33,34 +32,28 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         PsiDocumentManager.getInstance(project).commitAllDocuments()
     }
 
-    private fun touchFile(path: String): (TestProject) -> Unit = { p ->
-        val file = p.root.findFileByRelativePath(path)!!
-        VfsUtil.saveText(file, VfsUtil.loadText(file) + " ")
-    }
-
     private fun replaceInFile(path: String, find: String, replace: String): (TestProject) -> Unit = { p ->
-        val file = p.root.findFileByRelativePath(path)!!
+        val file = p.file(path)
         runWriteAction {
             VfsUtil.saveText(file, VfsUtil.loadText(file).replace(find, replace))
         }
     }
 
-    private fun uncommentIn(path: String): (TestProject) -> Unit =
-        replaceInFile(path, "//", "")
-
     private fun List<RsMacroCall>.collectStamps(): Map<String, Long> =
         associate {
-            val expansion = it.expansion ?: error("failed to expand macro ${it.path.referenceName}!")
-            val first = expansion.elements.firstOrNull() ?: error("Macro expanded to empty ${it.path.referenceName}!")
+            val expansion = it.expansion ?: error("failed to expand macro ${it.path.referenceName.orEmpty()}!")
+            val first = expansion.elements.firstOrNull()
+                ?: error("Macro expanded to empty ${it.path.referenceName.orEmpty()}!")
             check(first.isValid)
-            it.path.referenceName to expansion.file.virtualFile.timeStamp
+            it.path.referenceName.orEmpty() to expansion.file.virtualFile.timeStamp
         }
 
-    private fun PsiFile.collectMacros(): List<RsMacroCall> {
-        return stubChildrenOfType<RsMacroCall>().flatMap {
-            listOf(it) + (it.expansion?.elements?.flatMap { it.stubDescendantsOfTypeOrSelf<RsMacroCall>() } ?: emptyList())
+    private fun PsiFile.collectMacros(): List<RsMacroCall> =
+        stubChildrenOfType<RsMacroCall>().flatMap { macroCall ->
+            val calls = macroCall.expansion?.elements
+                ?.flatMap<RsExpandedElement, RsMacroCall> { it.stubDescendantsOfTypeOrSelf() }
+            listOf(macroCall) + calls.orEmpty()
         }
-    }
 
     private fun checkReExpandedInner(
         testmark: TestmarkPred?,
@@ -92,7 +85,7 @@ class RsMacroExpansionCachingTest : RsMacroExpansionTestBase() {
         names: List<String>
     ) {
         val p = fileTreeFromText(code).create()
-        val file = p.root.findChild("main.rs")!!.toPsiFile(project)!! as RsFile
+        val file = p.psiFile("main.rs") as RsFile
         checkAstNotLoaded()
         val oldStamps = file.collectMacros().collectStamps()
         action(p)

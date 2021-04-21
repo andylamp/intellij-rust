@@ -17,9 +17,8 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapiext.isUnitTestMode
-import org.rust.cargo.project.model.CargoProjectChooserDescriptor.withFileFilter
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.toolwindow.CargoToolWindow
-import org.rust.cargo.toolchain.RustToolchain.Companion.CARGO_TOML
 import org.rust.ide.notifications.RsEditorNotificationPanel
 import org.rust.openapiext.pathAsPath
 import org.rust.openapiext.saveAllDocuments
@@ -50,7 +49,7 @@ class AttachCargoProjectAction : CargoProjectActionBase() {
             Messages.showErrorDialog(
                 project,
                 "This Cargo package is already a part of an attached workspace.",
-                "Unable to attach Cargo project"
+                "Unable to Attach Cargo Project"
             )
         }
     }
@@ -85,7 +84,7 @@ class AttachCargoProjectAction : CargoProjectActionBase() {
     }
 
     private fun VirtualFile.findCargoToml(): VirtualFile? {
-        return if (isDirectory) findChild(CARGO_TOML) else takeIf { it.isCargoToml }
+        return if (isDirectory) findChild(CargoConstants.MANIFEST_FILE) else takeIf { it.isCargoToml }
     }
 
     companion object {
@@ -117,12 +116,13 @@ object CargoProjectChooserDescriptor : FileChooserDescriptor(true, true, false, 
     init {
         // The filter is not used for directories
         withFileFilter { it.isCargoToml }
+        @Suppress("DialogTitleCapitalization")
         withTitle("Select Cargo.toml")
     }
 
     override fun isFileSelectable(file: VirtualFile): Boolean {
-        return super.isFileSelectable(file) && (!file.isDirectory || file.findChild(CARGO_TOML) != null)
+        return super.isFileSelectable(file) && (!file.isDirectory || file.findChild(CargoConstants.MANIFEST_FILE) != null)
     }
 }
 
-val VirtualFile.isCargoToml: Boolean get() = name == CARGO_TOML
+val VirtualFile.isCargoToml: Boolean get() = name == CargoConstants.MANIFEST_FILE

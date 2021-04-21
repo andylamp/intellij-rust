@@ -5,6 +5,9 @@
 
 package org.rust.ide.lineMarkers
 
+import com.intellij.codeInsight.daemon.LineMarkerInfo
+import com.intellij.psi.PsiElement
+import org.intellij.lang.annotations.Language
 
 class RsImplsLineMarkerProviderTest : RsLineMarkerProviderTestBase() {
 
@@ -13,13 +16,13 @@ class RsImplsLineMarkerProviderTest : RsLineMarkerProviderTestBase() {
         trait Foo {} // - Has implementations
     """)
 
-    fun testOneImpl() = doTestByText("""
+    fun `test one impl`() = doTestByText("""
         trait Foo {}  // - Has implementations
         struct Bar {} // - Has implementations
         impl Foo for Bar {}
     """)
 
-    fun testMultipleImpl() = doTestByText("""
+    fun `test multiple impls`() = doTestByText("""
         trait Foo {}  // - Has implementations
         mod bar {
             use super::Foo;
@@ -33,7 +36,7 @@ class RsImplsLineMarkerProviderTest : RsLineMarkerProviderTestBase() {
         }
     """)
 
-    fun testIconPosition() = doTestByText("""
+    fun `test icon position`() = doTestByText("""
         ///
         /// Documentation
         ///
@@ -46,4 +49,27 @@ class RsImplsLineMarkerProviderTest : RsLineMarkerProviderTestBase() {
         {}
         impl Foo for Bar {}
     """)
+
+    fun `test impls sorting`() = doPopupTest("""
+        trait Bar {}
+        trait Foo {}
+        struct FooBar/*caret*/;
+
+        impl Foo for FooBar {}
+        impl Bar for FooBar {}
+    """,
+        "Bar for FooBar",
+        "Foo for FooBar"
+    )
+
+    private fun doPopupTest(@Language("Rust") code: String, vararg expectedItems: String) {
+        InlineFile(code)
+        val element = myFixture.file.findElementAt(myFixture.caretOffset)!!
+
+        @Suppress("UNCHECKED_CAST")
+        val markerInfo = (myFixture.findGuttersAtCaret().first() as LineMarkerInfo.LineMarkerGutterIconRenderer<PsiElement>).lineMarkerInfo
+        markerInfo.invokeNavigationHandler(element)
+        val renderedImpls = element.getUserData(RsImplsLineMarkerProvider.RENDERED_IMPLS)!!
+        assertEquals(expectedItems.toList(), renderedImpls)
+    }
 }

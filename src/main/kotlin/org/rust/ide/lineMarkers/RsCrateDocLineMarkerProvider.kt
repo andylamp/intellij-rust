@@ -26,13 +26,12 @@ class RsCrateDocLineMarkerProvider : LineMarkerProvider {
         val crate = parent.containingCargoPackage?.findDependency(crateName) ?: return null
         if (crate.pkg.source == null) return null
 
-        return LineMarkerInfo(
+        return RsLineMarkerInfoUtils.create(
             element,
             element.textRange,
             RsIcons.DOCS_MARK,
-            { "Open documentation for `${crate.pkg.normName}`" },
             { _, _ -> BrowserUtil.browse("https://docs.rs/${crate.pkg.name}/${crate.pkg.version}/${crate.normName}") },
             GutterIconRenderer.Alignment.LEFT
-        )
+        ) { "Open documentation for `${crate.pkg.normName}`" }
     }
 }

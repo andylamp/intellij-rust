@@ -11,16 +11,17 @@ import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
-import org.rust.cargo.icons.CargoIcons
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.runconfig.command.RunCargoCommandActionBase
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.tools.cargoOrWrapper
 import org.rust.ide.actions.ui.showCargoNewCrateUI
 import org.rust.openapiext.pathAsPath
 
 
-class RsCreateCrateAction : RunCargoCommandActionBase(CargoIcons.ICON) {
+class RsCreateCrateAction : RunCargoCommandActionBase() {
     override fun actionPerformed(e: AnActionEvent) {
         val dataContext = e.dataContext
         val project = CommonDataKeys.PROJECT.getData(dataContext) ?: return
@@ -42,7 +43,7 @@ class RsCreateCrateAction : RunCargoCommandActionBase(CargoIcons.ICON) {
 
     private fun createProject(
         project: Project,
-        toolchain: RustToolchain,
+        toolchain: RsToolchain,
         root: VirtualFile,
         name: String,
         binary: Boolean
@@ -55,7 +56,7 @@ class RsCreateCrateAction : RunCargoCommandActionBase(CargoIcons.ICON) {
         }
         cargo.init(project, project, targetDir, name, binary, "none")
 
-        val manifest = targetDir.findChild(RustToolchain.CARGO_TOML)
+        val manifest = targetDir.findChild(CargoConstants.MANIFEST_FILE)
         manifest?.let {
             project.cargoProjects.attachCargoProject(it.pathAsPath)
         }

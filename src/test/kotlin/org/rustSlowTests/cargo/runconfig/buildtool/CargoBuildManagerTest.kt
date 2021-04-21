@@ -10,6 +10,7 @@ package org.rustSlowTests.cargo.runconfig.buildtool
 import com.intellij.build.events.MessageEvent
 import com.intellij.build.events.impl.FailureResultImpl
 import com.intellij.build.events.impl.SuccessResultImpl
+import org.rust.MinRustcVersion
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.mockProgressIndicator
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager.testBuildId
 import org.rust.fileTree
@@ -19,6 +20,7 @@ import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyMe
 import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyStartBuildEvent
 import org.rustSlowTests.cargo.runconfig.buildtool.CargoBuildTest.Companion.MyStartEvent
 
+@MinRustcVersion("1.48.0")
 class CargoBuildManagerTest : CargoBuildTest() {
 
     fun `test build successful`() {
@@ -845,6 +847,126 @@ class CargoBuildManagerTest : CargoBuildTest() {
             "Building...",
             "Waiting for the current build to finish...",
             "Building... first"
+        )
+    }
+
+    fun `test check successful with warning`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [package]
+                name = "project"
+                version = "0.1.0"
+                authors = []
+            """)
+
+            dir("src") {
+                rust("lib.rs", """
+                    fn foo() {}
+                """)
+            }
+        }.create()
+        val buildResult = buildProject("check")
+
+        checkResult(
+            buildResult,
+            message = "Build finished",
+            errors = 0,
+            warnings = 1,
+            succeeded = true,
+            canceled = false
+        )
+
+        checkEvents(
+            MyStartBuildEvent(
+                message = "Build running...",
+                buildTitle = "Run Cargo command"
+            ),
+            MyStartEvent(
+                id = "project 0.1.0",
+                parentId = testBuildId,
+                message = "Checking project v0.1.0"
+            ),
+            MyMessageEvent(
+                parentId = "project 0.1.0",
+                message = "Function is never used: `foo`",
+                kind = MessageEvent.Kind.WARNING
+            ),
+            MyFinishEvent(
+                id = "project 0.1.0",
+                parentId = testBuildId,
+                message = "Checking project v0.1.0",
+                result = SuccessResultImpl()
+            ),
+            MyFinishBuildEvent(
+                message = "Build successful",
+                result = SuccessResultImpl()
+            )
+        )
+
+        checkProgressIndicator(
+            "Building...",
+            "Waiting for the current build to finish...",
+            "Building... project"
+        )
+    }
+
+    fun `test check (clippy) successful with warning`() {
+        fileTree {
+            toml("Cargo.toml", """
+                [package]
+                name = "project"
+                version = "0.1.0"
+                authors = []
+            """)
+
+            dir("src") {
+                rust("lib.rs", """
+                    fn _foo<'a>() {}
+                """)
+            }
+        }.create()
+        val buildResult = buildProject("clippy")
+
+        checkResult(
+            buildResult,
+            message = "Build finished",
+            errors = 0,
+            warnings = 1,
+            succeeded = true,
+            canceled = false
+        )
+
+        checkEvents(
+            MyStartBuildEvent(
+                message = "Build running...",
+                buildTitle = "Run Cargo command"
+            ),
+            MyStartEvent(
+                id = "project 0.1.0",
+                parentId = testBuildId,
+                message = "Checking project v0.1.0"
+            ),
+            MyMessageEvent(
+                parentId = "project 0.1.0",
+                message = "This lifetime isn't used in the function definition",
+                kind = MessageEvent.Kind.WARNING
+            ),
+            MyFinishEvent(
+                id = "project 0.1.0",
+                parentId = testBuildId,
+                message = "Checking project v0.1.0",
+                result = SuccessResultImpl()
+            ),
+            MyFinishBuildEvent(
+                message = "Build successful",
+                result = SuccessResultImpl()
+            )
+        )
+
+        checkProgressIndicator(
+            "Building...",
+            "Waiting for the current build to finish...",
+            "Building... project"
         )
     }
 }

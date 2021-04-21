@@ -7,9 +7,15 @@ package org.rust.cargo.runconfig.command
 
 import com.intellij.execution.BeforeRunTask
 import com.intellij.execution.Executor
+import com.intellij.execution.InputRedirectAware
 import com.intellij.execution.configuration.EnvironmentVariablesData
-import com.intellij.execution.configurations.*
+import com.intellij.execution.configurations.ConfigurationFactory
+import com.intellij.execution.configurations.RunConfiguration
+import com.intellij.execution.configurations.RunProfileState
+import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.execution.testframework.actions.ConsolePropertiesProvider
+import com.intellij.execution.testframework.sm.runner.SMTRunnerConsoleProperties
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -18,38 +24,56 @@ import org.jdom.Element
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.toolchain
+import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.runconfig.*
 import org.rust.cargo.runconfig.buildtool.CargoBuildTaskProvider
+import org.rust.cargo.runconfig.test.CargoTestConsoleProperties
 import org.rust.cargo.runconfig.ui.CargoCommandConfigurationEditor
 import org.rust.cargo.toolchain.BacktraceMode
 import org.rust.cargo.toolchain.CargoCommandLine
+import org.rust.cargo.toolchain.RsToolchain
 import org.rust.cargo.toolchain.RustChannel
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.tools.isRustupAvailable
 import org.rust.ide.experiments.RsExperiments
 import org.rust.openapiext.isFeatureEnabled
+import java.io.File
 import java.nio.file.Path
 import java.nio.file.Paths
-import kotlin.run
 
 /**
  * This class describes a Run Configuration.
  * It is basically a bunch of values which are persisted to .xml files inside .idea,
  * or displayed in the GUI form. It has to be mutable to satisfy various IDE's APIs.
  */
-class CargoCommandConfiguration(
+open class CargoCommandConfiguration(
     project: Project,
     name: String,
     factory: ConfigurationFactory
-) : LocatableConfigurationBase<RunProfileState>(project, factory, name),
-    RunConfigurationWithSuppressedDefaultDebugAction {
-
+) : RsCommandConfiguration(project, name, factory),
+    InputRedirectAware.InputRedirectOptions, ConsolePropertiesProvider {
+    override var command: String = "run"
     var channel: RustChannel = RustChannel.DEFAULT
-    var command: String = "run"
+    var requiredFeatures: Boolean = true
     var allFeatures: Boolean = false
     var emulateTerminal: Boolean = false
     var backtrace: BacktraceMode = BacktraceMode.SHORT
-    var workingDirectory: Path? = project.cargoProjects.allProjects.firstOrNull()?.workingDirectory
     var env: EnvironmentVariablesData = EnvironmentVariablesData.DEFAULT
+
+    private var isRedirectInput: Boolean = false
+    private var redirectInputPath: String? = null
+
+    override fun isRedirectInput(): Boolean = isRedirectInput
+
+    override fun setRedirectInput(value: Boolean) {
+        isRedirectInput = value
+    }
+
+    override fun getRedirectInputPath(): String? = redirectInputPath
+
+    override fun setRedirectInputPath(value: String?) {
+        redirectInputPath = value
+    }
 
     override fun getBeforeRunTasks(): List<BeforeRunTask<*>> {
         val tasks = super.getBeforeRunTasks()
@@ -63,12 +87,13 @@ class CargoCommandConfiguration(
     override fun writeExternal(element: Element) {
         super.writeExternal(element)
         element.writeEnum("channel", channel)
-        element.writeString("command", command)
+        element.writeBool("requiredFeatures", requiredFeatures)
         element.writeBool("allFeatures", allFeatures)
         element.writeBool("emulateTerminal", emulateTerminal)
         element.writeEnum("backtrace", backtrace)
-        element.writePath("workingDirectory", workingDirectory)
         env.writeExternal(element)
+        element.writeBool("isRedirectInput", isRedirectInput)
+        element.writeString("redirectInputPath", redirectInputPath ?: "")
     }
 
     /**
@@ -78,22 +103,26 @@ class CargoCommandConfiguration(
     override fun readExternal(element: Element) {
         super.readExternal(element)
         element.readEnum<RustChannel>("channel")?.let { channel = it }
-        element.readString("command")?.let { command = it }
+        element.readBool("requiredFeatures")?.let { requiredFeatures = it }
         element.readBool("allFeatures")?.let { allFeatures = it }
         element.readBool("emulateTerminal")?.let { emulateTerminal = it }
         element.readEnum<BacktraceMode>("backtrace")?.let { backtrace = it }
-        element.readPath("workingDirectory")?.let { workingDirectory = it }
         env = EnvironmentVariablesData.readExternal(element)
+        element.readBool("isRedirectInput")?.let { isRedirectInput = it }
+        element.readString("redirectInputPath")?.let { redirectInputPath = it }
     }
 
     fun setFromCmd(cmd: CargoCommandLine) {
         channel = cmd.channel
         command = ParametersListUtil.join(cmd.command, *cmd.additionalArguments.toTypedArray())
+        requiredFeatures = cmd.requiredFeatures
         allFeatures = cmd.allFeatures
         emulateTerminal = cmd.emulateTerminal
         backtrace = cmd.backtraceMode
         workingDirectory = cmd.workingDirectory
         env = cmd.environmentVariables
+        isRedirectInput = cmd.redirectInputFrom != null
+        redirectInputPath = cmd.redirectInputFrom?.path
     }
 
     fun canBeFrom(cmd: CargoCommandLine): Boolean =
@@ -110,19 +139,26 @@ class CargoCommandConfiguration(
 
     override fun getState(executor: Executor, environment: ExecutionEnvironment): RunProfileState? {
         val config = clean().ok ?: return null
-        return if (command.startsWith("test") &&
-            isFeatureEnabled(RsExperiments.TEST_TOOL_WINDOW) &&
-            !command.contains("--nocapture")) {
+        return if (showTestToolWindow()) {
             CargoTestRunState(environment, this, config)
         } else {
             CargoRunState(environment, this, config)
         }
     }
 
+    private fun showTestToolWindow(): Boolean = command.startsWith("test") &&
+        isFeatureEnabled(RsExperiments.TEST_TOOL_WINDOW) &&
+        !command.contains("--nocapture")
+
+
+    override fun createTestConsoleProperties(executor: Executor): SMTRunnerConsoleProperties? =
+        if (showTestToolWindow()) CargoTestConsoleProperties(this, executor) else null
+
+
     sealed class CleanConfiguration {
         class Ok(
             val cmd: CargoCommandLine,
-            val toolchain: RustToolchain
+            val toolchain: RsToolchain
         ) : CleanConfiguration()
 
         class Err(val error: RuntimeConfigurationError) : CleanConfiguration()
@@ -137,6 +173,9 @@ class CargoCommandConfiguration(
     fun clean(): CleanConfiguration {
         val workingDirectory = workingDirectory
             ?: return CleanConfiguration.error("No working directory specified")
+        val redirectInputFrom = redirectInputPath
+            ?.takeIf { isRedirectInput && it.isNotBlank() }
+            ?.let { File(it) }
         val cmd = run {
             val args = ParametersListUtil.parse(command)
             if (args.isEmpty()) {
@@ -146,9 +185,11 @@ class CargoCommandConfiguration(
                 args.first(),
                 workingDirectory,
                 args.drop(1),
+                redirectInputFrom,
                 backtrace,
                 channel,
                 env,
+                requiredFeatures,
                 allFeatures,
                 emulateTerminal
             )
@@ -167,8 +208,6 @@ class CargoCommandConfiguration(
 
         return CleanConfiguration.Ok(cmd, toolchain)
     }
-
-    override fun suggestedName(): String? = command.substringBefore(' ').capitalize()
 
     companion object {
         fun findCargoProject(project: Project, additionalArgs: List<String>, workingDirectory: Path?): CargoProject? {
@@ -192,6 +231,55 @@ class CargoCommandConfiguration(
         fun findCargoProject(project: Project, cmd: String, workingDirectory: Path?): CargoProject? = findCargoProject(
             project, ParametersListUtil.parse(cmd), workingDirectory
         )
+
+        fun findCargoPackage(
+            cargoProject: CargoProject,
+            additionalArgs: List<String>,
+            workingDirectory: Path?
+        ): CargoWorkspace.Package? {
+            val packages = cargoProject.workspace?.packages
+                ?.filter { it.origin == PackageOrigin.WORKSPACE }
+                .orEmpty()
+
+            packages.singleOrNull()?.let { return it }
+
+            val packageName = run {
+                val idx = additionalArgs.indexOf("--package")
+                if (idx == -1) return@run null
+                additionalArgs.getOrNull(idx + 1)
+            }
+
+            if (packageName != null) {
+                return packages.find { it.name == packageName }
+            }
+
+            return packages.find { it.rootDirectory == workingDirectory }
+        }
+
+        fun findCargoTargets(
+            cargoPackage: CargoWorkspace.Package,
+            additionalArgs: List<String>
+        ): List<CargoWorkspace.Target> {
+
+            fun hasTarget(option: String, name: String): Boolean {
+                if ("$option=$name" in additionalArgs) return true
+                return additionalArgs.windowed(2).any { pair ->
+                    pair.first() == option && pair.last() == name
+                }
+            }
+
+            return cargoPackage.targets.filter { target ->
+                when (target.kind) {
+                    CargoWorkspace.TargetKind.Bin -> hasTarget("--bin", target.name)
+                    CargoWorkspace.TargetKind.Test -> hasTarget("--test", target.name)
+                    CargoWorkspace.TargetKind.ExampleBin,
+                    is CargoWorkspace.TargetKind.ExampleLib -> hasTarget("--example", target.name)
+                    CargoWorkspace.TargetKind.Bench -> hasTarget("--bench", target.name)
+                    is CargoWorkspace.TargetKind.Lib -> "--lib" in additionalArgs
+                    else -> false
+                }
+            }
+        }
     }
 }
 

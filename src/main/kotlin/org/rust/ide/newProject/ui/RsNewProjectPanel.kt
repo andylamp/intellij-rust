@@ -5,8 +5,8 @@
 
 package org.rust.ide.newProject.ui
 
+import com.intellij.execution.process.ProcessAdapter
 import com.intellij.execution.process.ProcessEvent
-import com.intellij.execution.process.ProcessListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionToolbarPosition
 import com.intellij.openapi.options.ConfigurationException
@@ -24,7 +24,8 @@ import com.intellij.ui.components.Link
 import com.intellij.ui.layout.LayoutBuilder
 import com.intellij.util.ui.JBUI
 import org.rust.cargo.project.settings.ui.RustProjectSettingsPanel
-import org.rust.cargo.toolchain.Cargo
+import org.rust.cargo.toolchain.tools.Cargo
+import org.rust.cargo.toolchain.tools.cargo
 import org.rust.ide.newProject.ConfigurationData
 import org.rust.ide.newProject.RsCustomTemplate
 import org.rust.ide.newProject.RsGenericTemplate
@@ -44,7 +45,7 @@ class RsNewProjectPanel(
     private val rustProjectSettings = RustProjectSettingsPanel(updateListener = updateListener)
 
     private val cargo: Cargo?
-        get() = rustProjectSettings.data.toolchain?.rawCargo()
+        get() = rustProjectSettings.data.toolchain?.cargo()
 
     private val defaultTemplates: List<RsProjectTemplate> = listOf(
         RsGenericTemplate.CargoBinaryTemplate,
@@ -87,7 +88,7 @@ class RsNewProjectPanel(
     private val selectedTemplate: RsProjectTemplate
         get() = templateList.selectedValue
 
-    val templateToolbar: ToolbarDecorator = ToolbarDecorator.createDecorator(templateList)
+    private val templateToolbar: ToolbarDecorator = ToolbarDecorator.createDecorator(templateList)
         .setToolbarPosition(ActionToolbarPosition.BOTTOM)
         .setPreferredSize(JBUI.size(0, 125))
         .disableUpDownActions()
@@ -104,7 +105,9 @@ class RsNewProjectPanel(
         .setRemoveActionUpdater { selectedTemplate !in defaultTemplates }
 
     private var needInstallCargoGenerate = false
-    private val downloadCargoGenerateLink = Link("Install cargo-generate using Cargo", action = {
+
+    @Suppress("DialogTitleCapitalization")
+    private val downloadCargoGenerateLink = Link("Install cargo-generate using Cargo") {
         val cargo = cargo ?: return@Link
 
         object : Task.Modal(null, "Installing cargo-generate", true) {
@@ -126,7 +129,7 @@ class RsNewProjectPanel(
 
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
-                cargo.installCargoGenerate(this@RsNewProjectPanel, listener = object : ProcessListener {
+                cargo.installCargoGenerate(this@RsNewProjectPanel, listener = object : ProcessAdapter() {
                     override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
                         indicator.text = "Installing using Cargo..."
                         indicator.text2 = event.text.trim()
@@ -135,13 +138,10 @@ class RsNewProjectPanel(
                     override fun processTerminated(event: ProcessEvent) {
                         exitCode = event.exitCode
                     }
-
-                    override fun startNotified(event: ProcessEvent) {}
-
                 })
             }
         }.queue()
-    }).apply { isVisible = false }
+    }.apply { isVisible = false }
 
     private val updateDebouncer = UiDebouncer(this)
 
@@ -151,7 +151,7 @@ class RsNewProjectPanel(
         rustProjectSettings.attachTo(this)
 
         if (showProjectTypeSelection) {
-            titledRow("Project template") {
+            titledRow("Project Template") {
                 subRowIndent = 0
                 row { templateToolbar.createPanel()(growX) }
                 row { downloadCargoGenerateLink() }
@@ -194,6 +194,7 @@ class RsNewProjectPanel(
         rustProjectSettings.validateSettings()
 
         if (needInstallCargoGenerate) {
+            @Suppress("DialogTitleCapitalization")
             throw ConfigurationException("cargo-generate is needed to create a project from a custom template")
         }
     }

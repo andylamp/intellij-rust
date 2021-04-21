@@ -26,7 +26,7 @@ fun RsPat.extractBindings(fcx: RsTypeInferenceWalker, type: Ty, defBm: RsBinding
             val expr = expr
             val expected = when {
                 expr is RsLitExpr && expr.kind is RsLiteralKind.String -> type
-                expr is RsPathExpr && resolvePath(expr.path).singleOrNull()?.element is RsConstant -> type
+                expr is RsPathExpr && resolvePath(expr.path).singleOrNull()?.inner?.element is RsConstant -> type
                 else -> type.stripReferences(defBm).first
             }
             fcx.writePatTy(this, expected)
@@ -98,7 +98,7 @@ fun RsPat.extractBindings(fcx: RsTypeInferenceWalker, type: Ty, defBm: RsBinding
                     }
                     is RsPatFieldKind.Shorthand -> {
                         val bindingType = if (fieldType is TyAdt && kind.isBox) {
-                            fieldType.typeArguments.singleOrNull() ?: return
+                            fieldType.typeArguments.firstOrNull() ?: return
                         } else {
                             fieldType
                         }
@@ -116,7 +116,7 @@ fun RsPat.extractBindings(fcx: RsTypeInferenceWalker, type: Ty, defBm: RsBinding
             val (expected, bm) = type.stripReferences(defBm)
             fcx.writePatTy(this, expected)
             if (expected is TyAdt && expected.isBox) {
-                val boxed = expected.typeArguments.singleOrNull() ?: return
+                val boxed = expected.typeArguments.firstOrNull() ?: return
                 pat.extractBindings(fcx, boxed, bm)
             }
         }

@@ -19,21 +19,7 @@ import org.rust.lang.core.types.ty.TyPrimitive
 
 private val RS_PATH_KINDS = tokenSetOf(IDENTIFIER, SELF, SUPER, CSELF, CRATE)
 
-val RsPath.hasColonColon: Boolean get() = greenStub?.hasColonColon ?: (coloncolon != null)
 val RsPath.hasCself: Boolean get() = kind == PathKind.CSELF
-val RsPath.kind: PathKind get() {
-    val stub = greenStub
-    if (stub != null) return stub.kind
-    val child = node.findChildByType(RS_PATH_KINDS)
-    return when (child?.elementType) {
-        IDENTIFIER -> PathKind.IDENTIFIER
-        SELF -> PathKind.SELF
-        SUPER -> PathKind.SUPER
-        CSELF -> PathKind.CSELF
-        CRATE -> PathKind.CRATE
-        else -> error("Malformed RsPath element: `$text`")
-    }
-}
 
 /** For `Foo::bar::baz::quux` path returns `Foo` */
 tailrec fun RsPath.basePath(): RsPath {
@@ -55,15 +41,21 @@ tailrec fun RsPath.rootPath(): RsPath {
     return if (parent is RsPath) parent.rootPath() else this
 }
 
-val RsPath.textRangeOfLastSegment: TextRange
-    get() = TextRange(referenceNameElement.startOffset, typeArgumentList?.endOffset ?: referenceNameElement.endOffset)
+val RsPath.textRangeOfLastSegment: TextRange?
+    get() {
+        val referenceNameElement = referenceNameElement ?: return null
+        return TextRange(
+            referenceNameElement.startOffset, typeArgumentList?.endOffset ?: referenceNameElement.endOffset
+        )
+    }
 
 enum class PathKind {
     IDENTIFIER,
     SELF,
     SUPER,
     CSELF,
-    CRATE
+    CRATE,
+    MALFORMED
 }
 
 val RsPath.qualifier: RsPath?
@@ -94,11 +86,19 @@ fun RsPath.allowedNamespaces(isCompletion: Boolean = false): Set<Namespace> = wh
     else -> TYPES_N_VALUES
 }
 
-val RsPath.isUnresolved: Boolean
+val RsPath.resolveStatus: PathResolveStatus
     get() {
-        val reference = reference ?: return false
-        return TyPrimitive.fromPath(this) == null && reference.multiResolve().isEmpty()
+        val reference = reference ?: return PathResolveStatus.NO_REFERENCE
+        return if (TyPrimitive.fromPath(this) == null && reference.multiResolve().isEmpty()) {
+            PathResolveStatus.UNRESOLVED
+        } else {
+            PathResolveStatus.RESOLVED
+        }
     }
+
+enum class PathResolveStatus {
+    RESOLVED, UNRESOLVED, NO_REFERENCE
+}
 
 val RsPath.lifetimeArguments: List<RsLifetime> get() = typeArgumentList?.lifetimeList.orEmpty()
 
@@ -113,12 +113,11 @@ abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
     constructor(stub: RsPathStub, nodeType: IStubElementType<*, *>) : super(stub, nodeType)
 
     override fun getReference(): RsPathReference? {
+        if (referenceName == null) return null
         return when (val parent = parent) {
             is RsMacroCall -> RsMacroPathReferenceImpl(this)
             is RsMetaItem -> when {
                 RsPsiPattern.derivedTraitMetaItem.accepts(parent) -> RsDeriveTraitReferenceImpl(this)
-                // FIXME: We assume that attribute proc macros are used only as top level attributes
-                // (so we ignore the fact that attribute proc macro can be nested inside `cfg_attr`)
                 RsPsiPattern.nonStdOuterAttributeMetaItem.accepts(parent) -> RsAttributeProcMacroReferenceImpl(this)
                 else -> null
             }
@@ -126,12 +125,18 @@ abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
         }
     }
 
-    override val referenceNameElement: PsiElement
-        get() = checkNotNull(identifier ?: self ?: `super` ?: cself ?: crate) {
-            "Path must contain identifier: $this ${this.text} at ${this.containingFile.virtualFile.path}"
-        }
+    override val referenceNameElement: PsiElement?
+        get() = node.findChildByType(RS_PATH_KINDS)?.psi
 
-    override val referenceName: String get() = greenStub?.referenceName ?: super.referenceName
+    override val referenceName: String?
+        get() {
+            val stub = greenStub
+            return if (stub != null) {
+                stub.referenceName
+            } else {
+                super.referenceName
+            }
+        }
 
     override val containingMod: RsMod
         get() {
@@ -143,5 +148,22 @@ abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
             // ```
             val visParent = (rootPath().parent as? RsVisRestriction)?.parent?.parent
             return if (visParent is RsMod) visParent.containingMod else super.containingMod
+        }
+
+    override val hasColonColon: Boolean get() = greenStub?.hasColonColon ?: (coloncolon != null)
+
+    override val kind: PathKind
+        get() {
+            val stub = greenStub
+            if (stub != null) return stub.kind
+            val child = node.findChildByType(RS_PATH_KINDS)
+            return when (child?.elementType) {
+                IDENTIFIER -> PathKind.IDENTIFIER
+                SELF -> PathKind.SELF
+                SUPER -> PathKind.SUPER
+                CSELF -> PathKind.CSELF
+                CRATE -> PathKind.CRATE
+                else -> PathKind.MALFORMED
+            }
         }
 }

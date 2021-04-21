@@ -8,6 +8,8 @@ package org.rust
 import com.intellij.openapi.module.Module
 import com.intellij.openapi.roots.ContentEntry
 import com.intellij.openapi.roots.ModifiableRootModel
+import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.LightProjectDescriptor
@@ -26,8 +28,11 @@ import org.rust.cargo.project.workspace.CargoWorkspaceData.Package
 import org.rust.cargo.project.workspace.CargoWorkspaceData.Target
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.project.workspace.StandardLibrary
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.tools.rustc
+import org.rust.cargo.toolchain.tools.rustup
 import org.rust.cargo.util.DownloadResult
+import org.rust.ide.experiments.RsExperiments
 import java.io.File
 import java.nio.file.Paths
 import java.util.*
@@ -38,11 +43,14 @@ object EmptyDescriptor : LightProjectDescriptor()
 
 object WithStdlibRustProjectDescriptor : WithRustup(DefaultDescriptor)
 
+object WithActualStdlibRustProjectDescriptor : WithRustup(DefaultDescriptor, fetchActualStdlibMetadata = true)
+
 object WithStdlibAndDependencyRustProjectDescriptor : WithRustup(WithDependencyRustProjectDescriptor)
 
 object WithStdlibWithSymlinkRustProjectDescriptor : WithCustomStdlibRustProjectDescriptor(DefaultDescriptor, {
     val path = System.getenv("RUST_SRC_WITH_SYMLINK")
-    if (System.getenv("CI") != null) {
+    // FIXME: find out why it doesn't work on CI on Windows
+    if (System.getenv("CI") != null && !SystemInfo.isWindows) {
         if (path == null) error("`RUST_SRC_WITH_SYMLINK` environment variable is not set")
         if (!File(path).exists()) error("`$path` doesn't exist")
     }
@@ -69,7 +77,7 @@ open class RustProjectDescriptorBase : LightProjectDescriptor() {
     open fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
         val packages = listOf(testCargoPackage(contentRoot))
         return CargoWorkspace.deserialize(Paths.get("${Urls.newFromIdea(contentRoot).path}/workspace/Cargo.toml"),
-            CargoWorkspaceData(packages, emptyMap()), CfgOptions.DEFAULT)
+            CargoWorkspaceData(packages, emptyMap(), emptyMap()), CfgOptions.DEFAULT)
     }
 
     protected fun testCargoPackage(contentRoot: String, name: String = "test-package") = Package(
@@ -78,29 +86,37 @@ open class RustProjectDescriptorBase : LightProjectDescriptor() {
         name = name,
         version = "0.0.1",
         targets = listOf(
-            Target("$contentRoot/main.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/lib.rs", name, TargetKind.Lib(LibKind.LIB), edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/bin/a.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/bench/a.rs", name, TargetKind.Bench, edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/example/a.rs", name, TargetKind.ExampleBin, edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/example-lib/a.rs", name, TargetKind.ExampleLib(EnumSet.of(LibKind.LIB)), edition = Edition.EDITION_2015, doctest = true),
-            Target("$contentRoot/build.rs", "build_script_build", TargetKind.CustomBuild, edition = Edition.EDITION_2015, doctest = false)
+            Target("$contentRoot/main.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/lib.rs", name, TargetKind.Lib(LibKind.LIB), edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/bin/a.rs", name, TargetKind.Bin, edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/bench/a.rs", name, TargetKind.Bench, edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/example/a.rs", name, TargetKind.ExampleBin, edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/example-lib/a.rs", name, TargetKind.ExampleLib(EnumSet.of(LibKind.LIB)), edition = Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList()),
+            Target("$contentRoot/build.rs", "build_script_build", TargetKind.CustomBuild, edition = Edition.EDITION_2015, doctest = false, requiredFeatures = emptyList())
         ),
         source = null,
         origin = PackageOrigin.WORKSPACE,
         edition = Edition.EDITION_2015,
-        features = emptyList(),
+        features = emptyMap(),
+        enabledFeatures = emptySet(),
         cfgOptions = CfgOptions.EMPTY,
         env = emptyMap(),
         outDirUrl = null
     )
 }
 
-open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustProjectDescriptorBase() {
-    private val toolchain: RustToolchain? by lazy { RustToolchain.suggest() }
+open class WithRustup(
+    private val delegate: RustProjectDescriptorBase,
+    private val fetchActualStdlibMetadata: Boolean = false
+) : RustProjectDescriptorBase() {
+    private val toolchain: RsToolchain? by lazy { RsToolchain.suggest() }
 
     private val rustup by lazy { toolchain?.rustup(Paths.get(".")) }
     val stdlib by lazy { (rustup?.downloadStdlib() as? DownloadResult.Ok)?.value }
+
+    private val cfgOptions by lazy {
+        toolchain?.rustc()?.getCfgOptions(null)
+    }
 
     override val skipTestReason: String?
         get() {
@@ -111,15 +127,29 @@ open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustPro
 
     override val rustcInfo: RustcInfo?
         get() {
-            val toolchain = toolchain ?: return null
-            val sysroot = toolchain.getSysroot(Paths.get(".")) ?: return null
-            val rustcVersion = toolchain.queryVersions().rustc
+            val rustc = toolchain?.rustc() ?: return null
+            val sysroot = rustc.getSysroot(Paths.get(".")) ?: return null
+            val rustcVersion = rustc.queryVersion()
             return RustcInfo(sysroot, rustcVersion)
         }
 
     override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
-        val stdlib = StandardLibrary.fromFile(stdlib!!)!!
-        return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib, CfgOptions.DEFAULT, rustcInfo)
+        val disposable = Disposer.newDisposable("testCargoProject")
+        // TODO: use RustupTestFixture somehow
+        module.project.rustSettings.modifyTemporary(disposable) {
+            it.toolchain = toolchain
+        }
+        try {
+            // RsExperiments.FETCH_ACTUAL_STDLIB_METADATA significantly slows down tests
+            setExperimentalFeatureEnabled(RsExperiments.FETCH_ACTUAL_STDLIB_METADATA, fetchActualStdlibMetadata, disposable)
+
+            val rustcInfo = rustcInfo
+            val stdlib = StandardLibrary.fromFile(module.project, stdlib!!, rustcInfo)!!
+            val cfgOptions = cfgOptions!!
+            return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib, cfgOptions, rustcInfo)
+        } finally {
+            Disposer.dispose(disposable)
+        }
     }
 
     override fun setUp(fixture: CodeInsightTestFixture) {
@@ -138,19 +168,16 @@ open class WithCustomStdlibRustProjectDescriptor(
     private val explicitStdlibPath: () -> String?
 ) : RustProjectDescriptorBase() {
 
-    private val stdlib: StandardLibrary? by lazy {
-        val path = explicitStdlibPath() ?: return@lazy null
-        StandardLibrary.fromPath(path)
-    }
-
     override val skipTestReason: String?
         get() {
-            if (stdlib == null) return "No stdlib"
+            if (explicitStdlibPath() == null) return "No stdlib"
             return delegate.skipTestReason
         }
 
-    override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace =
-        delegate.testCargoProject(module, contentRoot).withStdlib(stdlib!!, CfgOptions.DEFAULT)
+    override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
+        val stdlib = StandardLibrary.fromPath(module.project, explicitStdlibPath()!!, rustcInfo)!!
+        return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib, CfgOptions.DEFAULT)
+    }
 
     override fun setUp(fixture: CodeInsightTestFixture) {
         delegate.setUp(fixture)
@@ -179,12 +206,13 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
                 // don't use `FileUtil.join` here because it uses `File.separator`
                 // which is system dependent although all other code uses `/` as separator
                 Target(source?.let { "$contentRoot/$it" } ?: "", targetName,
-                    TargetKind.Lib(libKind), Edition.EDITION_2015, doctest = true)
+                    TargetKind.Lib(libKind), Edition.EDITION_2015, doctest = true, requiredFeatures = emptyList())
             ),
             source = source,
             origin = origin,
             edition = Edition.EDITION_2015,
-            features = emptyList(),
+            features = emptyMap(),
+            enabledFeatures = emptySet(),
             cfgOptions = CfgOptions.EMPTY,
             env = emptyMap(),
             outDirUrl = null
@@ -209,7 +237,8 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
             externalPackage("$contentRoot/dep-proc-macro", "lib.rs", "dep-proc-macro", libKind = LibKind.PROC_MACRO),
             externalPackage("$contentRoot/dep-lib-2", "lib.rs", "dep-lib-2", "dep-lib-target-2"),
             externalPackage("$contentRoot/trans-lib-2", "lib.rs", "trans-lib-2"),
-            externalPackage("$contentRoot/no-source-lib", "lib.rs", "no-source-lib").copy(source = null)
+            externalPackage("$contentRoot/no-source-lib", "lib.rs", "no-source-lib").copy(source = null),
+            externalPackage("$contentRoot/dep-lib-to-be-renamed", "lib.rs", "dep-lib-to-be-renamed-target"),
         )
 
         return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, mapOf(
@@ -219,7 +248,8 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
                 Dependency(packages[2].id),
                 Dependency(packages[5].id),
                 Dependency(packages[6].id),
-                Dependency(packages[8].id)
+                Dependency(packages[8].id),
+                Dependency(packages[9].id, "dep_lib_renamed"),
             ),
             // dep_lib 0.0.1 depends on trans-lib and dep_lib 0.0.2
             packages[1].id to setOf(
@@ -230,6 +260,6 @@ object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
             packages[3].id to setOf(
                 Dependency(packages[7].id)
             )
-        )), CfgOptions.DEFAULT)
+        ), emptyMap()), CfgOptions.DEFAULT)
     }
 }
