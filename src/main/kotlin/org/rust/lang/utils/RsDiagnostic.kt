@@ -35,7 +35,6 @@ import org.rust.ide.presentation.shortPresentableText
 import org.rust.ide.refactoring.implementMembers.ImplementMembersFix
 import org.rust.ide.utils.checkMatch.Pattern
 import org.rust.ide.utils.import.RsImportHelper.getTypeReferencesInfoFromTys
-import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.core.CONST_GENERICS
 import org.rust.lang.core.CompilerFeature
 import org.rust.lang.core.MIN_CONST_GENERICS
@@ -930,7 +929,7 @@ sealed class RsDiagnostic(
         private val crateName: String
     ) : RsDiagnostic(startElement) {
         override fun prepare() = PreparedAnnotation(
-            ERROR,
+            UNKNOWN_SYMBOL,
             E0463,
             errorText()
         )
@@ -1375,6 +1374,19 @@ sealed class RsDiagnostic(
             "Only traits defined in the current crate can be implemented for arbitrary types"
         )
     }
+
+    class UnknownCfgPredicate(
+        element: PsiElement,
+        private val name: String,
+        private val fixes: List<LocalQuickFix> = emptyList()
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0537,
+            "Invalid predicate `$name`",
+            fixes = fixes
+        )
+    }
 }
 
 enum class RsErrorCode {
@@ -1383,7 +1395,7 @@ enum class RsErrorCode {
     E0200, E0201, E0202, E0252, E0261, E0262, E0263, E0267, E0268, E0277,
     E0308, E0322, E0328, E0364, E0365, E0379, E0384,
     E0403, E0404, E0407, E0415, E0416, E0424, E0426, E0428, E0433, E0435, E0449, E0451, E0463,
-    E0517, E0518, E0552, E0562, E0569, E0583, E0586, E0594,
+    E0517, E0518, E0537, E0552, E0562, E0569, E0583, E0586, E0594,
     E0601, E0603, E0614, E0616, E0618, E0624, E0658, E0666, E0667, E0688, E0695,
     E0704, E0732;
 
@@ -1405,8 +1417,8 @@ class PreparedAnnotation(
     val fixes: List<LocalQuickFix> = emptyList()
 )
 
-fun RsDiagnostic.addToHolder(holder: RsAnnotationHolder) {
-    if (element.isEnabledByCfg) {
+fun RsDiagnostic.addToHolder(holder: RsAnnotationHolder, checkExistsAfterExpansion: Boolean = true) {
+    if (!checkExistsAfterExpansion || element.existsAfterExpansion) {
         addToHolder(holder.holder)
     }
 }

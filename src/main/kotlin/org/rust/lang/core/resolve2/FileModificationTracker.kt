@@ -66,6 +66,7 @@ private fun calculateModHash(modData: ModDataLight): HashCode {
     data.writeElements(modData.imports)
     data.writeElements(modData.macroCalls)
     data.writeElements(modData.macroDefs)
+    data.writeElements(modData.macro2Defs)
     data.writeByte(modData.attributes?.ordinal ?: RsFile.Attributes.values().size)
 
     return HashCode.fromByteArray(digest.digest())
@@ -77,13 +78,14 @@ private class ModDataLight {
     val imports: MutableList<ImportLight> = mutableListOf()
     val macroCalls: MutableList<MacroCallLight> = mutableListOf()
     val macroDefs: MutableList<MacroDefLight> = mutableListOf()
+    val macro2Defs: MutableList<Macro2DefLight> = mutableListOf()
     var attributes: RsFile.Attributes? = null  // not null only for crate root
 
     fun sort() {
         items.sortBy { it.name }
         enums.sortBy { it.item.name }
         imports.sortWith(compareBy(Arrays::compare) { it.usePath })
-        // TODO: Smart sort for macro calls & defs
+        macro2Defs.sortBy { it.name }
     }
 }
 
@@ -124,7 +126,11 @@ private class ModLightCollector(
 
     val modData: ModDataLight = ModDataLight()
 
-    override fun collectItem(item: ItemLight, stub: RsNamedStub) {
+    override fun collectSimpleItem(item: SimpleItemLight) {
+        modData.items += item
+    }
+
+    override fun collectModOrEnumItem(item: ModOrEnumItemLight, stub: RsNamedStub) {
         if (stub is RsEnumItemStub) {
             collectEnum(item, stub)
             return
@@ -136,7 +142,7 @@ private class ModLightCollector(
         }
     }
 
-    private fun collectEnum(enum: ItemLight, enumStub: RsEnumItemStub) {
+    private fun collectEnum(enum: ModOrEnumItemLight, enumStub: RsEnumItemStub) {
         val variants = enumStub.variants.mapNotNullTo(mutableListOf()) {
             EnumVariantLight(
                 name = it.name ?: return@mapNotNullTo null,
@@ -158,6 +164,10 @@ private class ModLightCollector(
 
     override fun collectMacroDef(def: MacroDefLight) {
         modData.macroDefs += def
+    }
+
+    override fun collectMacro2Def(def: Macro2DefLight) {
+        modData.macro2Defs += def
     }
 
     override fun afterCollectMod() {
@@ -198,7 +208,7 @@ private class EnumVariantLight(
 }
 
 private class EnumLight(
-    val item: ItemLight,
+    val item: ModOrEnumItemLight,
     val variants: List<EnumVariantLight>,
 ) : Writeable {
     override fun writeTo(data: DataOutput) {

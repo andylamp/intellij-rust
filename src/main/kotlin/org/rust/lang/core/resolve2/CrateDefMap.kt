@@ -113,16 +113,18 @@ class CrateDefMap(
         return defMap.doGetMacroInfo(macroDef)
     }
 
-    // TODO: [RsMacro2]
     private fun doGetMacroInfo(macroDef: VisItem): MacroDefInfo {
         val containingMod = getModData(macroDef.containingMod) ?: error("Can't find ModData for macro $macroDef")
         val procMacroKind = containingMod.procMacros[macroDef.name]
         if (procMacroKind != null) {
             return ProcMacroDefInfo(containingMod.crate, macroDef.path, procMacroKind, metaData.procMacroArtifact)
         }
+        containingMod.macros2[macroDef.name]?.let {
+            return it
+        }
         val macroInfos = containingMod.legacyMacros[macroDef.name]
             ?: error("Can't find definition for macro $macroDef")
-        return macroInfos.singlePublicOrFirst()
+        return macroInfos.filterIsInstance<DeclMacroDefInfo>().singlePublicOrFirst()
     }
 
     /**
@@ -136,7 +138,8 @@ class CrateDefMap(
         for ((name, def) in from.root.visibleItems) {
             // `macro_use` only bring things into legacy scope.
             for (macroDef in def.macros) {
-                val macroInfo = from.getMacroInfo(macroDef) as? DeclMacroDefInfo ?: continue
+                // TODO: DeclMacro2DefInfo
+                val macroInfo = from.getMacroInfo(macroDef) ?: continue
                 root.addLegacyMacro(name, macroInfo)
             }
         }
@@ -267,7 +270,10 @@ class ModData(
      * Currently stores only cfg-enabled macros.
      */
     // TODO: Custom map? (Profile memory usage)
-    val legacyMacros: THashMap<String, SmartList<DeclMacroDefInfo>> = THashMap()
+    val legacyMacros: THashMap<String, SmartList<MacroDefInfo>> = THashMap()
+
+    /** Explicitly declared macros 2.0 (`pub macro $name ...`) */
+    val macros2: MutableMap<String, DeclMacro2DefInfo> = THashMap()
 
     /** Explicitly declared proc macros */
     val procMacros: MutableMap<String, RsProcMacroKind> = hashMapOf()
@@ -322,7 +328,7 @@ class ModData(
         return current
     }
 
-    fun addLegacyMacro(name: String, defInfo: DeclMacroDefInfo) {
+    fun addLegacyMacro(name: String, defInfo: MacroDefInfo) {
         val existing = legacyMacros.putIfAbsent(name, SmartList(defInfo)) ?: return
         existing += defInfo
     }
@@ -401,7 +407,7 @@ class PerNs(
 
         fun Array<VisItem>.adjustMultiresolve(): Array<VisItem> {
             if (size <= 1) return this
-            val visibilityType = map2Array { it.visibility.type }.max()!!
+            val visibilityType = map2Array { it.visibility.type }.maxOrNull()!!
             if (visibilityType == VisibilityType.CfgDisabled) return arrayOf(first())
             return filter { it.visibility.type == visibilityType }.toTypedArray()
         }

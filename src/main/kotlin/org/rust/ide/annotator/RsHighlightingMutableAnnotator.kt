@@ -11,13 +11,13 @@ import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapiext.isUnitTestMode
 import com.intellij.psi.PsiElement
 import org.rust.ide.colors.RsColor
-import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.core.psi.RsPatBinding
 import org.rust.lang.core.psi.RsPath
 import org.rust.lang.core.psi.RsSelfParameter
 import org.rust.lang.core.psi.RsValueParameter
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.ancestorStrict
+import org.rust.lang.core.psi.ext.existsAfterExpansion
 import org.rust.lang.core.psi.ext.mutability
 import org.rust.lang.core.types.ty.TyReference
 import org.rust.lang.core.types.type
@@ -46,7 +46,7 @@ class RsHighlightingMutableAnnotator : AnnotatorBase() {
     }
 
     private fun distinctAnnotation(element: PsiElement, ref: RsElement, holder: AnnotationHolder) {
-        if (!element.isEnabledByCfg) return
+        if (!element.existsAfterExpansion) return
         val color = annotationFor(ref) ?: return
         if (ref.isMut) {
             @Suppress("NAME_SHADOWING")

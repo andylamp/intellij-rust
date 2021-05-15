@@ -24,7 +24,7 @@ import org.rust.cargo.project.settings.RustProjectSettingsService.*
 import org.rust.cargo.project.settings.RustProjectSettingsService.Companion.RUST_SETTINGS_TOPIC
 import org.rust.cargo.toolchain.ExternalLinter
 import org.rust.cargo.toolchain.RsToolchain
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RsToolchainBase
 import org.rust.lang.core.resolve2.defMapService
 
 private const val serviceName: String = "RustProjectSettings"
@@ -50,7 +50,7 @@ class RustProjectSettingsServiceImpl(
         }
 
     override val version: Int? get() = _state.version
-    override val toolchain: RsToolchain? get() = _state.toolchain
+    override val toolchain: RsToolchainBase? get() = _state.toolchain
     override val autoUpdateEnabled: Boolean get() = _state.autoUpdateEnabled
     override val explicitPathToStdlib: String? get() = _state.explicitPathToStdlib
     override val externalLinter: ExternalLinter get() = _state.externalLinter
@@ -65,7 +65,7 @@ class RustProjectSettingsServiceImpl(
     override val runRustfmtOnSave: Boolean get() = _state.runRustfmtOnSave
 
     @Suppress("OverridingDeprecatedMember", "DEPRECATION")
-    override fun getToolchain(): RustToolchain? = _state.toolchain?.let(RustToolchain::from)
+    override fun getToolchain(): RsToolchain? = _state.toolchain?.let(RsToolchain::from)
 
     override fun getState(): Element {
         val element = Element(serviceName)

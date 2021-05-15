@@ -12,9 +12,7 @@ import com.intellij.util.io.systemIndependentPath
 import com.intellij.util.messages.Topic
 import com.intellij.util.xmlb.annotations.Transient
 import org.jetbrains.annotations.TestOnly
-import org.rust.cargo.toolchain.ExternalLinter
-import org.rust.cargo.toolchain.RsToolchain
-import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.*
 import org.rust.ide.experiments.RsExperiments
 import org.rust.openapiext.isFeatureEnabled
 import java.nio.file.Paths
@@ -54,15 +52,15 @@ interface RustProjectSettingsService {
     ) {
         @get:Transient
         @set:Transient
-        var toolchain: RsToolchain?
-            get() = toolchainHomeDirectory?.let { RsToolchain(Paths.get(it)) }
+        var toolchain: RsToolchainBase?
+            get() = toolchainHomeDirectory?.let { RsToolchainProvider.getToolchain(Paths.get(it)) }
             set(value) {
                 toolchainHomeDirectory = value?.location?.systemIndependentPath
             }
 
         @Suppress("DEPRECATION", "DeprecatedCallableAddReplaceWith")
         @Deprecated("Use toolchain property")
-        fun setToolchain(toolchain: RustToolchain?) {
+        fun setToolchain(toolchain: RsToolchain?) {
             toolchainHomeDirectory = toolchain?.location?.systemIndependentPath
         }
     }
@@ -95,7 +93,7 @@ interface RustProjectSettingsService {
     var settingsState: State
 
     val version: Int?
-    val toolchain: RsToolchain?
+    val toolchain: RsToolchainBase?
     val explicitPathToStdlib: String?
     val autoUpdateEnabled: Boolean
     val externalLinter: ExternalLinter
@@ -111,7 +109,7 @@ interface RustProjectSettingsService {
 
     @Suppress("DEPRECATION")
     @Deprecated("Use toolchain property")
-    fun getToolchain(): RustToolchain?
+    fun getToolchain(): RsToolchain?
 
     /*
      * Show a dialog for toolchain configuration
@@ -160,4 +158,4 @@ val Project.rustSettings: RustProjectSettingsService
     get() = ServiceManager.getService(this, RustProjectSettingsService::class.java)
         ?: error("Failed to get RustProjectSettingsService for $this")
 
-val Project.toolchain: RsToolchain? get() = rustSettings.toolchain
+val Project.toolchain: RsToolchainBase? get() = rustSettings.toolchain

@@ -50,9 +50,9 @@ val compileNativeCodeTaskName = "compileNativeCode"
 
 plugins {
     idea
-    kotlin("jvm") version "1.4.10"
+    kotlin("jvm") version "1.4.32"
     id("org.jetbrains.intellij") version "0.7.2"
-    id("org.jetbrains.grammarkit") version "2020.3.2"
+    id("org.jetbrains.grammarkit") version "2021.1.2"
     id("net.saliman.properties") version "1.5.1"
     id("org.gradle.test-retry") version "1.2.0"
 }
@@ -77,6 +77,13 @@ allprojects {
         mavenCentral()
         jcenter()
         maven("https://cache-redirector.jetbrains.com/intellij-dependencies")
+    }
+
+    configurations {
+        all {
+            // Allows using project dependencies instead of IDE dependencies during compilation and test running
+            resolutionStrategy.sortArtifacts(ResolutionStrategy.SortOrder.DEPENDENCY_FIRST)
+        }
     }
 
     idea {
@@ -283,6 +290,9 @@ project(":plugin") {
             jvmArgs("-Dide.show.tips.on.startup.default.value=false")
             // uncomment if `unexpected exception ProcessCanceledException` prevents you from debugging a running IDE
             // jvmArgs("-Didea.ProcessCanceledException=disabled")
+
+            // Uncomment to enable FUS testing mode
+            // jvmArgs("-Dfus.internal.test.mode=true")
         }
 
         withType<PatchPluginXmlTask> {
@@ -357,22 +367,6 @@ project(":") {
                 generateRustLexer, generateRustDocHighlightingLexer,
                 generateRustParser
             )
-
-            doFirst {
-                // Since 2021.1 the platform contains markdown-0.1.41.jar as a dependency
-                // that conflicts with the corresponding project dependency
-                // TODO: find out a better way to avoid wrong dependency during compilation
-                classpath = classpath.filter { it.name != "markdown-0.1.41.jar" }
-            }
-        }
-
-        withType<Test> {
-            doFirst {
-                // Since 2021.1 the platform contains markdown-0.1.41.jar as a dependency
-                // that conflicts with the corresponding project dependency
-                // TODO: find out a better way to avoid wrong dependency during test execution
-                classpath = classpath.filter { it.name != "markdown-0.1.41.jar" }
-            }
         }
 
         // In tests `resources` directory is used instead of `sandbox`

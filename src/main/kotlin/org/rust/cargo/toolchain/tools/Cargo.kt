@@ -19,7 +19,6 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapiext.Testmark
 import com.intellij.openapiext.isDispatchThread
 import com.intellij.util.execution.ParametersListUtil
 import com.intellij.util.net.HttpConfigurable
@@ -39,14 +38,10 @@ import org.rust.cargo.runconfig.command.CargoCommandConfiguration.Companion.find
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration.Companion.findCargoProject
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration.Companion.findCargoTargets
 import org.rust.cargo.runconfig.command.workingDirectory
-import org.rust.cargo.toolchain.CargoCommandLine
-import org.rust.cargo.toolchain.ExternalLinter
-import org.rust.cargo.toolchain.RsToolchain
-import org.rust.cargo.toolchain.RsToolchain.Companion.RUSTC_BOOTSTRAP
-import org.rust.cargo.toolchain.RsToolchain.Companion.RUSTC_WRAPPER
-import org.rust.cargo.toolchain.RustChannel
+import org.rust.cargo.toolchain.*
+import org.rust.cargo.toolchain.RsToolchainBase.Companion.RUSTC_BOOTSTRAP
+import org.rust.cargo.toolchain.RsToolchainBase.Companion.RUSTC_WRAPPER
 import org.rust.cargo.toolchain.impl.BuildMessages
-import org.rust.cargo.toolchain.impl.CargoBuildPlan
 import org.rust.cargo.toolchain.impl.CargoMetadata
 import org.rust.cargo.toolchain.impl.CargoMetadata.replacePaths
 import org.rust.cargo.toolchain.impl.CompilerMessage
@@ -62,9 +57,13 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
-fun RsToolchain.cargo(): Cargo = Cargo(this)
+fun RsToolchainBase.cargo(): Cargo = Cargo(this)
 
-fun RsToolchain.cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
+// BACKCOMPAT: 2021.1. Added not to break binary compatibility with EduTools plugin
+@Suppress("DEPRECATION")
+fun RsToolchain.cargo(): Cargo = (this as RsToolchainBase).cargo()
+
+fun RsToolchainBase.cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
     val hasXargoToml = cargoProjectDirectory?.resolve(CargoConstants.XARGO_MANIFEST_FILE)
         ?.let { Files.isRegularFile(it) } == true
     val useWrapper = hasXargoToml && hasExecutable(Cargo.WRAPPER_NAME)
@@ -80,7 +79,7 @@ fun RsToolchain.cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
  * It is impossible to guarantee that paths to the project or executables are valid,
  * because the user can always just `rm ~/.cargo/bin -rf`.
  */
-open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
+class Cargo(toolchain: RsToolchainBase, useWrapper: Boolean = false)
     : RustupComponent(if (useWrapper) WRAPPER_NAME else NAME, toolchain) {
 
     data class BinaryCrate(val name: String, val version: SemVer? = null) {
@@ -95,7 +94,7 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
 
     private fun listInstalledBinaryCrates(): List<BinaryCrate> =
         createBaseCommandLine("install", "--list")
-            .execute()
+            .execute(toolchain.executionTimeoutInMilliseconds)
             ?.stdoutLines
             ?.filterNot { it.startsWith(" ") }
             ?.map { BinaryCrate.from(it) }
@@ -108,7 +107,10 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
     }
 
     fun checkSupportForBuildCheckAllTargets(): Boolean {
-        val lines = createBaseCommandLine("help", "check").execute()?.stdoutLines ?: return false
+        val lines = createBaseCommandLine("help", "check")
+            .execute(toolchain.executionTimeoutInMilliseconds)
+            ?.stdoutLines
+            ?: return false
         return lines.any { it.contains(" --all-targets ") }
     }
 
@@ -148,6 +150,7 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
             .dropWhile { it != '{' }
         try {
             return Gson().fromJson(json, CargoMetadata.Project::class.java)
+                .convertPaths(toolchain::toLocalPath)
         } catch (e: JsonSyntaxException) {
             throw ExecutionException(e)
         }
@@ -220,8 +223,9 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
     private fun replacePathsSymlinkIfNeeded(
         project: CargoMetadata.Project,
         buildMessages: BuildMessages?,
-        projectDirectory: Path
+        projectDirectoryRel: Path
     ): Pair<CargoMetadata.Project, BuildMessages?> {
+        val projectDirectory = projectDirectoryRel.toAbsolutePath()
         val workspaceRoot = project.workspace_root
 
         if (projectDirectory.toString() == workspaceRoot) {
@@ -381,7 +385,7 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
                 addAll(additionalArguments)
             }
             val rustcExecutable = toolchain.rustc().executable.toString()
-            createGeneralCommandLine(
+            toolchain.createGeneralCommandLine(
                 executable,
                 workingDirectory,
                 redirectInputFrom,
@@ -389,7 +393,7 @@ open class Cargo(toolchain: RsToolchain, useWrapper: Boolean = false)
                 environmentVariables,
                 parameters,
                 emulateTerminal,
-                http
+                http = http
             ).withEnvironment("RUSTC", rustcExecutable)
         }
 

@@ -253,7 +253,8 @@
         <elementDescriptionProvider implementation="org.rust.ide.presentation.RsDescriptionProvider"/>
         <breadcrumbsInfoProvider implementation="org.rust.ide.miscExtensions.RsBreadcrumbsInfoProvider"/>
 
-        <navbar implementation="org.rust.ide.navigationToolbar.RsNavBarModelExtension" order="first"/>
+        <!-- Disabled because of https://github.com/intellij-rust/intellij-rust/issues/7153 -->
+        <!-- <navbar implementation="org.rust.ide.navigationToolbar.RsNavBarModelExtension" order="first"/>-->
 
         <!-- Spell-checker -->
 
@@ -1045,6 +1046,10 @@
 
         <!-- Statistics -->
         <fileTypeStatisticProvider implementation="org.rust.ide.statistics.RsFileTypeStatisticProvider"/>
+        <!--suppress PluginXmlValidity -->
+        <statistics.projectUsagesCollector implementation="org.rust.ide.statistics.RsToolchainUsagesCollector"/>
+        <!--suppress PluginXmlValidity -->
+        <statistics.projectUsagesCollector implementation="org.rust.ide.statistics.RsProjectUsagesCollector"/>
 
         <!-- Registry keys -->
 
@@ -1092,6 +1097,10 @@
 
     <extensions defaultExtensionNs="org.rust">
 
+        <!-- Toolchains -->
+
+        <toolchainProvider implementation="org.rust.cargo.toolchain.RsLocalToolchainProvider"/>
+
         <!-- Toolchain flavors -->
 
         <toolchainFlavor id="rust.rustupToolchainFlavor"
@@ -1102,22 +1111,22 @@
                          implementation="org.rust.cargo.toolchain.flavors.RsSysPathToolchainFlavor"/>
 
         <toolchainFlavor id="rust.unixToolchainFlavor"
-                         implementation="org.rust.cargo.toolchain.flavors.RsUnixToolchainFlavor"
-                         os="unix"/>
+                         implementation="org.rust.cargo.toolchain.flavors.RsUnixToolchainFlavor"/>
 
         <toolchainFlavor id="rust.macToolchainFlavor"
-                         implementation="org.rust.cargo.toolchain.flavors.RsMacToolchainFlavor"
-                         os="mac"/>
+                         implementation="org.rust.cargo.toolchain.flavors.RsMacToolchainFlavor"/>
 
         <toolchainFlavor id="rust.winToolchainFlavor"
-                         implementation="org.rust.cargo.toolchain.flavors.RsWinToolchainFlavor"
-                         os="windows"/>
+                         implementation="org.rust.cargo.toolchain.flavors.RsWinToolchainFlavor"/>
 
     </extensions>
 
     <extensionPoints>
         <extensionPoint qualifiedName="org.rust.runConfigurationExtension"
                         interface="org.rust.cargo.runconfig.CargoCommandConfigurationExtension"
+                        dynamic="true"/>
+        <extensionPoint qualifiedName="org.rust.toolchainProvider"
+                        interface="org.rust.cargo.toolchain.RsToolchainProvider"
                         dynamic="true"/>
         <extensionPoint qualifiedName="org.rust.toolchainFlavor"
                         interface="org.rust.cargo.toolchain.flavors.RsToolchainFlavor"

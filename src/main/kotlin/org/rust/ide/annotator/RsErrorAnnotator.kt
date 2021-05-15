@@ -22,8 +22,6 @@ import org.rust.ide.annotator.fixes.*
 import org.rust.ide.presentation.getStubOnlyText
 import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
 import org.rust.ide.refactoring.findBinding
-import org.rust.ide.utils.isCfgUnknown
-import org.rust.ide.utils.isEnabledByCfg
 import org.rust.lang.core.*
 import org.rust.lang.core.FeatureAvailability.*
 import org.rust.lang.core.macros.MacroExpansionMode
@@ -108,9 +106,42 @@ class RsErrorAnnotator : AnnotatorBase(), HighlightRangeExtension {
             override fun visitPatTupleStruct(o: RsPatTupleStruct) = checkRsPatTupleStruct(rsHolder, o)
             override fun visitPatTup(o: RsPatTup) = checkRsPatTup(rsHolder, o)
             override fun visitStructLiteralField(o: RsStructLiteralField) = checkReferenceIsPublic(o, o, rsHolder)
+            override fun visitMetaItem(o: RsMetaItem) = checkMetaItem(rsHolder, o)
         }
 
         element.accept(visitor)
+    }
+
+    private fun checkMetaItem(holder: RsAnnotationHolder, metaItem: RsMetaItem) {
+        val args = metaItem.metaItemArgs
+        val name = metaItem.name
+        if (metaItem.isRootMetaItem() && args != null && name in listOf("cfg", "cfg_attr")) {
+            val item = args.metaItemList.getOrNull(0) ?: return
+            checkCfgPredicate(holder, item)
+        }
+    }
+
+    private fun checkCfgPredicate(holder: RsAnnotationHolder, item: RsMetaItem) {
+        val itemName = item.name ?: return
+        val args = item.metaItemArgs ?: return
+        when (itemName) {
+            "all", "any" -> args.metaItemList.forEach { checkCfgPredicate(holder, it) }
+            "not" -> {
+                val parameter = args.metaItemList.getOrNull(0) ?: return
+                checkCfgPredicate(holder, parameter)
+            }
+            "version" -> { /* version is currently experimental */ }
+            else -> {
+                val path = item.path ?: return
+                val fixes = NameSuggestionFix.createApplicable(path, itemName, listOf("all", "any", "not"), 1) { name ->
+                    RsPsiFactory(path.project).tryCreatePath(name) ?: error("Cannot create path out of $name")
+                }
+                RsDiagnostic.UnknownCfgPredicate(path, itemName, fixes).addToHolder(
+                    holder,
+                    checkExistsAfterExpansion = false
+                )
+            }
+        }
     }
 
     private fun checkRsPatTup(holder: RsAnnotationHolder, pattern: RsPatTup) {
@@ -1075,10 +1106,6 @@ class RsErrorAnnotator : AnnotatorBase(), HighlightRangeExtension {
     }
 
     private fun checkExternCrate(holder: RsAnnotationHolder, el: RsExternCrateItem) {
-        if (el.reference.multiResolve().isEmpty() && el.containingCrate?.origin == PackageOrigin.WORKSPACE) {
-            if (!el.isEnabledByCfg) return
-            RsDiagnostic.CrateNotFoundError(el, el.referenceName).addToHolder(holder)
-        }
         if (el.self != null) {
             EXTERN_CRATE_SELF.check(holder, el, "`extern crate self`")
             if (el.alias == null) {
@@ -1340,7 +1367,7 @@ private fun AnnotationSession.duplicatesByNamespace(
                 val name = it.nameOrImportedName()
                 name != null && name != "_"
             }
-            .filter { it.isEnabledByCfg && !it.isCfgUnknown }
+            .filter { it.existsAfterExpansion && !it.isCfgUnknown }
             .flatMap { it.namespaced() }
             .groupBy { it.first }       // Group by namespace
             .map { entry ->

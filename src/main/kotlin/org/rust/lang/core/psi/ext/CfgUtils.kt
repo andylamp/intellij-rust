@@ -3,16 +3,29 @@
  * found in the LICENSE file.
  */
 
-package org.rust.ide.utils
+package org.rust.lang.core.psi.ext
 
 import com.intellij.psi.PsiElement
 import org.rust.lang.core.crate.Crate
 import org.rust.lang.core.psi.RsMetaItem
-import org.rust.lang.core.psi.ext.*
 import org.rust.lang.utils.evaluation.CfgEvaluator
 import org.rust.lang.utils.evaluation.ThreeValuedLogic
 
 val PsiElement.isEnabledByCfg: Boolean get() = isEnabledByCfgInner(null)
+
+/**
+ * TODO at the moment it's equivalent to [isEnabledByCfg]
+ *
+ * Returns `true` if it [isEnabledByCfg] and not inside an element under attribute procedural macro.
+ *
+ * A one exception is that it returns `true` for attribute macro itself:
+ *
+ * ```
+ * #[a_macro]  // `true` for the attribute
+ * fn foo() {} // `false` for the function
+ * ```
+ */
+val PsiElement.existsAfterExpansion: Boolean get() = isEnabledByCfg
 
 fun PsiElement.isEnabledByCfg(crate: Crate): Boolean = isEnabledByCfgInner(crate)
 

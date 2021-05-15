@@ -4149,4 +4149,93 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase(RsErrorAnnotator::class) {
         use foo::T1 as _;
         use bar::T2 as _;
     """)
+
+    fun `test no E0537 valid cfg`() = checkErrors("""
+        #[cfg(any(foo, bar))]
+        #[cfg(all(foo, baz))]
+        #[cfg(not(foo))]
+        #[cfg(all(not(foo)))]
+        #[cfg(not(any(foo)))]
+        #[cfg(foo)]
+        fn foo() {}
+    """)
+
+    fun `test E0537 invalid cfg`() = checkErrors("""
+        #[cfg(<error descr="Invalid predicate `an` [E0537]">an</error>(foo))]
+        #[cfg(<error descr="Invalid predicate `allx` [E0537]">allx</error>(foo))]
+        #[cfg(<error descr="Invalid predicate `non` [E0537]">non</error>(foo))]
+        #[cfg(<error descr="Invalid predicate `non` [E0537]">non</error>(an(foo)))]
+        #[cfg(all(x, <error descr="Invalid predicate `bar` [E0537]">bar</error>()))]
+        #[cfg(all(x, not(y), <error descr="Invalid predicate `baz` [E0537]">baz</error>()))]
+        #[cfg(not(<error descr="Invalid predicate `foo` [E0537]">foo</error>()))]
+        #[cfg(all(not(any(bar, <error descr="Invalid predicate `baz` [E0537]">baz</error>()))))]
+        #[cfg(any(x, not(y), <error descr="Invalid predicate `baz` [E0537]">baz</error>()))]
+        fn foo() {}
+    """)
+
+    fun `test no E0537 valid cfg_attr`() = checkErrors("""
+        #[cfg_attr(any(foo), bar)]
+        #[cfg_attr(all(foo), bar)]
+        #[cfg_attr(not(foo), bar)]
+        #[cfg_attr(all(not(foo)), bar)]
+        #[cfg_attr(not(any(foo)), bar)]
+        #[cfg_attr(non, bar)]
+        fn foo() {}
+    """)
+
+    fun `test E0537 invalid cfg_attr`() = checkErrors("""
+        #[cfg_attr(<error descr="Invalid predicate `an` [E0537]">an</error>(foo), bar)]
+        #[cfg_attr(<error descr="Invalid predicate `allx` [E0537]">allx</error>(foo), bar)]
+        #[cfg_attr(<error descr="Invalid predicate `non` [E0537]">non</error>(foo), bar)]
+        #[cfg_attr(<error descr="Invalid predicate `non` [E0537]">non</error>(an(foo)), bar)]
+        #[cfg_attr(not(<error descr="Invalid predicate `foo` [E0537]">foo</error>()), non())]
+        #[cfg_attr(all(not(any(bar, <error descr="Invalid predicate `baz` [E0537]">baz</error>()))), non())]
+        #[cfg_attr(all(x, not(y), <error descr="Invalid predicate `baz` [E0537]">baz</error>()), bar)]
+        #[cfg_attr(any(x, not(y), <error descr="Invalid predicate `baz` [E0537]">baz</error>()), bar)]
+        fn foo() {}
+    """)
+
+    fun `test E0537 ignore non-root attributes`() = checkErrors("""
+        #[bar(cfg(an(foo)))]
+        fn foo() {}
+    """)
+
+    fun `test E0537 nested cfg_attr`() = checkErrors("""
+        #[cfg_attr(foo, cfg_attr(<error descr="Invalid predicate `an` [E0537]">an</error>(), baz))]
+        fn foo() {}
+    """)
+
+    fun `test no E0537 cfg version`() = checkErrors("""
+        #[cfg(version())]
+        fn foo() {}
+    """)
+
+    fun `test E0537 quick fix any`() = checkFixByText("Change to `any`", """
+        #[cfg(<error descr="Invalid predicate `an` [E0537]">an/*caret*/</error>(foo))]
+        fn foo() {}
+    """, """
+        #[cfg(any(foo))]
+        fn foo() {}
+    """)
+
+    fun `test E0537 quick fix all`() = checkFixByText("Change to `all`", """
+        #[cfg(<error descr="Invalid predicate `allx` [E0537]">allx/*caret*/</error>(foo))]
+        fn foo() {}
+    """, """
+        #[cfg(all(foo))]
+        fn foo() {}
+    """)
+
+    fun `test E0537 quick fix not`() = checkFixByText("Change to `not`", """
+        #[cfg(<error descr="Invalid predicate `noo` [E0537]">noo/*caret*/</error>(foo))]
+        fn foo() {}
+    """, """
+        #[cfg(not(foo))]
+        fn foo() {}
+    """)
+
+    fun `test E0537 no quick fix high distance`() = checkFixIsUnavailable("Change to", """
+        #[cfg(<error descr="Invalid predicate `a` [E0537]">a/*caret*/</error>(foo))]
+        fn foo() {}
+    """)
 }

@@ -16,7 +16,7 @@ import com.intellij.ui.layout.panel
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.settings.RustProjectSettingsService.MacroExpansionEngine
 import org.rust.cargo.project.settings.ui.RustProjectSettingsPanel
-import org.rust.cargo.toolchain.RsToolchain
+import org.rust.cargo.toolchain.RsToolchainBase
 import org.rust.openapiext.pathAsPath
 import java.nio.file.Paths
 import javax.swing.ListCellRenderer
@@ -41,7 +41,7 @@ class RsProjectConfigurable(
             )
         }
         row {
-            checkBox("Use experimental name resolution engine", state::newResolveEnabled)
+            checkBox("Use new name resolution engine", state::newResolveEnabled)
         }
         row {
             checkBox("Inject Rust language into documentation comments", state::doctestInjectionEnabled)
@@ -66,7 +66,7 @@ class RsProjectConfigurable(
 
     override fun reset() {
         super.reset()
-        val toolchain = state.toolchain ?: RsToolchain.suggest()
+        val toolchain = state.toolchain ?: RsToolchainBase.suggest()
 
         rustProjectSettings.data = RustProjectSettingsPanel.Data(
             toolchain = toolchain,
