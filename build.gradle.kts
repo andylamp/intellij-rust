@@ -218,7 +218,7 @@ val Project.dependencyCachePath
 
 val channelSuffix = if (channel.isBlank() || channel == "stable") "" else "-$channel"
 val versionSuffix = "-$platformVersion$channelSuffix"
-val majorVersion = "0.3"
+val majorVersion = "0.4"
 val patchVersion = prop("patchVersion").toInt()
 
 // Special module with run, build and publish tasks
@@ -539,7 +539,7 @@ project(":ml-completion") {
         setPlugins(*plugins.toTypedArray())
     }
     dependencies {
-        implementation("org.jetbrains.intellij.deps.completion:completion-ranking-rust:0.0.4")
+        implementation("org.jetbrains.intellij.deps.completion:completion-ranking-rust:0.2.2")
         implementation(project(":"))
         implementation(project(":common"))
         testImplementation(project(":", "testOutput"))
